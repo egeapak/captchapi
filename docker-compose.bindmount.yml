@@ -1,0 +1,68 @@
+# =============================================================================
+# CaptchAPI - Bind Mount Mode (Host Directory)
+# =============================================================================
+#
+# DATABASE: Persistent in host directory
+# SECURITY: Runs as nonroot (UID 65532)
+# USE CASE: Direct access to database file, easy file-based backups
+#
+# ⚠️ IMPORTANT: Host directory must be writable by UID 65532
+#
+# SETUP (Required before first run):
+#   mkdir -p ./data
+#   sudo chown -R 65532:65532 ./data
+#
+# ALTERNATIVE (without sudo, run as your user):
+#   mkdir -p ./data
+#   chown -R $(id -u):$(id -g) ./data
+#   # Then uncomment the 'user' line below
+#
+# USAGE:
+#   docker-compose -f docker-compose.bindmount.yml up -d
+#
+# BACKUP:
+#   tar czf captchapi-backup.tar.gz ./data
+#
+# =============================================================================
+
+services:
+  captchapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: captchapi:latest
+    container_name: captchapi-bindmount
+    restart: unless-stopped
+
+    # OPTIONAL: Uncomment to run as your host user instead of UID 65532
+    # This avoids the need for 'sudo chown' on the host directory
+    # user: "${UID:-1000}:${GID:-1000}"
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      # Host directory mounted into container
+      # MUST be owned by UID 65532 (or use 'user' override above)
+      - ./data:/data
+
+    environment:
+      # Server Configuration
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 3000
+
+      # Database (host bind mount, persistent)
+      DATABASE_URL: sqlite:/data/captchapi.db
+
+      # Security - CHANGE THESE IN PRODUCTION!
+      # Generate with: openssl rand -base64 32
+      API_KEY_SALT: change-this-to-a-random-salt-in-production
+      MASTER_API_KEY: change-this-to-a-secure-master-key-in-production
+
+      # CAPTCHA Configuration
+      DEFAULT_SESSION_TTL_SECONDS: 300
+      MAX_SESSION_TTL_SECONDS: 3600
+      MAX_VALIDATION_ATTEMPTS: 3
+
+      # Background Tasks
+      CLEANUP_INTERVAL_SECONDS: 60

@@ -1,0 +1,54 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in image)
+*.md
+DOCKER_PLAN.md
+
+# Docker files (don't copy into themselves)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Test files
+tests/
+*.test
+
+# OS files
+Thumbs.db
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+
+# Claude docs (not needed in runtime)
+.claude/

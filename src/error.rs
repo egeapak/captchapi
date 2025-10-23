@@ -21,6 +21,7 @@ pub enum AppError {
     Unauthorized(String),
 
     #[error("CAPTCHA generation failed: {0}")]
+    #[allow(dead_code)]
     CaptchaGeneration(String),
 
     #[error("Internal server error")]

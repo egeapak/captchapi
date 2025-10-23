@@ -46,7 +46,7 @@ impl CaptchaService {
     }
 
     /// Convert a DynamicImage to JPEG bytes
-    pub fn image_to_jpeg_bytes(image: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+    pub fn image_to_jpeg_bytes(image: &DynamicImage, _quality: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         let mut cursor = Cursor::new(&mut bytes);
 
