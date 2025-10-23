@@ -5,8 +5,11 @@ This guide explains how to run CaptchAPI in Docker with different persistence st
 ## Quick Start
 
 ```bash
+# From project root
+cd docker
+
 # Build the image
-docker build -t captchapi:latest .
+docker build -f Dockerfile -t captchapi:latest ..
 
 # Run with Docker Compose (recommended)
 docker-compose up -d

@@ -28,8 +28,8 @@
 services:
   captchapi:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     image: captchapi:latest
     container_name: captchapi-bindmount
     restart: unless-stopped
@@ -44,7 +44,7 @@ services:
     volumes:
       # Host directory mounted into container
       # MUST be owned by UID 65532 (or use 'user' override above)
-      - ./data:/data
+      - ../data:/data
 
     environment:
       # Server Configuration

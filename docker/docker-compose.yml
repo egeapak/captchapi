@@ -19,8 +19,8 @@
 services:
   captchapi:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: docker/Dockerfile
     image: captchapi:latest
     container_name: captchapi
     restart: unless-stopped
