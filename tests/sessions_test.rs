@@ -507,7 +507,7 @@ async fn test_binary_image_cache_headers() {
     let max_age: i64 = max_age_str.parse().unwrap();
 
     // Should be roughly 300 seconds (allow some drift)
-    assert!(max_age >= 295 && max_age <= 300, "max-age should be ~300s");
+    assert!((295..=300).contains(&max_age), "max-age should be ~300s");
 
     // Expires header should be present
     assert!(headers.get("expires").is_some());

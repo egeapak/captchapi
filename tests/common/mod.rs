@@ -16,6 +16,7 @@ use tower_http::trace::TraceLayer;
 pub struct TestApp {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
+    #[allow(dead_code)] // Used in test files, but clippy doesn't see cross-module usage
     pub api_key: String,
     pub master_key: String,
 }
