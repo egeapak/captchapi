@@ -4,6 +4,13 @@
 
 CaptchAPI is a REST API service for creating, validating, and consuming CAPTCHA challenges. Built with Rust, it provides a secure, high-performance solution for integrating CAPTCHA verification into applications.
 
+## Documentation
+
+This file provides project overview, architecture, and development workflow. For detailed information:
+
+- **API Documentation**: See `.claude/docs/API.md` for complete endpoint specifications, request/response formats, and usage examples
+- **Testing Guide**: See `.claude/docs/TESTING.md` for test structure, writing tests, and debugging
+
 ## Architecture
 
 ### Technology Stack
@@ -62,131 +69,22 @@ captchapi/
         └── cleanup.rs           # Expired session cleanup
 ```
 
-## API Endpoints
+## API Documentation
 
-### Public Endpoints
+For complete API documentation including all endpoints, request/response formats, and usage examples, see `.claude/docs/API.md`
 
-- `GET /health` - Health check
-- `GET /api/v1/sessions/{id}/image` - Retrieve CAPTCHA image (JSON with base64 data URI)
-- `GET /api/v1/sessions/{id}/image.jpeg` - Retrieve CAPTCHA as binary JPEG (for browser display)
+**Quick Reference:**
+- **Public**: Health check, Get CAPTCHA images (JSON/binary)
+- **Protected**: Create sessions, Validate solutions, Delete sessions
+- **Admin**: Manage API keys (create, list, update, delete)
 
-### Protected Endpoints (Require API Key)
-
-- `POST /api/v1/sessions` - Create new CAPTCHA session
-- `POST /api/v1/sessions/{id}/validate` - Validate user solution
-- `DELETE /api/v1/sessions/{id}` - Delete session
-
-### Admin Endpoints (Require Master Key)
-
-- `POST /api/v1/api-keys` - Create new API key
-- `GET /api/v1/api-keys` - List all API keys
-- `PUT /api/v1/api-keys/{key_hash}` - Update API key (activate/deactivate)
-- `DELETE /api/v1/api-keys/{key_hash}` - Delete API key
-
-### Request/Response Examples
-
-#### Create Session
-```bash
-curl -X POST http://localhost:3000/api/v1/sessions \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "difficulty": 5,
-    "expires_in_seconds": 300,
-    "width": 220,
-    "height": 120,
-    "dark_mode": false
-  }'
-
-# Response:
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "expires_at": "2025-10-23T12:35:00Z",
-  "created_at": "2025-10-23T12:30:00Z"
-}
-```
-
-#### Get CAPTCHA Image (JSON with base64)
-```bash
-curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image
-
-# Response:
-{
-  "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQ...",
-  "expires_at": "2025-10-23T12:35:00Z"
-}
-```
-
-#### Get CAPTCHA Image (Binary JPEG for browser)
-```bash
-curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg --output captcha.jpeg
-
-# Or open directly in browser:
-# http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg
-
-# Response Headers:
-# Content-Type: image/jpeg
-# ETag: "550e8400-e29b-41d4-a716-446655440000"
-# Cache-Control: public, max-age=300
-# Expires: Thu, 23 Oct 2025 12:35:00 GMT
-```
-
-#### Validate Solution
-```bash
-curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/validate \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"solution": "ABC123"}'
-
-# Response:
-{
-  "valid": true,
-  "session_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-#### Create API Key (Admin)
-```bash
-curl -X POST http://localhost:3000/api/v1/api-keys \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"description": "Production API Key"}'
-
-# Response:
-{
-  "api_key": "HmLHQ6ou3kchYrMnQ9UPau6mLi1KXCBO",
-  "key_hash": "fcc484955c95e3ed5d8a0f9991aae7c1f5e958e7cfa1d7bd3d762f7172871e64",
-  "description": "Production API Key",
-  "created_at": "2025-10-23T12:32:38Z"
-}
-
-# IMPORTANT: Save the api_key value - it won't be shown again!
-```
-
-#### List API Keys (Admin)
-```bash
-curl http://localhost:3000/api/v1/api-keys \
-  -H "Authorization: Bearer YOUR_MASTER_KEY"
-
-# Response: Array of API key info (without the actual keys)
-[
-  {
-    "key_hash": "fcc484955c95...",
-    "description": "Production API Key",
-    "created_at": "2025-10-23T12:32:38Z",
-    "last_used_at": "2025-10-23T13:00:00Z",
-    "is_active": true
-  }
-]
-```
-
-#### Deactivate API Key (Admin)
-```bash
-curl -X PUT http://localhost:3000/api/v1/api-keys/fcc484955c95e3ed5d8a0f9991aae7c1f5e958e7cfa1d7bd3d762f7172871e64 \
-  -H "Authorization: Bearer YOUR_MASTER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"is_active": false}'
-```
+The API documentation includes:
+- Full endpoint specifications
+- Request/response examples
+- Authentication requirements
+- Error codes and handling
+- Complete usage flows
+- Migration guides
 
 ## Configuration
 
@@ -296,51 +194,29 @@ These steps ensure:
 
 ### Testing
 
-The project has comprehensive test coverage with 36 tests across unit and integration testing.
+For comprehensive testing documentation, see `.claude/docs/TESTING.md`
 
+**Quick Start:**
 ```bash
-# Run all tests
-cargo test
-
-# Run tests with output
-cargo test -- --nocapture
-
-# Run specific test
-cargo test test_name
-
-# Run only unit tests
-cargo test --lib
-
-# Run only integration tests
-cargo test --test api_keys_test
-cargo test --test sessions_test
+cargo test                    # Run all 40 tests
+cargo test --lib              # Unit tests only
+cargo test --test sessions_test   # Integration tests
 ```
 
-**Test Structure:**
-- **Unit Tests** (18 tests):
-  - `src/services/auth.rs`: API key hashing, salt handling, consistency
-  - `src/services/captcha.rs`: CAPTCHA generation, base64 validation, JPEG format
+**Test Coverage:**
+- 40 total tests (22 unit + 17 integration + 1 migration)
+- Full JPEG signature validation
+- HTTP headers and caching verification
+- Authentication and authorization flows
+- Complete user journey testing
 
-- **Integration Tests** (17 tests):
-  - `tests/sessions_test.rs` (9 tests): Session lifecycle, validation, binary images
-  - `tests/api_keys_test.rs` (8 tests): API key CRUD, master key auth, deactivation
-
-- **Migration Test** (1 test):
-  - `tests/test_migration.rs`: Database schema creation
-
-**Test Dependencies:**
-- `axum-test` - HTTP integration testing with TestServer
-- `tokio-test` - Async test utilities
-- `mockito` - HTTP mocking (for future external API mocks)
-- `tempfile` - Temporary file creation
-- `base64` - Base64 validation in tests
-
-**Key Testing Features:**
-- In-memory SQLite databases (unique per test to avoid conflicts)
-- Full HTTP request/response testing
-- Binary data validation (JPEG signatures)
-- Authentication and authorization testing
-- Error case coverage
+The testing documentation includes:
+- Detailed test structure and organization
+- How to write new tests
+- Test utilities and helpers (TestApp)
+- Debugging failed tests
+- Performance benchmarking
+- Best practices and patterns
 
 ## Security Considerations
 
