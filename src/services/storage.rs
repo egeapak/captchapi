@@ -17,13 +17,13 @@ impl StorageService {
     pub async fn create_session(&self, session: &Session) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, solution, image_base64, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
+            INSERT INTO sessions (id, solution, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&session.id)
         .bind(&session.solution)
-        .bind(&session.image_base64)
+        .bind(&session.image_bytes)
         .bind(session.created_at)
         .bind(session.expires_at)
         .bind(session.attempt_count)
@@ -40,7 +40,7 @@ impl StorageService {
     pub async fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let row = sqlx::query(
             r#"
-            SELECT id, solution, image_base64, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode
+            SELECT id, solution, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode
             FROM sessions
             WHERE id = ?
             "#,
@@ -52,7 +52,7 @@ impl StorageService {
         Ok(row.map(|r| Session {
             id: r.get("id"),
             solution: r.get("solution"),
-            image_base64: r.get("image_base64"),
+            image_bytes: r.get("image_bytes"),
             created_at: r.get("created_at"),
             expires_at: r.get("expires_at"),
             attempt_count: r.get("attempt_count"),
@@ -114,6 +114,27 @@ impl StorageService {
             SELECT key_hash, description, created_at, last_used_at, is_active
             FROM api_keys
             WHERE key_hash = ? AND is_active = 1
+            "#,
+        )
+        .bind(key_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| ApiKey {
+            key_hash: r.get("key_hash"),
+            description: r.get("description"),
+            created_at: r.get("created_at"),
+            last_used_at: r.get("last_used_at"),
+            is_active: r.get::<i32, _>("is_active") == 1,
+        }))
+    }
+
+    pub async fn get_api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
+        let row = sqlx::query(
+            r#"
+            SELECT key_hash, description, created_at, last_used_at, is_active
+            FROM api_keys
+            WHERE key_hash = ?
             "#,
         )
         .bind(key_hash)

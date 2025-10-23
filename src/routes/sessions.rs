@@ -8,10 +8,13 @@ use crate::models::{
 use crate::services::{CaptchaService, StorageService};
 use axum::{
     extract::{Path, State},
+    http::{header, HeaderMap, HeaderValue},
     middleware,
+    response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
+use chrono::Utc;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -24,20 +27,21 @@ pub struct SessionsState {
 pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
     Router::new()
         .route("/", post(create_session))
-        .route("/:id/validate", post(validate_session))
-        .route("/:id", delete(delete_session))
+        .route("/{id}/validate", post(validate_session))
+        .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
         ))
-        .route("/:id/image", get(get_image))
+        .route("/{id}/image", get(get_image))
+        .route("/{id}/image.jpeg", get(get_image_binary))
         .with_state(state)
 }
 
 async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
-) -> Result<Json<CreateSessionResponse>> {
+) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
     // Validate parameters
     let expires_in = req
         .expires_in_seconds
@@ -63,7 +67,7 @@ async fn create_session(
     let compression = 40; // Fixed compression value
 
     // Generate CAPTCHA
-    let (text, image_base64) =
+    let (text, image_bytes) =
         state
             .captcha
             .generate(req.text, difficulty, width, height, dark_mode, compression)?;
@@ -71,7 +75,7 @@ async fn create_session(
     // Create session
     let session = Session::new(
         text,
-        image_base64,
+        image_bytes,
         expires_in,
         difficulty,
         width,
@@ -84,11 +88,14 @@ async fn create_session(
 
     tracing::info!("Created session: {}", session.id);
 
-    Ok(Json(CreateSessionResponse {
-        session_id: session.id.clone(),
-        expires_at: session.expires_at_datetime(),
-        created_at: session.created_at_datetime(),
-    }))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(CreateSessionResponse {
+            session_id: session.id.clone(),
+            expires_at: session.expires_at_datetime(),
+            created_at: session.created_at_datetime(),
+        }),
+    ))
 }
 
 async fn get_image(
@@ -109,10 +116,62 @@ async fn get_image(
         return Err(AppError::SessionNotFound);
     }
 
+    // Convert raw bytes to base64 data URI for JSON response
+    let base64_image = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &session.image_bytes,
+    );
+    let data_uri = format!("data:image/jpeg;base64,{}", base64_image);
+
     Ok(Json(GetImageResponse {
-        image: format!("data:image/png;base64,{}", session.image_base64),
+        image: data_uri,
         expires_at: session.expires_at_datetime(),
     }))
+}
+
+async fn get_image_binary(
+    State(state): State<SessionsState>,
+    Path(session_id): Path<String>,
+) -> Result<impl IntoResponse> {
+    // Get session from database
+    let session = state
+        .storage
+        .get_session(&session_id)
+        .await?
+        .ok_or(AppError::SessionNotFound)?;
+
+    // Check if expired
+    if session.is_expired() {
+        // Delete expired session
+        let _ = state.storage.delete_session(&session_id).await;
+        return Err(AppError::SessionNotFound);
+    }
+
+    // Calculate cache duration (time until expiration)
+    let now = Utc::now().timestamp();
+    let max_age = (session.expires_at - now).max(0);
+
+    // Build response with proper headers
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{}\"", session_id))
+            .unwrap_or_else(|_| HeaderValue::from_static("\"unknown\"")),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_str(&format!("public, max-age={}", max_age))
+            .unwrap_or_else(|_| HeaderValue::from_static("public, max-age=0")),
+    );
+    headers.insert(
+        header::EXPIRES,
+        HeaderValue::from_str(&session.expires_at_datetime().to_rfc2822())
+            .unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+
+    // Return raw JPEG bytes directly (no base64 encoding/decoding needed!)
+    Ok((headers, session.image_bytes))
 }
 
 async fn validate_session(

@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
     solution TEXT NOT NULL,           -- Correct answer (stored lowercase)
-    image_base64 TEXT NOT NULL,       -- Base64 encoded PNG
+    image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
     created_at INTEGER NOT NULL,      -- Unix timestamp (seconds)
     expires_at INTEGER NOT NULL,      -- Unix timestamp (seconds)
     attempt_count INTEGER DEFAULT 0,  -- Failed validation attempts

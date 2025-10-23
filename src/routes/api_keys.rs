@@ -23,8 +23,8 @@ pub fn api_keys_routes(state: ApiKeysState, master_middleware: MasterKeyMiddlewa
     Router::new()
         .route("/", post(create_api_key))
         .route("/", get(list_api_keys))
-        .route("/:key_hash", put(update_api_key))
-        .route("/:key_hash", delete(delete_api_key))
+        .route("/{key_hash}", put(update_api_key))
+        .route("/{key_hash}", delete(delete_api_key))
         .route_layer(middleware::from_fn_with_state(
             master_middleware,
             MasterKeyMiddleware::authenticate,
@@ -35,7 +35,7 @@ pub fn api_keys_routes(state: ApiKeysState, master_middleware: MasterKeyMiddlewa
 async fn create_api_key(
     State(state): State<ApiKeysState>,
     Json(req): Json<CreateApiKeyRequest>,
-) -> Result<Json<CreateApiKeyResponse>> {
+) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
     // Generate a random API key
     let api_key: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -58,12 +58,15 @@ async fn create_api_key(
         req.description
     );
 
-    Ok(Json(CreateApiKeyResponse {
-        api_key,
-        key_hash,
-        description: req.description,
-        created_at: api_key_record.created_at_datetime(),
-    }))
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(CreateApiKeyResponse {
+            api_key,
+            key_hash,
+            description: req.description,
+            created_at: api_key_record.created_at_datetime(),
+        }),
+    ))
 }
 
 async fn list_api_keys(State(state): State<ApiKeysState>) -> Result<Json<Vec<ApiKeyInfo>>> {
@@ -89,10 +92,10 @@ async fn update_api_key(
         return Err(AppError::SessionNotFound); // Reusing this error, could create ApiKeyNotFound
     }
 
-    // Fetch the updated key
+    // Fetch the updated key (use get_api_key_by_hash to get regardless of active status)
     let api_key = state
         .storage
-        .get_api_key(&key_hash)
+        .get_api_key_by_hash(&key_hash)
         .await?
         .ok_or(AppError::SessionNotFound)?;
 

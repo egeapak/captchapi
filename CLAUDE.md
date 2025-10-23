@@ -67,13 +67,21 @@ captchapi/
 ### Public Endpoints
 
 - `GET /health` - Health check
-- `GET /api/v1/sessions/:id/image` - Retrieve CAPTCHA image (base64)
+- `GET /api/v1/sessions/{id}/image` - Retrieve CAPTCHA image (JSON with base64 data URI)
+- `GET /api/v1/sessions/{id}/image.jpeg` - Retrieve CAPTCHA as binary JPEG (for browser display)
 
 ### Protected Endpoints (Require API Key)
 
 - `POST /api/v1/sessions` - Create new CAPTCHA session
-- `POST /api/v1/sessions/:id/validate` - Validate user solution
-- `DELETE /api/v1/sessions/:id` - Delete session
+- `POST /api/v1/sessions/{id}/validate` - Validate user solution
+- `DELETE /api/v1/sessions/{id}` - Delete session
+
+### Admin Endpoints (Require Master Key)
+
+- `POST /api/v1/api-keys` - Create new API key
+- `GET /api/v1/api-keys` - List all API keys
+- `PUT /api/v1/api-keys/{key_hash}` - Update API key (activate/deactivate)
+- `DELETE /api/v1/api-keys/{key_hash}` - Delete API key
 
 ### Request/Response Examples
 
@@ -98,15 +106,29 @@ curl -X POST http://localhost:3000/api/v1/sessions \
 }
 ```
 
-#### Get CAPTCHA Image
+#### Get CAPTCHA Image (JSON with base64)
 ```bash
 curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image
 
 # Response:
 {
-  "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg...",
+  "image": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAgAAAQ...",
   "expires_at": "2025-10-23T12:35:00Z"
 }
+```
+
+#### Get CAPTCHA Image (Binary JPEG for browser)
+```bash
+curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg --output captcha.jpeg
+
+# Or open directly in browser:
+# http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg
+
+# Response Headers:
+# Content-Type: image/jpeg
+# ETag: "550e8400-e29b-41d4-a716-446655440000"
+# Cache-Control: public, max-age=300
+# Expires: Thu, 23 Oct 2025 12:35:00 GMT
 ```
 
 #### Validate Solution
@@ -121,6 +143,49 @@ curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-44665
   "valid": true,
   "session_id": "550e8400-e29b-41d4-a716-446655440000"
 }
+```
+
+#### Create API Key (Admin)
+```bash
+curl -X POST http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "Production API Key"}'
+
+# Response:
+{
+  "api_key": "HmLHQ6ou3kchYrMnQ9UPau6mLi1KXCBO",
+  "key_hash": "fcc484955c95e3ed5d8a0f9991aae7c1f5e958e7cfa1d7bd3d762f7172871e64",
+  "description": "Production API Key",
+  "created_at": "2025-10-23T12:32:38Z"
+}
+
+# IMPORTANT: Save the api_key value - it won't be shown again!
+```
+
+#### List API Keys (Admin)
+```bash
+curl http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_KEY"
+
+# Response: Array of API key info (without the actual keys)
+[
+  {
+    "key_hash": "fcc484955c95...",
+    "description": "Production API Key",
+    "created_at": "2025-10-23T12:32:38Z",
+    "last_used_at": "2025-10-23T13:00:00Z",
+    "is_active": true
+  }
+]
+```
+
+#### Deactivate API Key (Admin)
+```bash
+curl -X PUT http://localhost:3000/api/v1/api-keys/fcc484955c95e3ed5d8a0f9991aae7c1f5e958e7cfa1d7bd3d762f7172871e64 \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active": false}'
 ```
 
 ## Configuration
@@ -139,6 +204,7 @@ DATABASE_URL=sqlite:./data/captchapi.db
 
 # Security
 API_KEY_SALT=CHANGE-THIS-TO-A-RANDOM-SALT-IN-PRODUCTION
+MASTER_API_KEY=CHANGE-THIS-TO-A-SECURE-MASTER-KEY-IN-PRODUCTION
 
 # CAPTCHA Defaults
 DEFAULT_SESSION_TTL_SECONDS=300
@@ -149,7 +215,10 @@ MAX_VALIDATION_ATTEMPTS=3
 CLEANUP_INTERVAL_SECONDS=60
 ```
 
-**Important**: Always change `API_KEY_SALT` to a random string in production!
+**Important**:
+- Always change `API_KEY_SALT` to a random string in production!
+- Always change `MASTER_API_KEY` to a strong, random key in production!
+- The master key has full administrative access - protect it carefully!
 
 ## Database Schema
 
@@ -160,7 +229,7 @@ Stores active CAPTCHA sessions with metadata and solutions.
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
     solution TEXT NOT NULL,           -- Correct answer (lowercase)
-    image_base64 TEXT NOT NULL,       -- Base64 encoded PNG
+    image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
     attempt_count INTEGER DEFAULT 0,  -- Failed attempts
@@ -227,16 +296,51 @@ These steps ensure:
 
 ### Testing
 
+The project has comprehensive test coverage with 36 tests across unit and integration testing.
+
 ```bash
-# Run tests
+# Run all tests
 cargo test
 
-# Run with logging
-RUST_LOG=debug cargo run
+# Run tests with output
+cargo test -- --nocapture
 
-# Build release binary
-cargo build --release
+# Run specific test
+cargo test test_name
+
+# Run only unit tests
+cargo test --lib
+
+# Run only integration tests
+cargo test --test api_keys_test
+cargo test --test sessions_test
 ```
+
+**Test Structure:**
+- **Unit Tests** (18 tests):
+  - `src/services/auth.rs`: API key hashing, salt handling, consistency
+  - `src/services/captcha.rs`: CAPTCHA generation, base64 validation, JPEG format
+
+- **Integration Tests** (17 tests):
+  - `tests/sessions_test.rs` (9 tests): Session lifecycle, validation, binary images
+  - `tests/api_keys_test.rs` (8 tests): API key CRUD, master key auth, deactivation
+
+- **Migration Test** (1 test):
+  - `tests/test_migration.rs`: Database schema creation
+
+**Test Dependencies:**
+- `axum-test` - HTTP integration testing with TestServer
+- `tokio-test` - Async test utilities
+- `mockito` - HTTP mocking (for future external API mocks)
+- `tempfile` - Temporary file creation
+- `base64` - Base64 validation in tests
+
+**Key Testing Features:**
+- In-memory SQLite databases (unique per test to avoid conflicts)
+- Full HTTP request/response testing
+- Binary data validation (JPEG signatures)
+- Authentication and authorization testing
+- Error case coverage
 
 ## Security Considerations
 

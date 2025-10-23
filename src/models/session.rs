@@ -6,7 +6,7 @@ use uuid::Uuid;
 pub struct Session {
     pub id: String,
     pub solution: String,
-    pub image_base64: String,
+    pub image_bytes: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
     pub attempt_count: i32,
@@ -19,7 +19,7 @@ pub struct Session {
 impl Session {
     pub fn new(
         solution: String,
-        image_base64: String,
+        image_bytes: Vec<u8>,
         expires_in_seconds: u64,
         difficulty: i32,
         width: i32,
@@ -30,7 +30,7 @@ impl Session {
         Self {
             id: Uuid::new_v4().to_string(),
             solution: solution.to_lowercase(),
-            image_base64,
+            image_bytes,
             created_at: now,
             expires_at: now + expires_in_seconds as i64,
             attempt_count: 0,
