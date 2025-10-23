@@ -43,16 +43,12 @@ impl IntoResponse for AppError {
                 "session_not_found",
                 "Session does not exist or has expired".to_string(),
             ),
-            AppError::InvalidSessionParams(ref msg) => (
-                StatusCode::BAD_REQUEST,
-                "invalid_parameters",
-                msg.clone(),
-            ),
-            AppError::Unauthorized(ref msg) => (
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                msg.clone(),
-            ),
+            AppError::InvalidSessionParams(ref msg) => {
+                (StatusCode::BAD_REQUEST, "invalid_parameters", msg.clone())
+            }
+            AppError::Unauthorized(ref msg) => {
+                (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
+            }
             AppError::CaptchaGeneration(ref msg) => {
                 tracing::error!("CAPTCHA generation error: {}", msg);
                 (

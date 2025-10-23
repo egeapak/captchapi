@@ -63,3 +63,40 @@ impl AuthMiddleware {
         Ok(next.run(request).await)
     }
 }
+
+#[derive(Clone)]
+pub struct MasterKeyMiddleware {
+    pub master_key: String,
+}
+
+impl MasterKeyMiddleware {
+    pub fn new(master_key: String) -> Self {
+        Self { master_key }
+    }
+
+    pub async fn authenticate(
+        State(middleware): State<MasterKeyMiddleware>,
+        request: Request,
+        next: Next,
+    ) -> Result<Response, AppError> {
+        // Extract Authorization header
+        let auth_header = request
+            .headers()
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .ok_or_else(|| AppError::Unauthorized("Missing authorization header".to_string()))?;
+
+        // Check for Bearer token
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".to_string()))?;
+
+        // Validate master key
+        if token != middleware.master_key {
+            return Err(AppError::Unauthorized("Invalid master key".to_string()));
+        }
+
+        // Continue with the request
+        Ok(next.run(request).await)
+    }
+}

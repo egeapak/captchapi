@@ -162,4 +162,87 @@ impl StorageService {
 
         Ok(())
     }
+
+    pub async fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT key_hash, description, created_at, last_used_at, is_active
+            FROM api_keys
+            ORDER BY created_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| ApiKey {
+                key_hash: r.get("key_hash"),
+                description: r.get("description"),
+                created_at: r.get("created_at"),
+                last_used_at: r.get("last_used_at"),
+                is_active: r.get::<i32, _>("is_active") == 1,
+            })
+            .collect())
+    }
+
+    pub async fn update_api_key(
+        &self,
+        key_hash: &str,
+        is_active: Option<bool>,
+        description: Option<String>,
+    ) -> Result<bool> {
+        // Build dynamic query based on what fields are being updated
+        let mut query_parts = Vec::new();
+        let mut had_update = false;
+
+        if is_active.is_some() {
+            query_parts.push("is_active = ?");
+            had_update = true;
+        }
+
+        if description.is_some() {
+            query_parts.push("description = ?");
+            had_update = true;
+        }
+
+        if !had_update {
+            return Ok(false);
+        }
+
+        let query_str = format!(
+            "UPDATE api_keys SET {} WHERE key_hash = ?",
+            query_parts.join(", ")
+        );
+
+        let mut query = sqlx::query(&query_str);
+
+        if let Some(active) = is_active {
+            query = query.bind(if active { 1 } else { 0 });
+        }
+
+        if let Some(desc) = description {
+            query = query.bind(desc);
+        }
+
+        query = query.bind(key_hash);
+
+        let result = query.execute(&self.pool).await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn delete_api_key(&self, key_hash: &str) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM api_keys
+            WHERE key_hash = ?
+            "#,
+        )
+        .bind(key_hash)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
 }

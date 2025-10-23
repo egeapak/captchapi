@@ -30,3 +30,43 @@ impl ApiKey {
             .and_then(|ts| DateTime::from_timestamp(ts, 0))
     }
 }
+
+#[derive(Debug, Deserialize)]
+pub struct CreateApiKeyRequest {
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateApiKeyResponse {
+    pub api_key: String,
+    pub key_hash: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeyInfo {
+    pub key_hash: String,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub is_active: bool,
+}
+
+impl From<ApiKey> for ApiKeyInfo {
+    fn from(key: ApiKey) -> Self {
+        Self {
+            key_hash: key.key_hash.clone(),
+            description: key.description.clone(),
+            created_at: key.created_at_datetime(),
+            last_used_at: key.last_used_at_datetime(),
+            is_active: key.is_active,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateApiKeyRequest {
+    pub is_active: Option<bool>,
+    pub description: Option<String>,
+}

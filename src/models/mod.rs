@@ -1,9 +1,10 @@
-pub mod session;
 pub mod api_key;
+pub mod session;
 
-pub use session::{
-    Session, CreateSessionRequest, CreateSessionResponse,
-    ValidateSessionRequest, ValidateSessionResponse,
-    GetImageResponse
+pub use api_key::{
+    ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
 };
-pub use api_key::ApiKey;
+pub use session::{
+    CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
+    ValidateSessionResponse,
+};

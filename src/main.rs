@@ -7,9 +7,10 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::AuthMiddleware;
-use crate::routes::{health_check, sessions_routes};
+use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
+use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
+use crate::routes::{api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, StorageService};
 use crate::tasks::start_cleanup_task;
 use axum::{routing::get, Router};
@@ -34,7 +35,11 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env().map_err(|e| anyhow::anyhow!(e))?);
 
     tracing::info!("Starting CaptchAPI server");
-    tracing::info!("Server configuration: {}:{}", config.server_host, config.server_port);
+    tracing::info!(
+        "Server configuration: {}:{}",
+        config.server_host,
+        config.server_port
+    );
 
     // Create data directory if it doesn't exist
     if config.database_url.starts_with("sqlite:") {
@@ -67,10 +72,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Start cleanup task
     start_cleanup_task(storage.clone(), config.cleanup_interval_seconds);
-    tracing::info!("Background cleanup task started (interval: {}s)", config.cleanup_interval_seconds);
+    tracing::info!(
+        "Background cleanup task started (interval: {}s)",
+        config.cleanup_interval_seconds
+    );
 
     // Create middleware
     let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone());
+    let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
 
     // Create application state
     let sessions_state = SessionsState {
@@ -79,15 +88,26 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
     };
 
+    let api_keys_state = ApiKeysState {
+        storage: storage.clone(),
+        auth_service: auth_service.clone(),
+    };
+
     // Build router
     let app = Router::new()
         .route("/health", get(health_check))
-        .nest("/api/v1/sessions", sessions_routes(sessions_state, auth_middleware))
+        .nest(
+            "/api/v1/sessions",
+            sessions_routes(sessions_state, auth_middleware),
+        )
+        .nest(
+            "/api/v1/api-keys",
+            api_keys_routes(api_keys_state, master_middleware),
+        )
         .layer(TraceLayer::new_for_http());
 
     // Start server
-    let listener = tokio::net::TcpListener::bind(config.server_address())
-        .await?;
+    let listener = tokio::net::TcpListener::bind(config.server_address()).await?;
 
     tracing::info!("Server listening on {}", config.server_address());
 

@@ -6,6 +6,7 @@ pub struct Config {
     pub server_port: u16,
     pub database_url: String,
     pub api_key_salt: String,
+    pub master_api_key: String,
     pub default_session_ttl_seconds: u64,
     pub max_session_ttl_seconds: u64,
     pub max_validation_attempts: i32,
@@ -15,16 +16,15 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         Ok(Config {
-            server_host: env::var("SERVER_HOST")
-                .unwrap_or_else(|_| "127.0.0.1".to_string()),
+            server_host: env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             server_port: env::var("SERVER_PORT")
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .map_err(|_| "Invalid SERVER_PORT")?,
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:./data/captchapi.db".to_string()),
-            api_key_salt: env::var("API_KEY_SALT")
-                .map_err(|_| "API_KEY_SALT must be set")?,
+            api_key_salt: env::var("API_KEY_SALT").map_err(|_| "API_KEY_SALT must be set")?,
+            master_api_key: env::var("MASTER_API_KEY").map_err(|_| "MASTER_API_KEY must be set")?,
             default_session_ttl_seconds: env::var("DEFAULT_SESSION_TTL_SECONDS")
                 .unwrap_or_else(|_| "300".to_string())
                 .parse()

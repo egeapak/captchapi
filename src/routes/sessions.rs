@@ -2,8 +2,8 @@ use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::middleware::AuthMiddleware;
 use crate::models::{
-    CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session,
-    ValidateSessionRequest, ValidateSessionResponse,
+    CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
+    ValidateSessionResponse,
 };
 use crate::services::{CaptchaService, StorageService};
 use axum::{
@@ -21,10 +21,7 @@ pub struct SessionsState {
     pub config: Arc<Config>,
 }
 
-pub fn sessions_routes(
-    state: SessionsState,
-    auth_middleware: AuthMiddleware,
-) -> Router {
+pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
     Router::new()
         .route("/", post(create_session))
         .route("/:id/validate", post(validate_session))
@@ -66,12 +63,21 @@ async fn create_session(
     let compression = 40; // Fixed compression value
 
     // Generate CAPTCHA
-    let (text, image_base64) = state
-        .captcha
-        .generate(req.text, difficulty, width, height, dark_mode, compression)?;
+    let (text, image_base64) =
+        state
+            .captcha
+            .generate(req.text, difficulty, width, height, dark_mode, compression)?;
 
     // Create session
-    let session = Session::new(text, image_base64, expires_in, difficulty, width, height, dark_mode);
+    let session = Session::new(
+        text,
+        image_base64,
+        expires_in,
+        difficulty,
+        width,
+        height,
+        dark_mode,
+    );
 
     // Save to database
     state.storage.create_session(&session).await?;
