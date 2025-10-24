@@ -174,27 +174,53 @@ cargo run  # Migrations run automatically on startup
 
 ### Code Quality Standards
 
-**IMPORTANT**: After **EVERY** code change, you **MUST** run:
+**IMPORTANT**: After **EVERY** code change, you **MUST** run these steps **IN ORDER**:
 
+#### Step 1: Format Code
 ```bash
-# 1. Format code
 cargo fmt
+```
 
-# 2. Run linter
+#### Step 2: Run Linter
+```bash
 cargo clippy
+```
 
-# 3. Check compilation
+#### Step 3: Check Compilation
+```bash
 cargo check
 ```
+
+#### Step 4: Run Rust Tests
+```bash
+cargo test
+```
+
+#### Step 5: Run API Tests
+**Note:** Requires server to be running first.
+
+```bash
+# Terminal 1: Start server
+cargo run
+
+# Terminal 2: Run API tests
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+**All five steps must pass with no errors before committing.**
 
 These steps ensure:
 - ✅ Consistent code formatting
 - ✅ No common mistakes or anti-patterns
 - ✅ Code compiles successfully
+- ✅ All unit and integration tests pass
+- ✅ HTTP API behaves correctly
 
 ### Testing
 
 For comprehensive testing documentation, see `.claude/docs/TESTING.md`
+
+#### Rust Tests
 
 **Quick Start:**
 ```bash
@@ -210,10 +236,48 @@ cargo test --test sessions_test   # Integration tests
 - Authentication and authorization flows
 - Complete user journey testing
 
+#### API Tests (Bruno)
+
+**Prerequisites:** Server must be running.
+
+**Quick Start:**
+```bash
+# Terminal 1: Start server
+cargo run
+
+# Terminal 2: Run tests
+# Quick happy path (6 requests, 16 tests)
+./.bruno/Tests/Scripts/test-bruno.sh
+
+# Comprehensive suite (18 requests, 38 tests)
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+**API Test Coverage:**
+- 38 total tests across 18 requests
+- All 10 endpoints (health, API keys, sessions)
+- Success scenarios + failure scenarios
+- Authentication and authorization
+- Error message formatting
+- HTTP status codes and headers
+
+#### Complete Test Workflow
+
+**Run all tests (with server):**
+```bash
+# Terminal 1: Start server
+cargo run
+
+# Terminal 2: Run all tests
+cargo test
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
 The testing documentation includes:
 - Detailed test structure and organization
 - How to write new tests
 - Test utilities and helpers (TestApp)
+- Bruno API test organization
 - Debugging failed tests
 - Performance benchmarking
 - Best practices and patterns
@@ -365,15 +429,46 @@ SERVER_PORT=8080 cargo run
 
 ## Contributing
 
-When making changes:
+When making changes, follow this workflow:
 
-1. ✅ Update relevant documentation (PLAN.md, PROGRESS.md, this file)
-2. ✅ Run `cargo fmt` to format code
-3. ✅ Run `cargo clippy` to check for issues
-4. ✅ Run `cargo check` to verify compilation
-5. ✅ Test your changes
-6. ✅ Update PROGRESS.md with completed tasks
-7. ✅ Commit with descriptive messages
+### 1. Write Tests First
+- ✅ Write Rust unit tests for new functionality
+- ✅ Write Rust integration tests for HTTP endpoints
+- ✅ Write Bruno API tests for new endpoints (in `.bruno/Tests/`)
+- ✅ Add Bruno core endpoints for normal usage (in `.bruno/`)
+
+### 2. Implement Changes
+- ✅ Write the actual code
+- ✅ Update relevant documentation (PLAN.md, PROGRESS.md, this file)
+
+### 3. Verify Quality (Run IN ORDER)
+- ✅ Step 1: Run `cargo fmt` to format code
+- ✅ Step 2: Run `cargo clippy` to check for issues
+- ✅ Step 3: Run `cargo check` to verify compilation
+- ✅ Step 4: Run `cargo test` to verify Rust tests pass
+- ✅ Step 5: Run `./.bruno/Tests/Scripts/test-bruno-full.sh` to verify API tests (requires running server)
+
+### 4. Finalize
+- ✅ Update PROGRESS.md with completed tasks
+- ✅ Commit with descriptive messages
+
+**CRITICAL REQUIREMENTS:**
+
+1. **All 5 verification steps must pass** before committing
+2. **Both test suites are mandatory** - Changes may pass Rust tests but break the HTTP API
+3. **Write tests BEFORE implementing features** - Test-driven development
+4. **Update BOTH test suites** when making changes:
+   - Rust tests (unit + integration)
+   - API tests (Bruno collection)
+5. **Server must be running** for API tests (Step 5)
+
+### Test Coverage for New Features
+
+Every new endpoint MUST have:
+- ✅ Rust integration tests (success + failure cases)
+- ✅ Bruno test scenarios (in `.bruno/Tests/`)
+- ✅ Bruno core endpoint (in `.bruno/` root)
+- ✅ Documentation in relevant files
 
 ## License
 

@@ -1,0 +1,23 @@
+meta {
+  name: List API Keys
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/api/v1/api-keys
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return array", function() {
+    expect(res.body).to.be.an("array");
+  });
+}

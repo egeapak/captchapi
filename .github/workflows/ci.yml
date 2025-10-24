@@ -54,6 +54,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    needs: [format, clippy]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -72,6 +73,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -100,10 +102,106 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          coverage=$(cargo llvm-cov --all-features --workspace --summary-only | grep "TOTAL" | awk '{print $4}' | sed 's/%//')
-          echo "Coverage: ${coverage}%"
+          # Extract coverage from lcov.info instead of running cargo llvm-cov again
+          total_lines=$(grep -E '^LF:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
+          covered_lines=$(grep -E '^LH:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
+          coverage=$(awk "BEGIN {printf \"%.2f\", ($covered_lines / $total_lines) * 100}")
+          echo "Coverage: ${coverage}% (${covered_lines}/${total_lines} lines)"
           if (( $(echo "$coverage < 85" | bc -l) )); then
             echo "❌ Coverage ${coverage}% is below threshold (85%)"
             exit 1
           fi
           echo "✅ Coverage ${coverage}% meets threshold"
+
+  api-tests:
+    name: API Tests
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          SERVER_HOST=127.0.0.1
+          SERVER_PORT=3000
+          DATABASE_URL=sqlite:./data/captchapi.db
+          API_KEY_SALT=ci-test-salt-do-not-use-in-production
+          MASTER_API_KEY=ci-test-master-key-do-not-use-in-production
+          DEFAULT_SESSION_TTL_SECONDS=300
+          MAX_SESSION_TTL_SECONDS=3600
+          MAX_VALIDATION_ATTEMPTS=3
+          CLEANUP_INTERVAL_SECONDS=60
+          EOF
+
+      - name: Build project
+        run: cargo build --release
+
+      - name: Start server
+        run: |
+          cargo run --release &
+          echo $! > server.pid
+
+      - name: Wait for server to be ready
+        run: |
+          echo "Waiting for server to start..."
+          max_attempts=30
+          attempt=0
+          until curl -f http://127.0.0.1:3000/health > /dev/null 2>&1; do
+            attempt=$((attempt + 1))
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Server failed to start after $max_attempts attempts"
+              exit 1
+            fi
+            echo "Attempt $attempt/$max_attempts: Server not ready yet..."
+            sleep 2
+          done
+          echo "Server is ready!"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Cache global npm packages
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-global-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-npm-global-
+
+      - name: Install Bruno CLI
+        run: npm install -g @usebruno/cli
+
+      - name: Run API tests
+        env:
+          BRUNO_ENV: ci
+        run: ./.bruno/Tests/Scripts/test-bruno-full.sh
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill $(cat server.pid) || true
+            rm server.pid
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-results
+          path: |
+            .bruno/Tests/
+            *.log

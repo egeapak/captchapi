@@ -1,0 +1,19 @@
+meta {
+  name: Delete Session
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+}
+
+tests {
+  test("should return 204", function() {
+    expect(res.status).to.equal(204);
+  });
+}

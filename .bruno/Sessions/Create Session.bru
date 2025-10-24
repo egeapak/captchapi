@@ -1,0 +1,44 @@
+meta {
+  name: Create Session
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "expires_in_seconds": 300,
+    "difficulty": 5,
+    "width": 220,
+    "height": 120,
+    "dark_mode": false
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("session_id", res.body.session_id);
+  }
+}
+
+tests {
+  test("should return 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("should return session_id", function() {
+    expect(res.body.session_id).to.be.a("string");
+  });
+
+  test("should have expires_at", function() {
+    expect(res.body.expires_at).to.be.a("string");
+  });
+}

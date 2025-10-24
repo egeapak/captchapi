@@ -1,0 +1,27 @@
+meta {
+  name: Validate Session - Session Deleted
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/validate
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "solution": "any-answer"
+  }
+}
+
+tests {
+  test("should return 200 with valid false (session deleted after max attempts)", function() {
+    expect(res.status).to.equal(200);
+    expect(res.body.valid).to.equal(false);
+  });
+}

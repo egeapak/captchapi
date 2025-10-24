@@ -1,0 +1,34 @@
+meta {
+  name: Validate Session
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/validate
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "solution": "YOUR_SOLUTION_HERE"
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return valid field", function() {
+    expect(res.body.valid).to.be.a("boolean");
+  });
+
+  test("should return session_id", function() {
+    expect(res.body.session_id).to.be.a("string");
+  });
+}

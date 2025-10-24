@@ -1,0 +1,30 @@
+meta {
+  name: Validate Session - Max Attempts
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/validate
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "solution": "wrong-answer-456"
+  }
+}
+
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return valid as false", function() {
+    expect(res.body.valid).to.equal(false);
+  });
+}

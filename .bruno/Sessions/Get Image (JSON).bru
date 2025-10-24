@@ -1,0 +1,23 @@
+meta {
+  name: Get Image (JSON)
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/image
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return base64 image", function() {
+    expect(res.body.image).to.include("data:image/jpeg;base64,");
+  });
+
+  test("should have expires_at", function() {
+    expect(res.body.expires_at).to.be.a("string");
+  });
+}

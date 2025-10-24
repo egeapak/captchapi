@@ -1,0 +1,27 @@
+meta {
+  name: Update API Key (Test)
+  type: http
+  seq: 6
+}
+
+put {
+  url: {{base_url}}/api/v1/api-keys/{{test_key_hash}}
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "is_active": true,
+    "description": "Updated API Key"
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+}

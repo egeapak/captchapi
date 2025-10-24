@@ -1,0 +1,5 @@
+# Ignore environment-specific values
+environments/*.bru
+!environments/local.bru
+!environments/production.bru
+!environments/ci.bru
