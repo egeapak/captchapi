@@ -79,3 +79,10 @@ ignore_tags = ""
 topo_order = false
 # sort the commits inside sections by oldest/newest order
 sort_commits = "oldest"
+
+[remote.github]
+# GitHub remote configuration
+# owner and repo can be overridden with GITHUB_REPO env variable
+owner = "egeapak"
+repo = "captchapi"
+# token can be overridden with GITHUB_TOKEN env variable

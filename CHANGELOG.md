@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **build**: Create release pipeline, add release script (#3)
 
+- Track Cargo.lock for reproducible builds
+
 
 ### Testing
 
