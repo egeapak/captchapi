@@ -78,3 +78,122 @@ impl IntoResponse for AppError {
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_session_not_found_status_code() {
+        let error = AppError::SessionNotFound;
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_unauthorized_status_code() {
+        let error = AppError::Unauthorized("Invalid key".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_invalid_params_status_code() {
+        let error = AppError::InvalidSessionParams("Bad TTL".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_database_error_status_code() {
+        let error = AppError::Database(sqlx::Error::RowNotFound);
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_captcha_generation_status_code() {
+        let error = AppError::CaptchaGeneration("Test error".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_internal_error_status_code() {
+        let error = AppError::Internal(anyhow::anyhow!("Test error"));
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_session_not_found_error_code() {
+        let error = AppError::SessionNotFound;
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "session_not_found");
+        assert_eq!(body["message"], "Session does not exist or has expired");
+    }
+
+    #[test]
+    fn test_unauthorized_error_code() {
+        let error = AppError::Unauthorized("Invalid API key".to_string());
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "unauthorized");
+        assert_eq!(body["message"], "Invalid API key");
+    }
+
+    #[test]
+    fn test_invalid_params_error_code() {
+        let error = AppError::InvalidSessionParams("TTL exceeds maximum".to_string());
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "invalid_parameters");
+        assert_eq!(body["message"], "TTL exceeds maximum");
+    }
+
+    #[test]
+    fn test_database_error_returns_generic_message() {
+        let error = AppError::Database(sqlx::Error::RowNotFound);
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "database_error");
+        assert_eq!(body["message"], "An internal database error occurred");
+        // Should not expose internal SQL details
+        assert!(!body["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("sql"));
+    }
+
+    #[test]
+    fn test_internal_error_returns_generic_message() {
+        let error = AppError::Internal(anyhow::anyhow!("Secret internal error"));
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "internal_error");
+        assert_eq!(body["message"], "An internal error occurred");
+        // Should not expose internal details
+        assert!(!body["message"].as_str().unwrap().contains("Secret"));
+    }
+
+    // Helper function to extract JSON body from response
+    fn extract_body_json(response: Response) -> serde_json::Value {
+        use axum::body::to_bytes;
+
+        let (_parts, body) = response.into_parts();
+        let body_bytes = tokio_test::block_on(async {
+            to_bytes(body, usize::MAX)
+                .await
+                .expect("Failed to read body")
+        });
+
+        serde_json::from_slice(&body_bytes).expect("Failed to parse JSON")
+    }
+}

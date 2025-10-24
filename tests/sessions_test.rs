@@ -293,3 +293,270 @@ async fn test_get_binary_image() {
         "JPEG should have substantial data"
     );
 }
+
+#[tokio::test]
+async fn test_create_session_max_ttl() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session with max TTL (3600 seconds)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "expires_in_seconds": 3600
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_create_session_exceeds_max_ttl() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Try to create session with TTL exceeding max (3601 > 3600)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "expires_in_seconds": 3601
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("cannot exceed 3600"));
+}
+
+#[tokio::test]
+async fn test_create_session_difficulty_boundaries() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Test difficulty = 1 (minimum)
+    let response1 = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"difficulty": 1}))
+        .await;
+    response1.assert_status(axum::http::StatusCode::CREATED);
+
+    // Test difficulty = 10 (maximum)
+    let response2 = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"difficulty": 10}))
+        .await;
+    response2.assert_status(axum::http::StatusCode::CREATED);
+
+    // Test difficulty = 0 (below minimum)
+    let response3 = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"difficulty": 0}))
+        .await;
+    response3.assert_status_bad_request();
+
+    // Test difficulty = 11 (above maximum)
+    let response4 = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"difficulty": 11}))
+        .await;
+    response4.assert_status_bad_request();
+}
+
+#[tokio::test]
+async fn test_validation_case_insensitive() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session with mixed case text
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"text": "AbC123"}))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Test lowercase
+    let response1 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "abc123"}))
+        .await;
+    response1.assert_status_ok();
+    let body1: serde_json::Value = response1.json();
+    assert_eq!(body1["valid"], true);
+}
+
+#[tokio::test]
+async fn test_validate_three_failed_attempts_deletes_session() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"text": "CORRECT"}))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // First failed attempt
+    let response1 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "WRONG1"}))
+        .await;
+    let body1: serde_json::Value = response1.json();
+    assert_eq!(body1["valid"], false);
+
+    // Second failed attempt
+    let response2 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "WRONG2"}))
+        .await;
+    let body2: serde_json::Value = response2.json();
+    assert_eq!(body2["valid"], false);
+
+    // Third failed attempt - should delete session
+    let response3 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "WRONG3"}))
+        .await;
+    let body3: serde_json::Value = response3.json();
+    assert_eq!(body3["valid"], false);
+
+    // Fourth attempt - attempt_count is now 3 (>= max), should return valid=false and delete
+    let response4 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "CORRECT"}))
+        .await;
+    response4.assert_status_ok();
+    let body4: serde_json::Value = response4.json();
+    assert_eq!(body4["valid"], false); // Returns false even with correct solution
+
+    // Fifth attempt should get 404 - session is now deleted
+    let response5 = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "CORRECT"}))
+        .await;
+    response5.assert_status_not_found();
+}
+
+#[tokio::test]
+async fn test_binary_image_cache_headers() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session with specific TTL
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"expires_in_seconds": 300}))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Get binary image
+    let image_response = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+
+    // Check cache headers
+    let headers = image_response.headers();
+
+    // ETag should be the session ID
+    let etag = headers.get("etag").unwrap();
+    assert!(etag.to_str().unwrap().contains(session_id));
+
+    // Cache-Control should have max-age
+    let cache_control = headers.get("cache-control").unwrap().to_str().unwrap();
+    assert!(cache_control.contains("public"));
+    assert!(cache_control.contains("max-age"));
+
+    // Extract max-age value
+    let max_age_str = cache_control
+        .split("max-age=")
+        .nth(1)
+        .unwrap()
+        .split(',')
+        .next()
+        .unwrap();
+    let max_age: i64 = max_age_str.parse().unwrap();
+
+    // Should be roughly 300 seconds (allow some drift)
+    assert!((295..=300).contains(&max_age), "max-age should be ~300s");
+
+    // Expires header should be present
+    assert!(headers.get("expires").is_some());
+}
+
+#[tokio::test]
+async fn test_create_session_with_custom_dimensions() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "width": 300,
+            "height": 150,
+            "dark_mode": true
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_delete_nonexistent_session() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .delete("/api/v1/sessions/nonexistent-id")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .await;
+
+    response.assert_status_not_found();
+}
+
+#[tokio::test]
+async fn test_validate_nonexistent_session() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions/nonexistent-id/validate")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": "TEST"}))
+        .await;
+
+    response.assert_status_not_found();
+}
