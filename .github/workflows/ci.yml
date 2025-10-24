@@ -102,8 +102,11 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          coverage=$(cargo llvm-cov --all-features --workspace --summary-only | grep "TOTAL" | awk '{print $4}' | sed 's/%//')
-          echo "Coverage: ${coverage}%"
+          # Extract coverage from lcov.info instead of running cargo llvm-cov again
+          total_lines=$(grep -E '^LF:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
+          covered_lines=$(grep -E '^LH:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
+          coverage=$(awk "BEGIN {printf \"%.2f\", ($covered_lines / $total_lines) * 100}")
+          echo "Coverage: ${coverage}% (${covered_lines}/${total_lines} lines)"
           if (( $(echo "$coverage < 85" | bc -l) )); then
             echo "❌ Coverage ${coverage}% is below threshold (85%)"
             exit 1
