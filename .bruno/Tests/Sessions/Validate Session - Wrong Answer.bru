@@ -1,0 +1,34 @@
+meta {
+  name: Validate Session - Wrong Answer
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/validate
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "solution": "wrong-answer-123"
+  }
+}
+
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return valid as false", function() {
+    expect(res.body.valid).to.equal(false);
+  });
+
+  test("should return session_id", function() {
+    expect(res.body.session_id).to.be.a("string");
+  });
+}

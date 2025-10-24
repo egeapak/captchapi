@@ -1,0 +1,19 @@
+meta {
+  name: Delete API Key (Test)
+  type: http
+  seq: 7
+}
+
+delete {
+  url: {{base_url}}/api/v1/api-keys/{{test_key_hash}}
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 204", function() {
+    expect(res.status).to.equal(204);
+  });
+}

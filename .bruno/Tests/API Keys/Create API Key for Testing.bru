@@ -1,0 +1,36 @@
+meta {
+  name: Create API Key for Testing
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{base_url}}/api/v1/api-keys
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "description": "Key to be updated/deleted"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("test_key_hash", res.body.key_hash);
+  }
+}
+
+tests {
+  test("should return 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("should return key_hash", function() {
+    expect(res.body.key_hash).to.be.a("string");
+  });
+}

@@ -1,0 +1,31 @@
+meta {
+  name: Create Session - Unauthorized
+  type: http
+  seq: 0
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body {
+  {
+    "expires_in_seconds": 300,
+    "difficulty": 5
+  }
+}
+
+tests {
+  test("should return 401 Unauthorized", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

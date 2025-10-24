@@ -738,25 +738,176 @@ async fn test_new_endpoint() {
 
 ## Code Quality Standards
 
-**After EVERY code change, run:**
+**After EVERY code change, you MUST run these steps IN ORDER:**
 
+### Step 1: Format Code
 ```bash
-# 1. Format
 cargo fmt
+```
+Ensures consistent code formatting across the project.
 
-# 2. Lint
+### Step 2: Run Linter
+```bash
 cargo clippy --all-targets
+```
+Catches common mistakes and anti-patterns.
 
-# 3. Test
+### Step 3: Verify Compilation
+```bash
+cargo check
+```
+Ensures code compiles successfully.
+
+### Step 4: Run Rust Tests
+```bash
 cargo test
 ```
+Runs all unit tests (22) and integration tests (17).
 
-**Before every commit:**
+### Step 5: Run API Tests
+**IMPORTANT:** API tests require a running server instance.
+
 ```bash
-cargo fmt && cargo clippy --all-targets && cargo test
+# Terminal 1: Start the server
+cargo run
+
+# Terminal 2: Run API tests
+./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
-All three must pass with no errors.
+Runs comprehensive API test suite (18 requests, 38 tests).
+
+**All five steps must pass with no errors before committing.**
+
+### Why Each Step Matters
+
+- **cargo fmt** - Maintains code consistency
+- **cargo clippy** - Prevents common bugs
+- **cargo check** - Catches compilation errors
+- **cargo test** - Validates internal logic and component interactions
+- **API tests** - Validates the actual HTTP interface clients will use
+
+**CRITICAL:** Changes may pass Rust tests but break the HTTP API. Always run both test suites to ensure:
+- ✅ Internal logic is correct (Rust tests)
+- ✅ HTTP interface works as expected (API tests)
+- ✅ Error responses are properly formatted
+- ✅ Authentication flows work end-to-end
+- ✅ HTTP headers and status codes are correct
+
+---
+
+## Writing and Updating Tests
+
+### CRITICAL: Test-Driven Development
+
+**After EVERY code change, you MUST update BOTH test suites:**
+
+#### When Adding New Features
+
+1. **Write Rust tests first:**
+   ```bash
+   # Add unit tests in src/services/your_service.rs
+   # Add integration tests in tests/your_feature_test.rs
+   cargo test
+   ```
+
+2. **Write API tests:**
+   ```bash
+   # Add new .bru files in .bruno/Tests/
+   # Update test scripts if needed
+   # Run: ./.bruno/Tests/Scripts/test-bruno-full.sh
+   ```
+
+3. **Update core endpoints:**
+   ```bash
+   # Add corresponding .bru files in .bruno/ for normal usage
+   ```
+
+#### When Modifying Existing Features
+
+1. **Update Rust tests:**
+   - Modify existing unit tests to match new behavior
+   - Update integration tests
+   - Add new test cases for edge cases
+   - Run: `cargo test`
+
+2. **Update API tests:**
+   - Update .bru files in `.bruno/Tests/`
+   - Update expected responses
+   - Add new failure scenarios
+   - Run: `./.bruno/Tests/Scripts/test-bruno-full.sh` (with server running)
+
+3. **Update core endpoints:**
+   - Update .bru files in `.bruno/` to match new API
+
+#### When Fixing Bugs
+
+1. **Write regression test first (Rust):**
+   ```rust
+   #[test]
+   fn test_bug_xyz_fixed() {
+       // Test that reproduces the bug
+       // This should FAIL initially
+   }
+   ```
+
+2. **Write API regression test:**
+   ```
+   # Add .bru file that reproduces the bug via HTTP
+   ```
+
+3. **Fix the bug**
+
+4. **Verify both tests now pass:**
+   ```bash
+   cargo test
+   # Then run API tests with server
+   ```
+
+### Test Coverage Requirements
+
+**For every new endpoint, you MUST have:**
+
+✅ **Rust Integration Tests:**
+- Success case (happy path)
+- Authentication failure (401)
+- Invalid parameters (400)
+- Not found scenario (404) if applicable
+
+✅ **Bruno API Tests (in .bruno/Tests/):**
+- Success case with actual HTTP request
+- Unauthorized access test
+- Invalid parameters test
+- Not found test (if applicable)
+
+✅ **Bruno Core Endpoint (in .bruno/):**
+- Clean endpoint for normal usage
+- Manual placeholders
+- Proper documentation
+
+**Example:** Adding a new `GET /api/v1/sessions/:id/stats` endpoint:
+
+```bash
+# 1. Write Rust tests
+tests/sessions_test.rs:
+  - test_get_session_stats_success()
+  - test_get_session_stats_not_found()
+  - test_get_session_stats_unauthorized()
+
+# 2. Write Bruno test scenarios
+.bruno/Tests/Sessions/:
+  - Get Session Stats.bru (success)
+  - Get Session Stats - Not Found.bru
+  - Get Session Stats - Unauthorized.bru
+
+# 3. Add Bruno core endpoint
+.bruno/Sessions/:
+  - Get Session Stats.bru (for normal usage)
+
+# 4. Update test script
+.bruno/Tests/Scripts/test-bruno-full.sh:
+  Add new test files to execution list
+```
 
 ---
 
@@ -764,11 +915,12 @@ All three must pass with no errors.
 
 ### When to Update Tests
 
-- ✅ After adding new endpoints
+- ✅ After adding new endpoints (WRITE TESTS FIRST!)
 - ✅ After changing request/response formats
 - ✅ After modifying database schema
 - ✅ After changing business logic
-- ✅ When fixing bugs (add regression test)
+- ✅ When fixing bugs (add regression test FIRST!)
+- ✅ After security fixes (add security test)
 
 ### Keeping Tests Fast
 
@@ -776,6 +928,98 @@ All three must pass with no errors.
 - Avoid unnecessary setup in each test
 - Share `TestApp` creation pattern
 - Don't test external dependencies (use mocks)
+
+---
+
+## API Tests (Bruno Collection)
+
+In addition to Rust unit and integration tests, the project includes comprehensive API tests using Bruno.
+
+### Overview
+
+**Location**: `.bruno/` directory
+
+**Total API Tests**: 38 tests across 18 requests
+- Core endpoints: 10 requests (normal API usage)
+- Test scenarios: 11 requests (automated testing)
+
+### Running API Tests
+
+**Prerequisites:** Server must be running before running API tests.
+
+```bash
+# Terminal 1: Start the server
+cargo run
+
+# Terminal 2: Run API tests
+# Quick happy path test (6 requests, 16 tests)
+./.bruno/Tests/Scripts/test-bruno.sh
+
+# OR comprehensive test suite (18 requests, 38 tests)
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+**Expected output:**
+```
+📊 Execution Summary
+┌───────────────┬────────────────┐
+│ Status        │     ✓ PASS     │
+│ Requests      │ 18 (18 Passed) │
+│ Tests         │     38/38      │
+│ Duration (ms) │      ~170      │
+└───────────────┴────────────────┘
+```
+
+**Note:** If API tests fail, check that:
+- Server is running on http://127.0.0.1:3000
+- `.env` file has correct `MASTER_API_KEY`
+- Database is accessible (created automatically on startup)
+
+### What API Tests Cover
+
+**Success Scenarios:**
+- ✅ Health check endpoint
+- ✅ API key management (create, list, update, delete)
+- ✅ Session lifecycle (create, retrieve images, validate, delete)
+- ✅ Image formats (JSON base64, binary JPEG)
+- ✅ HTTP headers and caching
+
+**Failure Scenarios:**
+- ❌ Unauthorized access (missing/invalid auth)
+- ❌ Invalid parameters (e.g., difficulty=99)
+- ❌ Not found errors (non-existent resources)
+- ❌ Business logic failures (max attempts, wrong solutions)
+
+### Bruno Test Organization
+
+**Core Collection** (`.bruno/` root):
+- For interactive GUI testing
+- Manual placeholders
+- Clean, simple endpoints
+
+**Test Collection** (`.bruno/Tests/`):
+- For automated CI/CD testing
+- Auto-populated variables
+- Success + failure scenarios
+- Test scripts and documentation
+
+### API Test Documentation
+
+- **`.bruno/README.md`** - Main collection overview
+- **`.bruno/ORGANIZATION.md`** - Organization guide
+- **`.bruno/Tests/README.md`** - Test-specific docs
+- **`.bruno/Tests/Documentation/TEST-SCENARIOS.md`** - All scenarios
+
+### Integration with Development
+
+API tests validate the entire HTTP layer:
+- Request/response formats
+- Authentication flows
+- Error messages
+- HTTP status codes
+- Header correctness
+
+These complement Rust tests by testing the **actual HTTP interface** that clients use.
 
 ---
 

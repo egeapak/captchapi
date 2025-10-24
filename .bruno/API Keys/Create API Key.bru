@@ -1,0 +1,36 @@
+meta {
+  name: Create API Key
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/api/v1/api-keys
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "description": "Test API Key"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setVar("api_key", res.body.api_key);
+  }
+}
+
+tests {
+  test("should return 201", function() {
+    expect(res.status).to.equal(201);
+  });
+
+  test("should return api_key", function() {
+    expect(res.body.api_key).to.be.a("string");
+  });
+}

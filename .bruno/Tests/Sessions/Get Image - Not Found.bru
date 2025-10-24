@@ -1,0 +1,19 @@
+meta {
+  name: Get Image - Not Found
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{base_url}}/api/v1/sessions/nonexistent-session-id/image.jpeg
+}
+
+tests {
+  test("should return 404 Not Found", function() {
+    expect(res.status).to.equal(404);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("session_not_found");
+  });
+}

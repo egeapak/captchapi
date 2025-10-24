@@ -1,0 +1,27 @@
+meta {
+  name: Get Image (Binary)
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/image.jpeg
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should have JPEG content type", function() {
+    expect(res.headers["content-type"]).to.equal("image/jpeg");
+  });
+
+  test("should have Cache-Control header", function() {
+    expect(res.headers["cache-control"]).to.include("public");
+  });
+
+  test("should have ETag header", function() {
+    expect(res.headers["etag"]).to.be.a("string");
+  });
+}
