@@ -54,6 +54,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
+    needs: [format, clippy]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -72,6 +73,7 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
+    needs: test
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

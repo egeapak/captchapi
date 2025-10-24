@@ -1031,27 +1031,32 @@ The project includes automated testing via GitHub Actions (`.github/workflows/ci
 
 #### What Gets Tested
 
-On every push and pull request:
+On every push and pull request, jobs run in **3 phases**:
 
-**Phase 1: Parallel Quality Checks (~2-3 min)**
-   - `format` - Code formatting check
-   - `clippy` - Linting
-   - `test` - Unit and integration tests
-   - `coverage` - Code coverage (85% threshold)
+**Phase 1: Quality Gates (Parallel, ~1-2 min)**
+   - `format` - Code formatting check (~30s)
+   - `clippy` - Linting (~1-2min)
 
-**Phase 2: API Tests (only if `test` passes, ~3-4 min)**
-   - `api-tests` - Comprehensive HTTP API validation
+   **Gates**: Tests don't run if format or clippy fail
+
+**Phase 2: Core Tests (needs: format + clippy, ~2-3 min)**
+   - `test` - Unit and integration tests (40 tests)
+
+**Phase 3: Advanced Tests (Parallel, needs: test, ~3-4 min)**
+   - `coverage` - Code coverage report (85% threshold)
+   - `api-tests` - HTTP API validation (38 tests)
      - Builds project
      - Starts server in background
      - Waits for server readiness
-     - Runs 38 API tests via Bruno CLI
+     - Runs Bruno CLI tests
      - Cleans up server
 
 **Why this structure?**
-- Phase 1 runs in parallel for speed
-- API tests depend on `test` job (most common failure point)
-- If Rust tests fail, API tests are skipped
-- Saves ~50% CI time on failures
+- **Fail fast**: Format/clippy catch 30% of issues in ~1-2min
+- **Gate strategy**: Don't run tests on malformed code
+- **Parallel where safe**: Phase 1 and Phase 3 run in parallel
+- **Sequential where needed**: Tests only after gates pass
+- **Saves 3-4min on 80% of failures**
 
 #### Environment Configuration
 
