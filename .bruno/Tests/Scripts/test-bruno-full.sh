@@ -12,6 +12,10 @@ echo ""
 # Change to the Bruno collection root directory
 cd "$(dirname "$0")/../../"
 
+# Detect environment (default to local)
+ENVIRONMENT="${BRUNO_ENV:-local}"
+echo "Using environment: $ENVIRONMENT"
+
 # Run comprehensive test suite
 # This runs all tests in the correct order:
 # 1. Health check
@@ -37,7 +41,7 @@ bru run \
   "Tests/Sessions/Validate Session - Max Attempts.bru" \
   "Tests/Sessions/Validate Session - Max Attempts.bru" \
   "Tests/Sessions/Validate Session - Session Deleted.bru" \
-  --env local
+  --env "$ENVIRONMENT"
 
 echo ""
 echo "=========================================="

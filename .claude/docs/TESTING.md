@@ -1023,6 +1023,63 @@ These complement Rust tests by testing the **actual HTTP interface** that client
 
 ---
 
+## Continuous Integration
+
+### GitHub Actions Workflow
+
+The project includes automated testing via GitHub Actions (`.github/workflows/ci.yml`).
+
+#### What Gets Tested
+
+On every push and pull request:
+
+**Phase 1: Parallel Quality Checks (~2-3 min)**
+   - `format` - Code formatting check
+   - `clippy` - Linting
+   - `test` - Unit and integration tests
+   - `coverage` - Code coverage (85% threshold)
+
+**Phase 2: API Tests (only if `test` passes, ~3-4 min)**
+   - `api-tests` - Comprehensive HTTP API validation
+     - Builds project
+     - Starts server in background
+     - Waits for server readiness
+     - Runs 38 API tests via Bruno CLI
+     - Cleans up server
+
+**Why this structure?**
+- Phase 1 runs in parallel for speed
+- API tests depend on `test` job (most common failure point)
+- If Rust tests fail, API tests are skipped
+- Saves ~50% CI time on failures
+
+#### Environment Configuration
+
+CI uses a dedicated environment (`.bruno/environments/ci.bru`) with test credentials:
+- Master key: `ci-test-master-key-do-not-use-in-production`
+- Auto-generated API keys during test execution
+
+#### Viewing CI Results
+
+1. Go to **Actions** tab in GitHub
+2. Click on workflow run
+3. View job results and logs
+4. Download artifacts for failed tests
+
+#### Running Tests with CI Environment Locally
+
+```bash
+# Start server
+cargo run
+
+# Run with CI environment
+BRUNO_ENV=ci ./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+See `.github/workflows/README.md` for complete CI/CD documentation.
+
+---
+
 ## Future Test Improvements
 
 ### Potential Additions
