@@ -67,10 +67,14 @@ async fn create_session(
     let compression = state.config.captcha_compression;
 
     // Generate CAPTCHA
-    let (text, image_bytes) =
-        state
-            .captcha
-            .generate(req.text, difficulty, width, height, dark_mode, compression)?;
+    let (text, image_bytes) = state.captcha.generate(
+        req.text,
+        difficulty,
+        width,
+        height,
+        dark_mode,
+        compression.into(),
+    )?;
 
     // Create session
     let session = Session::new(
