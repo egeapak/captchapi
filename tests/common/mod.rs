@@ -76,6 +76,7 @@ impl TestApp {
             max_session_ttl_seconds: 3600,
             max_validation_attempts: 3,
             cleanup_interval_seconds: 60,
+            captcha_compression: 40,
         });
 
         let auth_middleware = AuthMiddleware::new(self.storage.clone(), self.auth_service.clone());
