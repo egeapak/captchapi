@@ -2,6 +2,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Internal struct for SQLite row mapping
+/// SQLite stores booleans as integers (0/1), and all integers as i64
+/// This struct matches the database schema exactly
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct SessionRow {
+    pub id: String,
+    pub solution: String,
+    pub image_bytes: Vec<u8>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub attempt_count: i64, // SQLite INTEGER -> i64
+    pub difficulty: i64,    // SQLite INTEGER -> i64
+    pub width: i64,         // SQLite INTEGER -> i64
+    pub height: i64,        // SQLite INTEGER -> i64
+    pub dark_mode: i64,     // SQLite boolean (0/1)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -9,11 +26,28 @@ pub struct Session {
     pub image_bytes: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
-    pub attempt_count: i32,
-    pub difficulty: i32,
-    pub width: i32,
-    pub height: i32,
+    pub attempt_count: i64,
+    pub difficulty: i64,
+    pub width: i64,
+    pub height: i64,
     pub dark_mode: bool,
+}
+
+impl From<SessionRow> for Session {
+    fn from(row: SessionRow) -> Self {
+        Self {
+            id: row.id,
+            solution: row.solution,
+            image_bytes: row.image_bytes,
+            created_at: row.created_at,
+            expires_at: row.expires_at,
+            attempt_count: row.attempt_count,
+            difficulty: row.difficulty,
+            width: row.width,
+            height: row.height,
+            dark_mode: row.dark_mode != 0,
+        }
+    }
 }
 
 impl Session {
@@ -21,9 +55,9 @@ impl Session {
         solution: String,
         image_bytes: Vec<u8>,
         expires_in_seconds: u64,
-        difficulty: i32,
-        width: i32,
-        height: i32,
+        difficulty: i64,
+        width: i64,
+        height: i64,
         dark_mode: bool,
     ) -> Self {
         let now = Utc::now().timestamp();
@@ -58,9 +92,9 @@ impl Session {
 pub struct CreateSessionRequest {
     pub text: Option<String>,
     pub expires_in_seconds: Option<u64>,
-    pub difficulty: Option<i32>,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
+    pub difficulty: Option<i64>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
     pub dark_mode: Option<bool>,
 }
 

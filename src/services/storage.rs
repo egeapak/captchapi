@@ -1,7 +1,7 @@
 use crate::error::Result;
-use crate::models::{ApiKey, Session};
+use crate::models::{ApiKey, ApiKeyRow, Session, SessionRow};
 use chrono::Utc;
-use sqlx::{sqlite::SqlitePool, Row};
+use sqlx::sqlite::SqlitePool;
 
 #[derive(Clone)]
 pub struct StorageService {
@@ -38,29 +38,29 @@ impl StorageService {
     }
 
     pub async fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
-        let row = sqlx::query(
+        let row = sqlx::query_as!(
+            SessionRow,
             r#"
-            SELECT id, solution, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode
+            SELECT
+                id as "id!",
+                solution as "solution!",
+                image_bytes as "image_bytes!",
+                created_at as "created_at!",
+                expires_at as "expires_at!",
+                attempt_count as "attempt_count!",
+                difficulty as "difficulty!",
+                width as "width!",
+                height as "height!",
+                dark_mode as "dark_mode!"
             FROM sessions
             WHERE id = ?
             "#,
+            session_id
         )
-        .bind(session_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| Session {
-            id: r.get("id"),
-            solution: r.get("solution"),
-            image_bytes: r.get("image_bytes"),
-            created_at: r.get("created_at"),
-            expires_at: r.get("expires_at"),
-            attempt_count: r.get("attempt_count"),
-            difficulty: r.get("difficulty"),
-            width: r.get("width"),
-            height: r.get("height"),
-            dark_mode: r.get::<i32, _>("dark_mode") == 1,
-        }))
+        Ok(row.map(Session::from))
     }
 
     pub async fn increment_attempt_count(&self, session_id: &str) -> Result<()> {
@@ -109,9 +109,15 @@ impl StorageService {
 
     // API Key operations
     pub async fn get_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as!(
+            ApiKeyRow,
             r#"
-            SELECT key_hash, description, created_at, last_used_at, is_active
+            SELECT
+                key_hash as "key_hash!",
+                description,
+                created_at as "created_at!",
+                last_used_at,
+                is_active as "is_active!"
             FROM api_keys
             WHERE key_hash = ? AND is_active = 1
             "#,
@@ -120,19 +126,19 @@ impl StorageService {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| ApiKey {
-            key_hash: r.key_hash,
-            description: r.description,
-            created_at: r.created_at,
-            last_used_at: r.last_used_at,
-            is_active: r.is_active == 1,
-        }))
+        Ok(row.map(ApiKey::from))
     }
 
     pub async fn get_api_key_by_hash(&self, key_hash: &str) -> Result<Option<ApiKey>> {
-        let row = sqlx::query!(
+        let row = sqlx::query_as!(
+            ApiKeyRow,
             r#"
-            SELECT key_hash, description, created_at, last_used_at, is_active
+            SELECT
+                key_hash as "key_hash!",
+                description,
+                created_at as "created_at!",
+                last_used_at,
+                is_active as "is_active!"
             FROM api_keys
             WHERE key_hash = ?
             "#,
@@ -141,13 +147,7 @@ impl StorageService {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| ApiKey {
-            key_hash: r.key_hash,
-            description: r.description,
-            created_at: r.created_at,
-            last_used_at: r.last_used_at,
-            is_active: r.is_active == 1,
-        }))
+        Ok(row.map(ApiKey::from))
     }
 
     pub async fn update_api_key_last_used(&self, key_hash: &str) -> Result<()> {
@@ -168,6 +168,7 @@ impl StorageService {
     }
 
     pub async fn create_api_key(&self, api_key: &ApiKey) -> Result<()> {
+        let is_active = if api_key.is_active { 1 } else { 0 };
         sqlx::query!(
             r#"
             INSERT INTO api_keys (key_hash, description, created_at, is_active)
@@ -176,7 +177,7 @@ impl StorageService {
             api_key.key_hash,
             api_key.description,
             api_key.created_at,
-            if api_key.is_active { 1 } else { 0 }
+            is_active
         )
         .execute(&self.pool)
         .await?;
@@ -185,9 +186,15 @@ impl StorageService {
     }
 
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            ApiKeyRow,
             r#"
-            SELECT key_hash, description, created_at, last_used_at, is_active
+            SELECT
+                key_hash as "key_hash!",
+                description,
+                created_at as "created_at!",
+                last_used_at,
+                is_active as "is_active!"
             FROM api_keys
             ORDER BY created_at DESC
             "#
@@ -195,16 +202,7 @@ impl StorageService {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| ApiKey {
-                key_hash: r.key_hash,
-                description: r.description,
-                created_at: r.created_at,
-                last_used_at: r.last_used_at,
-                is_active: r.is_active == 1,
-            })
-            .collect())
+        Ok(rows.into_iter().map(ApiKey::from).collect())
     }
 
     pub async fn update_api_key(
@@ -218,13 +216,14 @@ impl StorageService {
         let result = match (is_active, &description) {
             // Update both fields
             (Some(active), Some(desc)) => {
+                let is_active_value = if active { 1 } else { 0 };
                 sqlx::query!(
                     r#"
                     UPDATE api_keys
                     SET is_active = ?, description = ?
                     WHERE key_hash = ?
                     "#,
-                    if active { 1 } else { 0 },
+                    is_active_value,
                     desc,
                     key_hash
                 )
@@ -233,13 +232,14 @@ impl StorageService {
             }
             // Update only is_active
             (Some(active), None) => {
+                let is_active_value = if active { 1 } else { 0 };
                 sqlx::query!(
                     r#"
                     UPDATE api_keys
                     SET is_active = ?
                     WHERE key_hash = ?
                     "#,
-                    if active { 1 } else { 0 },
+                    is_active_value,
                     key_hash
                 )
                 .execute(&self.pool)

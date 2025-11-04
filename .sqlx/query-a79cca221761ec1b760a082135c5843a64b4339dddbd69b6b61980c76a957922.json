@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            DELETE FROM api_keys\n            WHERE key_hash = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "a79cca221761ec1b760a082135c5843a64b4339dddbd69b6b61980c76a957922"
+}
