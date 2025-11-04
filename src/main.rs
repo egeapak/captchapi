@@ -13,7 +13,7 @@ use crate::routes::sessions::SessionsState;
 use crate::routes::{api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, StorageService};
 use crate::tasks::start_cleanup_task;
-use axum::{middleware, routing::get, Router};
+use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
             api_keys_routes(api_keys_state, master_middleware),
         )
         .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn(request_id_middleware));
+        .layer(axum_middleware::from_fn(request_id_middleware));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(config.server_address()).await?;
