@@ -28,21 +28,40 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration from environment first (needed for telemetry config)
     dotenvy::dotenv().ok();
 
-    // Initialize OpenTelemetry and get tracer
-    let tracer = init_telemetry()?;
+    // Check if OpenTelemetry is enabled
+    let otel_enabled = crate::telemetry::is_telemetry_enabled();
 
-    // Create OpenTelemetry tracing layer
-    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    // Initialize tracing with conditional OpenTelemetry support
+    if otel_enabled {
+        // Initialize OpenTelemetry and get tracer
+        let tracer = init_telemetry()?;
 
-    // Initialize tracing with OpenTelemetry
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "captchapi=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .with(telemetry_layer)
-        .init();
+        // Create OpenTelemetry tracing layer
+        let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        // Initialize tracing with OpenTelemetry
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "captchapi=debug,tower_http=debug".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .with(telemetry_layer)
+            .init();
+
+        tracing::info!("OpenTelemetry enabled");
+    } else {
+        // Initialize tracing without OpenTelemetry
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "captchapi=debug,tower_http=debug".into()),
+            )
+            .with(tracing_subscriber::fmt::layer())
+            .init();
+
+        tracing::info!("OpenTelemetry disabled");
+    }
 
     let config = Arc::new(Config::from_env().map_err(|e| anyhow::anyhow!(e))?);
 
@@ -136,8 +155,10 @@ async fn main() -> anyhow::Result<()> {
 
     let result = axum::serve(listener, app).await;
 
-    // Shutdown OpenTelemetry gracefully
-    shutdown_telemetry();
+    // Shutdown OpenTelemetry gracefully if it was enabled
+    if otel_enabled {
+        shutdown_telemetry();
+    }
 
     result?;
 

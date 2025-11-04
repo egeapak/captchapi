@@ -1,5 +1,5 @@
-use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::global;
+use opentelemetry::metrics::{Counter, Histogram};
 use std::sync::Arc;
 
 /// Metrics for the CaptchAPI application
@@ -95,4 +95,49 @@ impl Default for Metrics {
 /// Helper to create a shared Metrics instance
 pub fn init_metrics() -> Arc<Metrics> {
     Arc::new(Metrics::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_metrics_new() {
+        let metrics = Metrics::new();
+        // Just ensure we can create metrics without panicking
+        assert!(std::ptr::addr_of!(metrics.sessions_created) as usize > 0);
+    }
+
+    #[test]
+    fn test_metrics_default() {
+        let metrics = Metrics::default();
+        // Ensure default implementation works
+        assert!(std::ptr::addr_of!(metrics.sessions_validated) as usize > 0);
+    }
+
+    #[test]
+    fn test_init_metrics() {
+        let metrics = init_metrics();
+        // Ensure we get an Arc<Metrics>
+        assert_eq!(Arc::strong_count(&metrics), 1);
+    }
+
+    #[test]
+    fn test_metrics_clone() {
+        let metrics1 = init_metrics();
+        let metrics2 = metrics1.clone();
+        // Ensure Arc refcount increases
+        assert_eq!(Arc::strong_count(&metrics1), 2);
+        assert_eq!(Arc::strong_count(&metrics2), 2);
+    }
+
+    #[test]
+    fn test_counter_increment() {
+        let metrics = Metrics::new();
+        // Test that we can increment counters without panicking
+        metrics.sessions_created.add(1, &[]);
+        metrics.sessions_validated.add(1, &[]);
+        metrics.sessions_deleted.add(1, &[]);
+        metrics.api_keys_created.add(1, &[]);
+    }
 }
