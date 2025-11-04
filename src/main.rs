@@ -117,7 +117,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware, rate_limit_middleware),
+            sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
         )
         .nest(
             "/api/v1/api-keys",

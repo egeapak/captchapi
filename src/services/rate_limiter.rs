@@ -86,7 +86,9 @@ impl RateLimiter {
 #[derive(Debug)]
 pub struct RateLimiterStats {
     pub tracked_ips: usize,
+    #[allow(dead_code)]
     pub max_requests: u32,
+    #[allow(dead_code)]
     pub window_seconds: u64,
 }
 

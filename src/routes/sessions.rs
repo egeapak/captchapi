@@ -27,20 +27,26 @@ pub struct SessionsState {
 pub fn sessions_routes(
     state: SessionsState,
     auth_middleware: AuthMiddleware,
-    rate_limit_middleware: RateLimitMiddleware,
+    rate_limit_middleware: Option<RateLimitMiddleware>,
 ) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
         .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
-        ))
-        .route_layer(middleware::from_fn_with_state(
-            rate_limit_middleware,
+        ));
+
+    // Apply rate limiting only if middleware is provided
+    if let Some(rate_limiter) = rate_limit_middleware {
+        router = router.route_layer(middleware::from_fn_with_state(
+            rate_limiter,
             RateLimitMiddleware::check,
-        ))
+        ));
+    }
+
+    router
         .route("/{id}/image", get(get_image))
         .route("/{id}/image.jpeg", get(get_image_binary))
         .with_state(state)
