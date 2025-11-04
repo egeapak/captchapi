@@ -4,8 +4,8 @@ use captchapi::{
     middleware::{AuthMiddleware, MasterKeyMiddleware},
     models::ApiKey,
     routes::{
-        api_keys::ApiKeysState, api_keys_routes, health_check, sessions::SessionsState,
-        sessions_routes,
+        admin::AdminState, admin_routes, api_keys::ApiKeysState, api_keys_routes, health_check,
+        sessions::SessionsState, sessions_routes,
     },
     services::{AuthService, CaptchaService, StorageService},
 };
@@ -80,6 +80,7 @@ impl TestApp {
 
         let auth_middleware = AuthMiddleware::new(self.storage.clone(), self.auth_service.clone());
         let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
+        let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
 
         let sessions_state = SessionsState {
             storage: self.storage.clone(),
@@ -92,6 +93,10 @@ impl TestApp {
             auth_service: self.auth_service.clone(),
         };
 
+        let admin_state = AdminState {
+            storage: self.storage.clone(),
+        };
+
         Router::new()
             .route("/health", axum::routing::get(health_check))
             .nest(
@@ -101,6 +106,10 @@ impl TestApp {
             .nest(
                 "/api/v1/api-keys",
                 api_keys_routes(api_keys_state, master_middleware),
+            )
+            .nest(
+                "/api/v1/admin",
+                admin_routes(admin_state, master_middleware_admin),
             )
             .layer(TraceLayer::new_for_http())
     }
