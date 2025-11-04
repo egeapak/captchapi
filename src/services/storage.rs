@@ -14,6 +14,7 @@ impl StorageService {
     }
 
     // Session operations
+    #[tracing::instrument(skip(self, session), fields(session_id = %session.id))]
     pub async fn create_session(&self, session: &Session) -> Result<()> {
         sqlx::query(
             r#"
@@ -37,6 +38,7 @@ impl StorageService {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(session_id, found))]
     pub async fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let row = sqlx::query(
             r#"
@@ -48,6 +50,9 @@ impl StorageService {
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await?;
+
+        let found = row.is_some();
+        tracing::Span::current().record("found", found);
 
         Ok(row.map(|r| Session {
             id: r.get("id"),
@@ -63,6 +68,7 @@ impl StorageService {
         }))
     }
 
+    #[tracing::instrument(skip(self), fields(session_id))]
     pub async fn increment_attempt_count(&self, session_id: &str) -> Result<()> {
         sqlx::query(
             r#"
@@ -78,6 +84,7 @@ impl StorageService {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(session_id, deleted))]
     pub async fn delete_session(&self, session_id: &str) -> Result<bool> {
         let result = sqlx::query(
             r#"
@@ -89,9 +96,13 @@ impl StorageService {
         .execute(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() > 0)
+        let deleted = result.rows_affected() > 0;
+        tracing::Span::current().record("deleted", deleted);
+
+        Ok(deleted)
     }
 
+    #[tracing::instrument(skip(self), fields(deleted_count))]
     pub async fn delete_expired_sessions(&self) -> Result<u64> {
         let now = Utc::now().timestamp();
         let result = sqlx::query(
@@ -104,10 +115,14 @@ impl StorageService {
         .execute(&self.pool)
         .await?;
 
-        Ok(result.rows_affected())
+        let deleted_count = result.rows_affected();
+        tracing::Span::current().record("deleted_count", deleted_count);
+
+        Ok(deleted_count)
     }
 
     // API Key operations
+    #[tracing::instrument(skip(self), fields(key_hash, found))]
     pub async fn get_api_key(&self, key_hash: &str) -> Result<Option<ApiKey>> {
         let row = sqlx::query(
             r#"
@@ -119,6 +134,9 @@ impl StorageService {
         .bind(key_hash)
         .fetch_optional(&self.pool)
         .await?;
+
+        let found = row.is_some();
+        tracing::Span::current().record("found", found);
 
         Ok(row.map(|r| ApiKey {
             key_hash: r.get("key_hash"),
@@ -150,6 +168,7 @@ impl StorageService {
         }))
     }
 
+    #[tracing::instrument(skip(self), fields(key_hash))]
     pub async fn update_api_key_last_used(&self, key_hash: &str) -> Result<()> {
         let now = Utc::now().timestamp();
         sqlx::query(
@@ -167,6 +186,7 @@ impl StorageService {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, api_key), fields(key_hash = %api_key.key_hash))]
     pub async fn create_api_key(&self, api_key: &ApiKey) -> Result<()> {
         sqlx::query(
             r#"
@@ -184,6 +204,7 @@ impl StorageService {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self), fields(count))]
     pub async fn list_api_keys(&self) -> Result<Vec<ApiKey>> {
         let rows = sqlx::query(
             r#"
@@ -194,6 +215,9 @@ impl StorageService {
         )
         .fetch_all(&self.pool)
         .await?;
+
+        let count = rows.len();
+        tracing::Span::current().record("count", count);
 
         Ok(rows
             .into_iter()
