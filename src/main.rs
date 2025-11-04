@@ -12,7 +12,7 @@ use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
-use crate::tasks::start_cleanup_task;
+use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
@@ -79,11 +79,20 @@ async fn main() -> anyhow::Result<()> {
         config.rate_limit_window_seconds
     );
 
-    // Start cleanup task
+    // Start cleanup tasks
     start_cleanup_task(storage.clone(), config.cleanup_interval_seconds);
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
+    );
+
+    start_rate_limiter_cleanup_task(
+        rate_limiter.clone(),
+        config.rate_limit_cleanup_interval_seconds,
+    );
+    tracing::info!(
+        "Rate limiter cleanup task started (interval: {}s)",
+        config.rate_limit_cleanup_interval_seconds
     );
 
     // Create middleware

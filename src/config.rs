@@ -28,6 +28,7 @@ pub struct Config {
     // Rate limiting
     pub rate_limit_requests_per_minute: u32,
     pub rate_limit_window_seconds: u64,
+    pub rate_limit_cleanup_interval_seconds: u64,
 }
 
 impl Config {
@@ -88,6 +89,13 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .map_err(|_| "Invalid RATE_LIMIT_WINDOW_SECONDS: must be a positive number")?,
+            rate_limit_cleanup_interval_seconds: env
+                .get("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse()
+                .map_err(|_| {
+                    "Invalid RATE_LIMIT_CLEANUP_INTERVAL_SECONDS: must be a positive number"
+                })?,
         })
     }
 
@@ -129,6 +137,7 @@ mod tests {
             self.set("CLEANUP_INTERVAL_SECONDS", "60");
             self.set("RATE_LIMIT_REQUESTS_PER_MINUTE", "60");
             self.set("RATE_LIMIT_WINDOW_SECONDS", "60");
+            self.set("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS", "300");
         }
     }
 
@@ -155,6 +164,7 @@ mod tests {
         assert_eq!(config.cleanup_interval_seconds, 60);
         assert_eq!(config.rate_limit_requests_per_minute, 60);
         assert_eq!(config.rate_limit_window_seconds, 60);
+        assert_eq!(config.rate_limit_cleanup_interval_seconds, 300);
     }
 
     #[test]
