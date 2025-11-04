@@ -21,6 +21,7 @@ pub enum AppError {
     InvalidSessionParams(String),
 
     #[error("Invalid API key parameters: {0}")]
+    #[allow(dead_code)]
     InvalidApiKeyParams(String),
 
     #[error("Unauthorized: {0}")]
