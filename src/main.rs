@@ -1,5 +1,6 @@
 mod config;
 mod error;
+mod metrics;
 mod middleware;
 mod models;
 mod routes;
@@ -8,6 +9,7 @@ mod tasks;
 mod telemetry;
 
 use crate::config::Config;
+use crate::metrics::init_metrics;
 use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
@@ -82,15 +84,19 @@ async fn main() -> anyhow::Result<()> {
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
 
+    // Initialize metrics
+    let metrics = init_metrics();
+    tracing::info!("Metrics initialized");
+
     // Start cleanup task
-    start_cleanup_task(storage.clone(), config.cleanup_interval_seconds);
+    start_cleanup_task(storage.clone(), config.cleanup_interval_seconds, metrics.clone());
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
     );
 
     // Create middleware
-    let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone());
+    let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
 
     // Create application state
@@ -98,11 +104,13 @@ async fn main() -> anyhow::Result<()> {
         storage: storage.clone(),
         captcha,
         config: config.clone(),
+        metrics: metrics.clone(),
     };
 
     let api_keys_state = ApiKeysState {
         storage: storage.clone(),
         auth_service: auth_service.clone(),
+        metrics: metrics.clone(),
     };
 
     // Build router

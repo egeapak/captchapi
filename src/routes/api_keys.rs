@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
 use crate::models::{
     ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
@@ -17,6 +18,7 @@ use std::sync::Arc;
 pub struct ApiKeysState {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
+    pub metrics: Arc<Metrics>,
 }
 
 pub fn api_keys_routes(state: ApiKeysState, master_middleware: MasterKeyMiddleware) -> Router {
@@ -58,6 +60,9 @@ async fn create_api_key(
 
     // Save to database
     state.storage.create_api_key(&api_key_record).await?;
+
+    // Record metrics
+    state.metrics.api_keys_created.add(1, &[]);
 
     tracing::info!(
         "Created API key with hash: {} (description: {:?})",
@@ -133,6 +138,9 @@ async fn delete_api_key(
     tracing::Span::current().record("deleted", deleted);
 
     if deleted {
+        // Record metrics
+        state.metrics.api_keys_deleted.add(1, &[]);
+
         tracing::info!("Deleted API key with hash: {}", key_hash);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {

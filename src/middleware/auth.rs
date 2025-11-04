@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::metrics::Metrics;
 use crate::services::{AuthService, StorageService};
 use axum::{
     extract::{Request, State},
@@ -11,21 +12,27 @@ use std::sync::Arc;
 pub struct AuthMiddleware {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
+    pub metrics: Arc<Metrics>,
 }
 
 impl AuthMiddleware {
-    pub fn new(storage: StorageService, auth_service: Arc<AuthService>) -> Self {
+    pub fn new(storage: StorageService, auth_service: Arc<AuthService>, metrics: Arc<Metrics>) -> Self {
         Self {
             storage,
             auth_service,
+            metrics,
         }
     }
 
+    #[tracing::instrument(skip(middleware, request, next), fields(auth_success))]
     pub async fn authenticate(
         State(middleware): State<AuthMiddleware>,
         request: Request,
         next: Next,
     ) -> Result<Response, AppError> {
+        // Record authentication attempt
+        middleware.metrics.api_key_authentications.add(1, &[]);
+
         // Extract Authorization header
         let auth_header = request
             .headers()
@@ -46,11 +53,17 @@ impl AuthMiddleware {
             .storage
             .get_api_key(&key_hash)
             .await?
-            .ok_or_else(|| AppError::Unauthorized("Invalid API key".to_string()))?;
+            .ok_or_else(|| {
+                tracing::Span::current().record("auth_success", false);
+                AppError::Unauthorized("Invalid API key".to_string())
+            })?;
 
         if !api_key.is_active {
+            tracing::Span::current().record("auth_success", false);
             return Err(AppError::Unauthorized("API key is inactive".to_string()));
         }
+
+        tracing::Span::current().record("auth_success", true);
 
         // Update last used timestamp (fire and forget)
         let storage = middleware.storage.clone();

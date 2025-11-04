@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
+use crate::metrics::Metrics;
 use crate::middleware::AuthMiddleware;
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
@@ -22,6 +23,7 @@ pub struct SessionsState {
     pub storage: StorageService,
     pub captcha: Arc<CaptchaService>,
     pub config: Arc<Config>,
+    pub metrics: Arc<Metrics>,
 }
 
 pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
@@ -96,6 +98,9 @@ async fn create_session(
 
     // Save to database
     state.storage.create_session(&session).await?;
+
+    // Record metrics
+    state.metrics.sessions_created.add(1, &[]);
 
     tracing::info!("Created session: {}", session.id);
 
@@ -241,9 +246,16 @@ async fn validate_session(
     let is_valid = session.solution == req.solution.to_lowercase();
     tracing::Span::current().record("is_valid", is_valid);
 
+    // Record validation attempt
+    state.metrics.session_validation_attempts.add(1, &[]);
+
     if is_valid {
         // Delete session on successful validation
         state.storage.delete_session(&session_id).await?;
+
+        // Record successful validation
+        state.metrics.sessions_validated.add(1, &[]);
+
         tracing::info!("Session {} validated successfully", session_id);
     } else {
         // Increment attempt count on failure
@@ -272,6 +284,9 @@ async fn delete_session(
     tracing::Span::current().record("deleted", deleted);
 
     if deleted {
+        // Record deletion metric
+        state.metrics.sessions_deleted.add(1, &[]);
+
         tracing::info!("Deleted session: {}", session_id);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
