@@ -14,8 +14,15 @@ pub enum AppError {
     #[error("Session not found or expired")]
     SessionNotFound,
 
+    #[error("API key not found")]
+    ApiKeyNotFound,
+
     #[error("Invalid session parameters: {0}")]
     InvalidSessionParams(String),
+
+    #[error("Invalid API key parameters: {0}")]
+    #[allow(dead_code)]
+    InvalidApiKeyParams(String),
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -44,9 +51,19 @@ impl IntoResponse for AppError {
                 "session_not_found",
                 "Session does not exist or has expired".to_string(),
             ),
+            AppError::ApiKeyNotFound => (
+                StatusCode::NOT_FOUND,
+                "api_key_not_found",
+                "API key does not exist".to_string(),
+            ),
             AppError::InvalidSessionParams(ref msg) => {
                 (StatusCode::BAD_REQUEST, "invalid_parameters", msg.clone())
             }
+            AppError::InvalidApiKeyParams(ref msg) => (
+                StatusCode::BAD_REQUEST,
+                "invalid_api_key_parameters",
+                msg.clone(),
+            ),
             AppError::Unauthorized(ref msg) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
             }
@@ -91,6 +108,13 @@ mod tests {
     }
 
     #[test]
+    fn test_api_key_not_found_status_code() {
+        let error = AppError::ApiKeyNotFound;
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
     fn test_unauthorized_status_code() {
         let error = AppError::Unauthorized("Invalid key".to_string());
         let response = error.into_response();
@@ -100,6 +124,13 @@ mod tests {
     #[test]
     fn test_invalid_params_status_code() {
         let error = AppError::InvalidSessionParams("Bad TTL".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_invalid_api_key_params_status_code() {
+        let error = AppError::InvalidApiKeyParams("Description too long".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
@@ -136,6 +167,16 @@ mod tests {
     }
 
     #[test]
+    fn test_api_key_not_found_error_code() {
+        let error = AppError::ApiKeyNotFound;
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "api_key_not_found");
+        assert_eq!(body["message"], "API key does not exist");
+    }
+
+    #[test]
     fn test_unauthorized_error_code() {
         let error = AppError::Unauthorized("Invalid API key".to_string());
         let response = error.into_response();
@@ -153,6 +194,16 @@ mod tests {
 
         assert_eq!(body["error"], "invalid_parameters");
         assert_eq!(body["message"], "TTL exceeds maximum");
+    }
+
+    #[test]
+    fn test_invalid_api_key_params_error_code() {
+        let error = AppError::InvalidApiKeyParams("Description exceeds 255 characters".to_string());
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "invalid_api_key_parameters");
+        assert_eq!(body["message"], "Description exceeds 255 characters");
     }
 
     #[test]

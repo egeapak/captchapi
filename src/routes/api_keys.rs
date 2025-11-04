@@ -89,7 +89,7 @@ async fn update_api_key(
         .await?;
 
     if !updated {
-        return Err(AppError::SessionNotFound); // Reusing this error, could create ApiKeyNotFound
+        return Err(AppError::ApiKeyNotFound);
     }
 
     // Fetch the updated key (use get_api_key_by_hash to get regardless of active status)
@@ -97,7 +97,7 @@ async fn update_api_key(
         .storage
         .get_api_key_by_hash(&key_hash)
         .await?
-        .ok_or(AppError::SessionNotFound)?;
+        .ok_or(AppError::ApiKeyNotFound)?;
 
     tracing::info!("Updated API key with hash: {}", key_hash);
 
@@ -114,6 +114,6 @@ async fn delete_api_key(
         tracing::info!("Deleted API key with hash: {}", key_hash);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
-        Err(AppError::SessionNotFound)
+        Err(AppError::ApiKeyNotFound)
     }
 }
