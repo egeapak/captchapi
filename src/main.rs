@@ -7,13 +7,13 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
+use crate::middleware::{request_id_middleware, AuthMiddleware, MasterKeyMiddleware};
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, StorageService};
 use crate::tasks::start_cleanup_task;
-use axum::{routing::get, Router};
+use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -104,7 +104,8 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/api-keys",
             api_keys_routes(api_keys_state, master_middleware),
         )
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .layer(axum_middleware::from_fn(request_id_middleware));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(config.server_address()).await?;
