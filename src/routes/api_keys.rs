@@ -38,7 +38,7 @@ async fn create_api_key(
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
     // Validate description
-    validate_description(&req.description).map_err(|e| AppError::InvalidApiKeyParams(e))?;
+    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
 
     // Generate a random API key
     let api_key: String = rand::thread_rng()
@@ -87,7 +87,7 @@ async fn update_api_key(
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>> {
     // Validate description if present
-    validate_description(&req.description).map_err(|e| AppError::InvalidApiKeyParams(e))?;
+    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
 
     // Update the API key
     let updated = state
