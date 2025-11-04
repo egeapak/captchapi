@@ -25,6 +25,9 @@ pub struct Config {
     pub max_session_ttl_seconds: u64,
     pub max_validation_attempts: i32,
     pub cleanup_interval_seconds: u64,
+    // Rate limiting
+    pub rate_limit_requests_per_minute: u32,
+    pub rate_limit_window_seconds: u64,
 }
 
 impl Config {
@@ -73,6 +76,18 @@ impl Config {
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()
                 .map_err(|_| "Invalid CLEANUP_INTERVAL_SECONDS: must be a positive number")?,
+            rate_limit_requests_per_minute: env
+                .get("RATE_LIMIT_REQUESTS_PER_MINUTE")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse()
+                .map_err(|_| {
+                    "Invalid RATE_LIMIT_REQUESTS_PER_MINUTE: must be a positive integer"
+                })?,
+            rate_limit_window_seconds: env
+                .get("RATE_LIMIT_WINDOW_SECONDS")
+                .unwrap_or_else(|_| "60".to_string())
+                .parse()
+                .map_err(|_| "Invalid RATE_LIMIT_WINDOW_SECONDS: must be a positive number")?,
         })
     }
 
@@ -112,6 +127,8 @@ mod tests {
             self.set("MAX_SESSION_TTL_SECONDS", "3600");
             self.set("MAX_VALIDATION_ATTEMPTS", "3");
             self.set("CLEANUP_INTERVAL_SECONDS", "60");
+            self.set("RATE_LIMIT_REQUESTS_PER_MINUTE", "60");
+            self.set("RATE_LIMIT_WINDOW_SECONDS", "60");
         }
     }
 
@@ -136,6 +153,8 @@ mod tests {
         assert_eq!(config.max_session_ttl_seconds, 3600);
         assert_eq!(config.max_validation_attempts, 3);
         assert_eq!(config.cleanup_interval_seconds, 60);
+        assert_eq!(config.rate_limit_requests_per_minute, 60);
+        assert_eq!(config.rate_limit_window_seconds, 60);
     }
 
     #[test]

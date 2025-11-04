@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
-use crate::middleware::AuthMiddleware;
+use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
     ValidateSessionResponse,
@@ -24,7 +24,11 @@ pub struct SessionsState {
     pub config: Arc<Config>,
 }
 
-pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
+pub fn sessions_routes(
+    state: SessionsState,
+    auth_middleware: AuthMiddleware,
+    rate_limit_middleware: RateLimitMiddleware,
+) -> Router {
     Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
@@ -32,6 +36,10 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limit_middleware,
+            RateLimitMiddleware::check,
         ))
         .route("/{id}/image", get(get_image))
         .route("/{id}/image.jpeg", get(get_image_binary))

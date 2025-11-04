@@ -7,11 +7,11 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
+use crate::middleware::{AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware};
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
 use crate::tasks::start_cleanup_task;
 use axum::{routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -69,6 +69,15 @@ async fn main() -> anyhow::Result<()> {
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
+    let rate_limiter = RateLimiter::new(
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds,
+    );
+    tracing::info!(
+        "Rate limiter initialized: {} requests per {} seconds",
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds
+    );
 
     // Start cleanup task
     start_cleanup_task(storage.clone(), config.cleanup_interval_seconds);
@@ -80,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
     // Create middleware
     let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter);
 
     // Create application state
     let sessions_state = SessionsState {
@@ -98,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware),
+            sessions_routes(sessions_state, auth_middleware, rate_limit_middleware),
         )
         .nest(
             "/api/v1/api-keys",
