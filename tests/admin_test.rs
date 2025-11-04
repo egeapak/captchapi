@@ -2,7 +2,6 @@ mod common;
 
 use axum::http::StatusCode;
 use axum_test::TestServer;
-use chrono::Utc;
 use common::TestApp;
 use serde_json::json;
 
