@@ -1,5 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::middleware::MasterKeyMiddleware;
+use crate::models::api_key::validate_description;
 use crate::models::{
     ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
 };
@@ -36,6 +37,9 @@ async fn create_api_key(
     State(state): State<ApiKeysState>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
+    // Validate description
+    validate_description(&req.description).map_err(|e| AppError::InvalidApiKeyParams(e))?;
+
     // Generate a random API key
     let api_key: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -82,6 +86,9 @@ async fn update_api_key(
     Path(key_hash): Path<String>,
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>> {
+    // Validate description if present
+    validate_description(&req.description).map_err(|e| AppError::InvalidApiKeyParams(e))?;
+
     // Update the API key
     let updated = state
         .storage
