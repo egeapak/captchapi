@@ -64,7 +64,7 @@ async fn create_session(
     let width = req.width.unwrap_or(220);
     let height = req.height.unwrap_or(120);
     let dark_mode = req.dark_mode.unwrap_or(false);
-    let compression = 40; // Fixed compression value
+    let compression = state.config.captcha_compression;
 
     // Generate CAPTCHA
     let (text, image_bytes) =
