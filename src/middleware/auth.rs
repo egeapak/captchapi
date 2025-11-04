@@ -16,7 +16,11 @@ pub struct AuthMiddleware {
 }
 
 impl AuthMiddleware {
-    pub fn new(storage: StorageService, auth_service: Arc<AuthService>, metrics: Arc<Metrics>) -> Self {
+    pub fn new(
+        storage: StorageService,
+        auth_service: Arc<AuthService>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             storage,
             auth_service,

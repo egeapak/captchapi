@@ -11,15 +11,18 @@ impl CaptchaService {
         Self
     }
 
-    #[tracing::instrument(skip(self), fields(
-        text_length,
-        difficulty,
-        width,
-        height,
-        dark_mode,
-        compression,
-        image_size_bytes
-    ))]
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            text_length,
+            difficulty,
+            width,
+            height,
+            dark_mode,
+            compression,
+            image_size_bytes
+        )
+    )]
     pub fn generate(
         &self,
         text: Option<String>,

@@ -53,7 +53,7 @@ async fn create_api_key(
     let key_hash = state.auth_service.hash_api_key(&api_key);
 
     // Record key_hash in span
-    tracing::Span::current().record("key_hash", &key_hash.as_str());
+    tracing::Span::current().record("key_hash", key_hash.as_str());
 
     // Create the API key record
     let api_key_record = ApiKey::new(key_hash.clone(), req.description.clone());

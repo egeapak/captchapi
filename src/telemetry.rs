@@ -3,7 +3,7 @@ use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
     runtime,
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
+    trace::{RandomIdGenerator, Sampler, Tracer, TracerProvider},
     Resource,
 };
 use std::time::Duration;
@@ -17,11 +17,14 @@ use std::time::Duration;
 /// - OTEL_EXPORTER_OTLP_ENDPOINT: The OTLP endpoint (default: http://localhost:4318)
 /// - OTEL_SERVICE_NAME: Service name for traces (default: captchapi)
 /// - RUST_LOG: Log level filter
-pub fn init_telemetry() -> anyhow::Result<()> {
+///
+/// Returns a Tracer that can be used with tracing-opentelemetry
+pub fn init_telemetry() -> anyhow::Result<Tracer> {
     // Get configuration from environment
-    let otlp_endpoint =
-        std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_else(|_| "http://localhost:4318".to_string());
-    let service_name = std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "captchapi".to_string());
+    let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .unwrap_or_else(|_| "http://localhost:4318".to_string());
+    let service_name =
+        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "captchapi".to_string());
 
     tracing::info!(
         "Initializing OpenTelemetry with endpoint: {}",
@@ -55,12 +58,15 @@ pub fn init_telemetry() -> anyhow::Result<()> {
         .with_sampler(Sampler::AlwaysOn)
         .build();
 
+    // Get a tracer before setting the global provider
+    let tracer = tracer_provider.tracer("captchapi");
+
     // Set as global tracer provider
-    global::set_tracer_provider(tracer_provider.clone());
+    global::set_tracer_provider(tracer_provider);
 
     tracing::info!("OpenTelemetry initialized successfully");
 
-    Ok(())
+    Ok(tracer)
 }
 
 /// Shutdown OpenTelemetry providers

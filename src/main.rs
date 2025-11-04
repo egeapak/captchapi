@@ -18,7 +18,6 @@ use crate::services::{AuthService, CaptchaService, StorageService};
 use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{routing::get, Router};
-use opentelemetry::global;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -29,11 +28,10 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration from environment first (needed for telemetry config)
     dotenvy::dotenv().ok();
 
-    // Initialize OpenTelemetry
-    init_telemetry()?;
+    // Initialize OpenTelemetry and get tracer
+    let tracer = init_telemetry()?;
 
     // Create OpenTelemetry tracing layer
-    let tracer = global::tracer("captchapi");
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     // Initialize tracing with OpenTelemetry
@@ -89,14 +87,19 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Metrics initialized");
 
     // Start cleanup task
-    start_cleanup_task(storage.clone(), config.cleanup_interval_seconds, metrics.clone());
+    start_cleanup_task(
+        storage.clone(),
+        config.cleanup_interval_seconds,
+        metrics.clone(),
+    );
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
     );
 
     // Create middleware
-    let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
+    let auth_middleware =
+        AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
 
     // Create application state

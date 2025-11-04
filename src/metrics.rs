@@ -1,5 +1,5 @@
-use opentelemetry::{global, KeyValue};
-use opentelemetry::metrics::{Counter, Histogram, Meter};
+use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::global;
 use std::sync::Arc;
 
 /// Metrics for the CaptchAPI application
@@ -18,7 +18,10 @@ pub struct Metrics {
     pub api_key_authentications: Counter<u64>,
 
     // Performance metrics
+    // TODO: Add histogram recording for these metrics
+    #[allow(dead_code)]
     pub captcha_generation_duration: Histogram<f64>,
+    #[allow(dead_code)]
     pub request_duration: Histogram<f64>,
 }
 

@@ -94,7 +94,7 @@ async fn create_session(
     );
 
     // Record session_id in the span
-    tracing::Span::current().record("session_id", &session.id.as_str());
+    tracing::Span::current().record("session_id", session.id.as_str());
 
     // Save to database
     state.storage.create_session(&session).await?;
