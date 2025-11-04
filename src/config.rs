@@ -29,6 +29,7 @@ pub struct Config {
     pub rate_limit_requests_per_minute: u32,
     pub rate_limit_window_seconds: u64,
     pub rate_limit_cleanup_interval_seconds: u64,
+    pub captcha_compression: u8,
 }
 
 impl Config {
@@ -96,6 +97,12 @@ impl Config {
                 .map_err(|_| {
                     "Invalid RATE_LIMIT_CLEANUP_INTERVAL_SECONDS: must be a positive number"
                 })?,
+            captcha_compression: env
+                .get("CAPTCHA_COMPRESSION")
+                .unwrap_or_else(|_| "40".to_string())
+                .parse::<u8>()
+                .map_err(|_| "Invalid CAPTCHA_COMPRESSION: must be a number between 1 and 100")?
+                .clamp(1, 100),
         })
     }
 
@@ -138,6 +145,7 @@ mod tests {
             self.set("RATE_LIMIT_REQUESTS_PER_MINUTE", "60");
             self.set("RATE_LIMIT_WINDOW_SECONDS", "60");
             self.set("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS", "300");
+            self.set("CAPTCHA_COMPRESSION", "40");
         }
     }
 
@@ -165,6 +173,7 @@ mod tests {
         assert_eq!(config.rate_limit_requests_per_minute, 60);
         assert_eq!(config.rate_limit_window_seconds, 60);
         assert_eq!(config.rate_limit_cleanup_interval_seconds, 300);
+        assert_eq!(config.captcha_compression, 40);
     }
 
     #[test]
@@ -252,6 +261,7 @@ mod tests {
         assert_eq!(config.max_session_ttl_seconds, 3600); // Default
         assert_eq!(config.max_validation_attempts, 3); // Default
         assert_eq!(config.cleanup_interval_seconds, 60); // Default
+        assert_eq!(config.captcha_compression, 40); // Default
     }
 
     #[test]
@@ -295,5 +305,46 @@ mod tests {
         let config = Config::from_env_provider(&env).unwrap();
         assert_eq!(config.default_session_ttl_seconds, 600);
         assert_eq!(config.max_session_ttl_seconds, 7200);
+    }
+
+    #[test]
+    fn test_config_custom_compression() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("CAPTCHA_COMPRESSION", "75");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.captcha_compression, 75);
+    }
+
+    #[test]
+    fn test_config_compression_clamped_to_max() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("CAPTCHA_COMPRESSION", "150"); // Above max
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.captcha_compression, 100); // Clamped to 100
+    }
+
+    #[test]
+    fn test_config_compression_clamped_to_min() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("CAPTCHA_COMPRESSION", "0"); // Below min
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.captcha_compression, 1); // Clamped to 1
+    }
+
+    #[test]
+    fn test_config_invalid_compression_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("CAPTCHA_COMPRESSION", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid CAPTCHA_COMPRESSION"));
     }
 }

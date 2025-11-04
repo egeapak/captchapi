@@ -79,6 +79,7 @@ impl TestApp {
             rate_limit_requests_per_minute: 60,
             rate_limit_window_seconds: 60,
             rate_limit_cleanup_interval_seconds: 300,
+            captcha_compression: 40,
         });
 
         let auth_middleware = AuthMiddleware::new(self.storage.clone(), self.auth_service.clone());
