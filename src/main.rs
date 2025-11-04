@@ -5,6 +5,7 @@ mod models;
 mod routes;
 mod services;
 mod tasks;
+mod telemetry;
 
 use crate::config::Config;
 use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
@@ -13,7 +14,9 @@ use crate::routes::sessions::SessionsState;
 use crate::routes::{api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, StorageService};
 use crate::tasks::start_cleanup_task;
+use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{routing::get, Router};
+use opentelemetry::global;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -21,17 +24,26 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
+    // Load configuration from environment first (needed for telemetry config)
+    dotenvy::dotenv().ok();
+
+    // Initialize OpenTelemetry
+    init_telemetry()?;
+
+    // Create OpenTelemetry tracing layer
+    let tracer = global::tracer("captchapi");
+    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+    // Initialize tracing with OpenTelemetry
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "captchapi=debug,tower_http=debug".into()),
         )
         .with(tracing_subscriber::fmt::layer())
+        .with(telemetry_layer)
         .init();
 
-    // Load configuration from environment
-    dotenvy::dotenv().ok();
     let config = Arc::new(Config::from_env().map_err(|e| anyhow::anyhow!(e))?);
 
     tracing::info!("Starting CaptchAPI server");
@@ -111,7 +123,12 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Server listening on {}", config.server_address());
 
-    axum::serve(listener, app).await?;
+    let result = axum::serve(listener, app).await;
+
+    // Shutdown OpenTelemetry gracefully
+    shutdown_telemetry();
+
+    result?;
 
     Ok(())
 }
