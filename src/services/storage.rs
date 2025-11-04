@@ -213,42 +213,55 @@ impl StorageService {
         is_active: Option<bool>,
         description: Option<String>,
     ) -> Result<bool> {
-        // Build dynamic query based on what fields are being updated
-        let mut query_parts = Vec::new();
-        let mut had_update = false;
-
-        if is_active.is_some() {
-            query_parts.push("is_active = ?");
-            had_update = true;
-        }
-
-        if description.is_some() {
-            query_parts.push("description = ?");
-            had_update = true;
-        }
-
-        if !had_update {
-            return Ok(false);
-        }
-
-        let query_str = format!(
-            "UPDATE api_keys SET {} WHERE key_hash = ?",
-            query_parts.join(", ")
-        );
-
-        let mut query = sqlx::query(&query_str);
-
-        if let Some(active) = is_active {
-            query = query.bind(if active { 1 } else { 0 });
-        }
-
-        if let Some(desc) = description {
-            query = query.bind(desc);
-        }
-
-        query = query.bind(key_hash);
-
-        let result = query.execute(&self.pool).await?;
+        // Use separate static queries for each update combination
+        // This is safer and more maintainable than dynamic SQL
+        let result = match (is_active, &description) {
+            // Update both fields
+            (Some(active), Some(desc)) => {
+                sqlx::query(
+                    r#"
+                    UPDATE api_keys
+                    SET is_active = ?, description = ?
+                    WHERE key_hash = ?
+                    "#,
+                )
+                .bind(if active { 1 } else { 0 })
+                .bind(desc)
+                .bind(key_hash)
+                .execute(&self.pool)
+                .await?
+            }
+            // Update only is_active
+            (Some(active), None) => {
+                sqlx::query(
+                    r#"
+                    UPDATE api_keys
+                    SET is_active = ?
+                    WHERE key_hash = ?
+                    "#,
+                )
+                .bind(if active { 1 } else { 0 })
+                .bind(key_hash)
+                .execute(&self.pool)
+                .await?
+            }
+            // Update only description
+            (None, Some(desc)) => {
+                sqlx::query(
+                    r#"
+                    UPDATE api_keys
+                    SET description = ?
+                    WHERE key_hash = ?
+                    "#,
+                )
+                .bind(desc)
+                .bind(key_hash)
+                .execute(&self.pool)
+                .await?
+            }
+            // No fields to update
+            (None, None) => return Ok(false),
+        };
 
         Ok(result.rows_affected() > 0)
     }
