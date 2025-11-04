@@ -38,6 +38,14 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
         .with_state(state)
 }
 
+#[tracing::instrument(skip(state, req), fields(
+    difficulty = req.difficulty.unwrap_or(5),
+    width = req.width.unwrap_or(220),
+    height = req.height.unwrap_or(120),
+    dark_mode = req.dark_mode.unwrap_or(false),
+    expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
+    session_id
+))]
 async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
@@ -83,6 +91,9 @@ async fn create_session(
         dark_mode,
     );
 
+    // Record session_id in the span
+    tracing::Span::current().record("session_id", &session.id.as_str());
+
     // Save to database
     state.storage.create_session(&session).await?;
 
@@ -98,6 +109,7 @@ async fn create_session(
     ))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, is_expired))]
 async fn get_image(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -111,10 +123,13 @@ async fn get_image(
 
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         // Delete expired session
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
+
+    tracing::Span::current().record("is_expired", false);
 
     // Convert raw bytes to base64 data URI for JSON response
     let base64_image = base64::Engine::encode(
@@ -129,6 +144,7 @@ async fn get_image(
     }))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, is_expired, image_size_bytes))]
 async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -142,10 +158,14 @@ async fn get_image_binary(
 
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         // Delete expired session
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
+
+    tracing::Span::current().record("is_expired", false);
+    tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
 
     // Calculate cache duration (time until expiration)
     let now = Utc::now().timestamp();
@@ -174,6 +194,13 @@ async fn get_image_binary(
     Ok((headers, session.image_bytes))
 }
 
+#[tracing::instrument(skip(state, req), fields(
+    session_id = %session_id,
+    is_valid,
+    is_expired,
+    attempt_count,
+    max_attempts_reached
+))]
 async fn validate_session(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -186,14 +213,20 @@ async fn validate_session(
         .await?
         .ok_or(AppError::SessionNotFound)?;
 
+    tracing::Span::current().record("attempt_count", session.attempt_count);
+
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
 
+    tracing::Span::current().record("is_expired", false);
+
     // Check attempt count
     if session.attempt_count >= state.config.max_validation_attempts {
+        tracing::Span::current().record("max_attempts_reached", true);
         // Delete session after max attempts
         let _ = state.storage.delete_session(&session_id).await;
         return Ok(Json(ValidateSessionResponse {
@@ -202,8 +235,11 @@ async fn validate_session(
         }));
     }
 
+    tracing::Span::current().record("max_attempts_reached", false);
+
     // Validate solution (case-insensitive)
     let is_valid = session.solution == req.solution.to_lowercase();
+    tracing::Span::current().record("is_valid", is_valid);
 
     if is_valid {
         // Delete session on successful validation
@@ -226,11 +262,14 @@ async fn validate_session(
     }))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, deleted))]
 async fn delete_session(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<axum::http::StatusCode> {
     let deleted = state.storage.delete_session(&session_id).await?;
+
+    tracing::Span::current().record("deleted", deleted);
 
     if deleted {
         tracing::info!("Deleted session: {}", session_id);
