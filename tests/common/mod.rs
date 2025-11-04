@@ -1,6 +1,7 @@
 use axum::Router;
 use captchapi::{
     config::Config,
+    metrics::Metrics,
     middleware::{AuthMiddleware, MasterKeyMiddleware},
     models::ApiKey,
     routes::{
@@ -66,6 +67,7 @@ impl TestApp {
 
     pub fn build_app(&self) -> Router {
         let captcha = Arc::new(CaptchaService::new());
+        let metrics = Arc::new(Metrics::new());
         let config = Arc::new(Config {
             server_host: "127.0.0.1".to_string(),
             server_port: 3000,
@@ -78,18 +80,24 @@ impl TestApp {
             cleanup_interval_seconds: 60,
         });
 
-        let auth_middleware = AuthMiddleware::new(self.storage.clone(), self.auth_service.clone());
+        let auth_middleware = AuthMiddleware::new(
+            self.storage.clone(),
+            self.auth_service.clone(),
+            metrics.clone(),
+        );
         let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
 
         let sessions_state = SessionsState {
             storage: self.storage.clone(),
             captcha,
             config: config.clone(),
+            metrics: metrics.clone(),
         };
 
         let api_keys_state = ApiKeysState {
             storage: self.storage.clone(),
             auth_service: self.auth_service.clone(),
+            metrics: metrics.clone(),
         };
 
         Router::new()
