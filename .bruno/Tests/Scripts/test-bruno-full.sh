@@ -38,7 +38,7 @@ bru run \
   "Tests/Sessions/Create Session - Unauthorized.bru" \
   "Tests/Sessions/Create Session - Invalid Parameters.bru" \
   "Sessions/Create Session.bru" \
-  "Sessions/Get Image (JSON).bru" \
+  "Sessions/Get Session Details.bru" \
   "Sessions/Get Image (Binary).bru" \
   "Tests/Sessions/Get Image - Not Found.bru" \
   "Tests/Sessions/Validate Session - Wrong Answer.bru" \

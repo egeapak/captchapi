@@ -80,39 +80,18 @@ async fn test_complete_session_flow() {
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
 
-    // 2. Get the image (public endpoint)
-    let image_response = server
-        .get(&format!("/api/v1/sessions/{}/image", session_id))
+    // 2. Get session details (public endpoint)
+    let details_response = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
         .await;
 
-    image_response.assert_status_ok();
-    let image_body: serde_json::Value = image_response.json();
-    assert!(image_body.get("image").is_some());
-
-    let image_data_uri = image_body["image"].as_str().unwrap();
-    assert!(
-        image_data_uri.starts_with("data:image/jpeg;base64,"),
-        "Image should be JPEG data URI"
-    );
-
-    // Fully validate the base64 JPEG data
-    let base64_data = image_data_uri
-        .strip_prefix("data:image/jpeg;base64,")
-        .expect("Should have correct data URI prefix");
-
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, base64_data);
-    assert!(
-        decoded.is_ok(),
-        "Should decode valid base64. Error: {:?}",
-        decoded.as_ref().err()
-    );
-
-    let decoded_bytes = decoded.unwrap();
-    let jpeg_signature: [u8; 3] = [255, 216, 255];
-    assert!(
-        decoded_bytes.starts_with(&jpeg_signature),
-        "Should be valid JPEG file"
-    );
+    details_response.assert_status_ok();
+    let details_body: serde_json::Value = details_response.json();
+    assert_eq!(details_body["session_id"], session_id);
+    assert!(details_body.get("created_at").is_some());
+    assert!(details_body.get("expires_at").is_some());
+    assert_eq!(details_body["difficulty"], 5);
+    assert_eq!(details_body["attempt_count"], 0);
 
     // 3. Validate with correct solution
     let validate_response = server
@@ -127,12 +106,12 @@ async fn test_complete_session_flow() {
     let validate_body: serde_json::Value = validate_response.json();
     assert_eq!(validate_body["valid"], true);
 
-    // 4. Try to get the session again (should be deleted)
-    let image_response2 = server
-        .get(&format!("/api/v1/sessions/{}/image", session_id))
+    // 4. Try to get the session details again (should be deleted)
+    let details_response2 = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
         .await;
 
-    image_response2.assert_status_not_found();
+    details_response2.assert_status_not_found();
 }
 
 #[tokio::test]
@@ -167,11 +146,11 @@ async fn test_validate_session_with_wrong_solution() {
     assert_eq!(validate_body["valid"], false);
 
     // Session should still exist
-    let image_response = server
-        .get(&format!("/api/v1/sessions/{}/image", session_id))
+    let details_response = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
         .await;
 
-    image_response.assert_status_ok();
+    details_response.assert_status_ok();
 }
 
 #[tokio::test]
@@ -199,11 +178,11 @@ async fn test_delete_session() {
     delete_response.assert_status(axum::http::StatusCode::NO_CONTENT);
 
     // Session should no longer exist
-    let image_response = server
-        .get(&format!("/api/v1/sessions/{}/image", session_id))
+    let details_response = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
         .await;
 
-    image_response.assert_status_not_found();
+    details_response.assert_status_not_found();
 }
 
 #[tokio::test]
@@ -230,7 +209,7 @@ async fn test_get_nonexistent_session() {
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    let response = server.get("/api/v1/sessions/nonexistent-id/image").await;
+    let response = server.get("/api/v1/sessions/nonexistent-id").await;
 
     response.assert_status_not_found();
 }

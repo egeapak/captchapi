@@ -90,7 +90,7 @@ async fn test_cleanup_endpoint_deletes_expired_sessions() {
 
     // Verify session is gone
     let get_response = server
-        .get(&format!("/api/v1/sessions/{}/image", session_id))
+        .get(&format!("/api/v1/sessions/{}", session_id))
         .await;
 
     get_response.assert_status_not_found();
@@ -205,7 +205,7 @@ async fn test_cleanup_endpoint_preserves_valid_sessions() {
 
     // Verify valid session still exists
     let get_response = server
-        .get(&format!("/api/v1/sessions/{}/image", valid_session_id))
+        .get(&format!("/api/v1/sessions/{}", valid_session_id))
         .await;
 
     get_response.assert_status_ok();
