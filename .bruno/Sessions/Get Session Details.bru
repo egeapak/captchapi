@@ -1,0 +1,31 @@
+meta {
+  name: Get Session Details
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}
+}
+
+docs {
+  # Get Session Details
+
+  Retrieves metadata about a CAPTCHA session (without the image data).
+
+  ## Authentication
+  No authentication required - public endpoint.
+
+  ## Response
+  Returns session metadata including:
+  - session_id
+  - created_at (timestamp)
+  - expires_at (timestamp)
+  - attempt_count (number of failed validation attempts)
+  - difficulty (1-10)
+  - width (pixels)
+  - height (pixels)
+  - dark_mode (boolean)
+
+  To get the actual CAPTCHA image, use the `/{session_id}.jpeg` endpoint.
+}
