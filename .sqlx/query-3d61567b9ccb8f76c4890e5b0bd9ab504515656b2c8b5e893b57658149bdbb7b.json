@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT\n                key_hash as \"key_hash!\",\n                description,\n                created_at as \"created_at!\",\n                last_used_at,\n                is_active as \"is_active!\"\n            FROM api_keys\n            WHERE key_hash = ? AND is_active = 1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "key_hash!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "description",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_used_at",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "is_active!",
+        "ordinal": 4,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "3d61567b9ccb8f76c4890e5b0bd9ab504515656b2c8b5e893b57658149bdbb7b"
+}

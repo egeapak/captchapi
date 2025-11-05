@@ -7,10 +7,11 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::{request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware};
+use crate::middleware::{request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimiterMiddleware};
+use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
-use crate::routes::{api_keys_routes, health_check, sessions_routes};
+use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
 use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
 use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
 use axum::{middleware as axum_middleware, routing::get, Router};
@@ -98,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
     // Create middleware
     let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter);
 
     // Create application state
@@ -112,6 +114,10 @@ async fn main() -> anyhow::Result<()> {
         auth_service: auth_service.clone(),
     };
 
+    let admin_state = AdminState {
+        storage: storage.clone(),
+    };
+
     // Build router
     let app = Router::new()
         .route("/health", get(health_check))
@@ -122,6 +128,10 @@ async fn main() -> anyhow::Result<()> {
         .nest(
             "/api/v1/api-keys",
             api_keys_routes(api_keys_state, master_middleware),
+        )
+        .nest(
+            "/api/v1/admin",
+            admin_routes(admin_state, master_middleware_admin),
         )
         .layer(TraceLayer::new_for_http())
         .layer(axum_middleware::from_fn(request_id_middleware));
