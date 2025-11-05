@@ -1,168 +1,386 @@
 # CaptchAPI
 
-A secure, high-performance REST API for creating, validating, and consuming CAPTCHA challenges. Built with Rust, featuring distroless Docker containers and nonroot security.
+A secure, high-performance REST API for CAPTCHA generation and validation. Built with Rust, featuring async/await architecture, SQLite persistence, and distroless Docker containers.
+
+## Use Cases
+
+**Web Application Protection**
+Protect sign-up forms, login pages, and contact forms from automated bot submissions while maintaining a smooth user experience.
+
+**API Rate Limiting Enhancement**
+Add human verification as an additional layer on top of rate limiting for sensitive endpoints like password resets or account creation.
+
+**Microservices Architecture**
+Deploy as a standalone CAPTCHA service that multiple applications can consume via REST API, centralizing CAPTCHA logic and reducing code duplication.
 
 ## Features
 
-- ✅ **Secure**: Runs as nonroot (UID 65532) in distroless containers
-- ✅ **Fast**: Rust-powered with async/await throughout
-- ✅ **Flexible**: Three persistence modes (transient, volume, bind mount)
-- ✅ **Complete**: Full API key management and session handling
-- ✅ **Production-Ready**: Comprehensive testing, documentation, and deployment options
+**Security First**
+- API key authentication with SHA256 hashing
+- Nonroot Docker containers (UID 65532)
+- Distroless base image with minimal attack surface
+- Automatic session expiration and cleanup
+- Configurable validation attempt limits
+
+**High Performance**
+- Async/await throughout (Tokio + Axum)
+- In-process SQLite (zero network overhead)
+- Connection pooling (max 5 concurrent)
+- Compact Docker image with distroless base
+- Low memory footprint
+
+**Developer Friendly**
+- Full REST API with JSON responses
+- Configurable CAPTCHA difficulty (1-10)
+- Dark mode support
+- Custom dimensions
+- Comprehensive test coverage
+- Complete API documentation
+
+**Production Ready**
+- Three Docker deployment modes (transient, volume, bind mount)
+- Structured logging with tracing
+- Health check endpoint
+- Background cleanup tasks
+- Per-IP rate limiting
 
 ## Quick Start
 
-### Development (Cargo)
+**Prerequisites:**
+- Rust 1.70+ and Cargo
+- SQLite support (usually built-in)
+
+**Development Setup:**
 
 ```bash
-# Copy environment template
+# 1. Clone the repository
+git clone <repository-url>
+cd captchapi
+
+# 2. Copy environment template
 cp .env.example .env
 
-# Run the application
+# 3. Generate secure keys (optional for development)
+# API_KEY_SALT=$(openssl rand -base64 32)
+# MASTER_API_KEY=$(openssl rand -base64 32)
+# Update these values in .env
+
+# 4. Run the application
 cargo run
 
-# Run tests
-cargo test
-```
-
-### Production (Docker)
-
-```bash
-# Navigate to docker directory
-cd docker
-
-# Start with Docker Compose
-docker-compose up -d
-
-# Check health
+# 5. Verify it's running
 curl http://localhost:3000/health
 ```
 
-## Documentation
+The server will start on `http://localhost:3000` with automatic database initialization.
 
-- **[Project Overview](.claude/CLAUDE.md)** - Architecture, development workflow, and project structure
-- **[API Documentation](.claude/docs/API.md)** - Complete endpoint reference and usage examples
-- **[Testing Guide](.claude/docs/TESTING.md)** - Test structure, writing tests, and debugging
-- **[Docker Usage](docker/DOCKER_USAGE.md)** - Docker deployment with all persistence options
-- **[Docker Summary](docker/DOCKER_SUMMARY.md)** - Implementation details and architecture
+## Docker Deployment
 
-## Project Structure
+The `docker/` folder contains multiple deployment configurations optimized for different use cases. All configurations use nonroot containers (UID 65532) with distroless images.
 
-```
-captchapi/
-├── .claude/                    # Project and API documentation
-│   ├── CLAUDE.md              # Project overview
-│   └── docs/
-│       ├── API.md             # API reference
-│       └── TESTING.md         # Testing guide
-├── docker/                     # Docker configuration
-│   ├── Dockerfile             # Multi-stage distroless build
-│   ├── docker-compose.yml     # Default (volume mode)
-│   ├── docker-compose.*.yml   # Alternative configurations
-│   ├── DOCKER_USAGE.md        # Complete Docker guide
-│   └── DOCKER_SUMMARY.md      # Implementation details
-├── migrations/                 # SQLx database migrations
-├── src/                        # Application source code
-│   ├── main.rs                # Entry point
-│   ├── config.rs              # Environment configuration
-│   ├── error.rs               # Error handling
-│   ├── models/                # Data structures
-│   ├── services/              # Business logic
-│   ├── routes/                # HTTP endpoints
-│   ├── middleware/            # Authentication
-│   └── tasks/                 # Background jobs
-├── tests/                      # Integration tests
-├── Cargo.toml                  # Dependencies
-└── .env.example               # Environment template
-```
+### Available Options
 
-## API Endpoints
-
-### Public
-- `GET /health` - Health check
-- `GET /api/v1/sessions/{id}/image` - Get CAPTCHA (JSON)
-- `GET /api/v1/sessions/{id}/image.jpeg` - Get CAPTCHA (binary)
-
-### Protected (Require API Key)
-- `POST /api/v1/sessions` - Create CAPTCHA session
-- `POST /api/v1/sessions/{id}/validate` - Validate solution
-- `DELETE /api/v1/sessions/{id}` - Delete session
-
-### Admin (Require Master Key)
-- `POST /api/v1/api-keys` - Create API key
-- `GET /api/v1/api-keys` - List API keys
-- `PUT /api/v1/api-keys/{key_hash}` - Update API key
-- `DELETE /api/v1/api-keys/{key_hash}` - Delete API key
-
-## Environment Variables
+**Transient Mode** (`docker-compose.transient.yml`)
+No data persistence. Database lives in container memory and is lost on restart. Perfect for testing and development.
 
 ```bash
-# Server
-SERVER_HOST=127.0.0.1
-SERVER_PORT=3000
-
-# Database
-DATABASE_URL=sqlite:./data/captchapi.db
-
-# Security (CHANGE IN PRODUCTION!)
-API_KEY_SALT=your-random-salt
-MASTER_API_KEY=your-master-key
-
-# CAPTCHA Configuration
-DEFAULT_SESSION_TTL_SECONDS=300
-MAX_SESSION_TTL_SECONDS=3600
-MAX_VALIDATION_ATTEMPTS=3
-
-# Background Tasks
-CLEANUP_INTERVAL_SECONDS=60
+cd docker
+docker-compose -f docker-compose.transient.yml up -d
 ```
 
-## Technology Stack
-
-- **Language**: Rust (Edition 2021)
-- **Web Framework**: Axum 0.8
-- **Database**: SQLite via SQLx 0.8
-- **CAPTCHA**: captcha-rs 0.2.11
-- **Container**: Distroless (nonroot)
-
-## Security
-
-- ✅ Nonroot containers (UID 65532)
-- ✅ Distroless base image (no shell, minimal attack surface)
-- ✅ API key authentication with SHA256 hashing
-- ✅ Automatic session expiration and cleanup
-- ✅ Rate limiting via validation attempts
-- ✅ Final Docker image: 32.9MB
-
-## Development
+**Volume Mode** (`docker-compose.volume.yml` or `docker-compose.yml`)
+Recommended for production. Uses Docker-managed volumes with automatic permission handling via init container. Data persists across restarts.
 
 ```bash
-# Format code
-cargo fmt
-
-# Run linter
-cargo clippy
-
-# Run tests
-cargo test
-
-# Run specific test
-cargo test test_name
-
-# Build release
-cargo build --release
+cd docker
+docker-compose up -d
 ```
 
-## License
+**Bind Mount Mode** (`docker-compose.bindmount.yml`)
+Mounts a host directory. Useful when you need direct access to the database file for backups or inspection. Requires one-time permission setup.
 
-[Specify your license]
+```bash
+cd docker
+mkdir -p ./data
+sudo chown -R 65532:65532 ./data  # Set permissions for nonroot user
+docker-compose -f docker-compose.bindmount.yml up -d
+```
 
-## Contributing
+### Quick Docker Start
 
-See [CLAUDE.md](.claude/CLAUDE.md) for development guidelines and project architecture.
+```bash
+# 1. Navigate to docker directory
+cd docker
+
+# 2. Update environment variables in docker-compose.yml
+# Change API_KEY_SALT and MASTER_API_KEY to secure random values
+
+# 3. Start with volume mode (recommended)
+docker-compose up -d
+
+# 4. Check health
+curl http://localhost:3000/health
+```
+
+For detailed Docker documentation including Kubernetes deployment, troubleshooting, and backup strategies, see `docker/DOCKER_USAGE.md` in the repository.
+
+## Usage Guide
+
+### Complete Workflow
+
+**Step 1: Create an API Key** (one-time setup)
+
+```bash
+curl -X POST http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "description": "Frontend Application"
+  }'
+```
+
+Response:
+```json
+{
+  "api_key": "generated-api-key-value",
+  "key_hash": "hash-value",
+  "description": "Frontend Application",
+  "created_at": "2025-01-15T10:30:00Z"
+}
+```
+
+Save the `api_key` value - it's only shown once.
 
 ---
 
-**Version**: 0.1.0
+**Step 2: Create a CAPTCHA Session**
+
+```bash
+curl -X POST http://localhost:3000/api/v1/sessions \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "difficulty": 5,
+    "expires_in_seconds": 300,
+    "dark_mode": false
+  }'
+```
+
+Response:
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created_at": "2025-01-15T10:35:00Z",
+  "expires_at": "2025-01-15T10:40:00Z"
+}
+```
+
+---
+
+**Step 3: Retrieve the CAPTCHA Image**
+
+**Get session details (metadata only)**
+```bash
+curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000
+```
+
+Response:
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created_at": "2025-01-15T10:35:00Z",
+  "expires_at": "2025-01-15T10:40:00Z",
+  "attempt_count": 0,
+  "difficulty": 5,
+  "width": 220,
+  "height": 120,
+  "dark_mode": false
+}
+```
+
+**Get CAPTCHA image as binary JPEG**
+```bash
+curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg \
+  -o captcha.jpeg
+```
+
+Use this URL directly in HTML:
+```html
+<img src="http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg" />
+```
+
+---
+
+**Step 4: Validate User's Solution**
+
+```bash
+curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/validate \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "solution": "abc123"
+  }'
+```
+
+Success response (session auto-deleted):
+```json
+{
+  "valid": true,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Failure response (attempt count incremented):
+```json
+{
+  "valid": false,
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+Note: After 3 failed attempts, the session is automatically deleted.
+
+---
+
+### Error Handling
+
+All errors return JSON with standardized format:
+
+```json
+{
+  "error": "session_not_found",
+  "message": "Session not found or has expired"
+}
+```
+
+Common error codes:
+- `unauthorized` (401) - Invalid or missing API key
+- `session_not_found` (404) - Session doesn't exist or expired
+- `invalid_parameters` (400) - Bad request parameters
+- `internal_error` (500) - Server error
+
+---
+
+### Admin Operations
+
+**Manual Cleanup** (requires master API key)
+
+Manually trigger cleanup of expired sessions:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/admin/cleanup \
+  -H "Authorization: Bearer YOUR_MASTER_API_KEY"
+```
+
+Response:
+```json
+{
+  "sessions_deleted": 5,
+  "message": "Successfully cleaned up 5 expired session(s)"
+}
+```
+
+Note: Cleanup runs automatically in the background every 60 seconds by default. This endpoint is useful for immediate cleanup or testing.
+
+## Testing & Development
+
+### Running Tests
+
+**Rust Tests** (40 tests total)
+
+```bash
+# Run all tests
+cargo test
+
+# Run only unit tests
+cargo test --lib
+
+# Run only integration tests
+cargo test --test sessions_test
+
+# Run with output
+cargo test -- --nocapture
+```
+
+**API Tests with Bruno** (38 tests across 18 requests)
+
+Requires the server to be running first.
+
+```bash
+# Terminal 1: Start the server
+cargo run
+
+# Terminal 2: Run API tests
+
+# Quick test suite (6 requests, 16 tests)
+./.bruno/Tests/Scripts/test-bruno.sh
+
+# Comprehensive test suite (18 requests, 38 tests)
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+### Development Workflow
+
+After every code change, run these commands **in order**:
+
+```bash
+# 1. Format code
+cargo fmt
+
+# 2. Run linter
+cargo clippy
+
+# 3. Check compilation
+cargo check
+
+# 4. Run Rust tests
+cargo test
+
+# 5. Run API tests (requires running server in another terminal)
+./.bruno/Tests/Scripts/test-bruno-full.sh
+```
+
+All five steps must pass before committing changes.
+
+### Code Quality Standards
+
+- Consistent formatting via `cargo fmt`
+- No clippy warnings (`cargo clippy`)
+- All tests passing (both Rust and API tests)
+- Meaningful commit messages
+- Documentation updates for new features
+
+## Contributing
+
+We welcome contributions! Please follow these guidelines:
+
+### Before Submitting a PR
+
+1. **Write tests first** - Add both Rust tests and Bruno API tests for new features
+2. **Run the complete quality checklist** - All 5 development workflow steps must pass
+3. **Update documentation** - If adding features, update relevant documentation
+4. **Follow existing patterns** - Study the codebase structure before adding new code
+5. **Keep commits focused** - One logical change per commit with clear messages
+
+### PR Requirements
+
+- All tests passing (Rust + API tests)
+- No clippy warnings
+- Code formatted with `cargo fmt`
+- Documentation updated (if applicable)
+- Clear description of changes and motivation
+- Reference any related issues
+
+### Testing Requirements
+
+Every new endpoint must include:
+- Rust integration tests (success and failure cases)
+- Bruno test scenarios in `.bruno/Tests/`
+- Bruno core endpoint in `.bruno/` root directory
+- Documentation updates for new endpoints
+
+---
+
+**Version**: 0.1.2
 **Rust Edition**: 2021
-**Docker**: Multi-stage with distroless runtime
+**License**: MIT (or specify your license)
