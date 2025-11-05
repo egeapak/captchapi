@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
-use crate::middleware::AuthMiddleware;
+use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
     ValidateSessionResponse,
@@ -24,15 +24,29 @@ pub struct SessionsState {
     pub config: Arc<Config>,
 }
 
-pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
-    Router::new()
+pub fn sessions_routes(
+    state: SessionsState,
+    auth_middleware: AuthMiddleware,
+    rate_limit_middleware: Option<RateLimitMiddleware>,
+) -> Router {
+    let mut router = Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
         .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
-        ))
+        ));
+
+    // Apply rate limiting only if middleware is provided
+    if let Some(rate_limiter) = rate_limit_middleware {
+        router = router.route_layer(middleware::from_fn_with_state(
+            rate_limiter,
+            RateLimitMiddleware::check,
+        ));
+    }
+
+    router
         .route("/{id}/image", get(get_image))
         .route("/{id}/image.jpeg", get(get_image_binary))
         .with_state(state)

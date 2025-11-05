@@ -1,0 +1,24 @@
+meta {
+  name: Cleanup - Unauthorized
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/cleanup
+}
+
+headers {
+  Content-Type: application/json
+}
+
+tests {
+  test("should return 401 Unauthorized", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

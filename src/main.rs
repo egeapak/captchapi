@@ -7,13 +7,15 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::{request_id_middleware, AuthMiddleware, MasterKeyMiddleware};
+use crate::middleware::{
+    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware,
+};
 use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, StorageService};
-use crate::tasks::start_cleanup_task;
+use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
+use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
@@ -70,18 +72,37 @@ async fn main() -> anyhow::Result<()> {
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
+    let rate_limiter = RateLimiter::new(
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds,
+    );
+    tracing::info!(
+        "Rate limiter initialized: {} requests per {} seconds",
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds
+    );
 
-    // Start cleanup task
+    // Start cleanup tasks
     start_cleanup_task(storage.clone(), config.cleanup_interval_seconds);
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
     );
 
+    start_rate_limiter_cleanup_task(
+        rate_limiter.clone(),
+        config.rate_limit_cleanup_interval_seconds,
+    );
+    tracing::info!(
+        "Rate limiter cleanup task started (interval: {}s)",
+        config.rate_limit_cleanup_interval_seconds
+    );
+
     // Create middleware
     let auth_middleware = AuthMiddleware::new(storage.clone(), auth_service.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
     let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter);
 
     // Create application state
     let sessions_state = SessionsState {
@@ -104,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health_check))
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware),
+            sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
         )
         .nest(
             "/api/v1/api-keys",
@@ -122,7 +143,11 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Server listening on {}", config.server_address());
 
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
