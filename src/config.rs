@@ -347,4 +347,86 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid CAPTCHA_COMPRESSION"));
     }
+
+    #[test]
+    fn test_config_custom_rate_limit_requests() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_REQUESTS_PER_MINUTE", "100");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.rate_limit_requests_per_minute, 100);
+    }
+
+    #[test]
+    fn test_config_custom_rate_limit_window() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_WINDOW_SECONDS", "120");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.rate_limit_window_seconds, 120);
+    }
+
+    #[test]
+    fn test_config_custom_rate_limit_cleanup_interval() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS", "600");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.rate_limit_cleanup_interval_seconds, 600);
+    }
+
+    #[test]
+    fn test_config_invalid_rate_limit_requests_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_REQUESTS_PER_MINUTE", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid RATE_LIMIT_REQUESTS_PER_MINUTE"));
+    }
+
+    #[test]
+    fn test_config_invalid_rate_limit_window_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_WINDOW_SECONDS", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid RATE_LIMIT_WINDOW_SECONDS"));
+    }
+
+    #[test]
+    fn test_config_invalid_rate_limit_cleanup_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_CLEANUP_INTERVAL_SECONDS", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid RATE_LIMIT_CLEANUP_INTERVAL_SECONDS"));
+    }
+
+    #[test]
+    fn test_config_rate_limit_default_values() {
+        let mut env = MockEnv::new();
+        // Only set required vars
+        env.set("API_KEY_SALT", "test-salt");
+        env.set("MASTER_API_KEY", "test-master");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.rate_limit_requests_per_minute, 60); // Default
+        assert_eq!(config.rate_limit_window_seconds, 60); // Default
+        assert_eq!(config.rate_limit_cleanup_interval_seconds, 300); // Default
+    }
 }
