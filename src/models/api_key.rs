@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 /// Maximum length for API key descriptions
 pub const MAX_DESCRIPTION_LENGTH: usize = 255;
 
+/// Internal struct for SQLite row mapping
+/// SQLite stores booleans as integers (0/1), so this struct matches the database schema exactly
+#[derive(Debug, sqlx::FromRow)]
+pub(crate) struct ApiKeyRow {
+    pub key_hash: String,
+    pub description: Option<String>,
+    pub created_at: i64,
+    pub last_used_at: Option<i64>,
+    pub is_active: i64, // SQLite boolean (0/1)
+}
+
 /// Validates an API key description
 ///
 /// Returns Ok(()) if valid, or Err with a descriptive error message if invalid
@@ -41,6 +52,18 @@ pub struct ApiKey {
     pub created_at: i64,
     pub last_used_at: Option<i64>,
     pub is_active: bool,
+}
+
+impl From<ApiKeyRow> for ApiKey {
+    fn from(row: ApiKeyRow) -> Self {
+        Self {
+            key_hash: row.key_hash,
+            description: row.description,
+            created_at: row.created_at,
+            last_used_at: row.last_used_at,
+            is_active: row.is_active != 0,
+        }
+    }
 }
 
 impl ApiKey {

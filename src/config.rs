@@ -23,7 +23,7 @@ pub struct Config {
     pub master_api_key: String,
     pub default_session_ttl_seconds: u64,
     pub max_session_ttl_seconds: u64,
-    pub max_validation_attempts: i32,
+    pub max_validation_attempts: i64,
     pub cleanup_interval_seconds: u64,
     pub captcha_compression: u8,
 }

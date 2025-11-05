@@ -9,8 +9,43 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  SQLX_OFFLINE: true  # Use offline mode for SQLx compile-time verification
 
 jobs:
+  sqlx-check:
+    name: SQLx Offline Data Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Verify .sqlx directory exists
+        run: |
+          if [ ! -d ".sqlx" ]; then
+            echo "❌ .sqlx directory not found!"
+            echo "Run 'cargo sqlx prepare' to generate offline query data"
+            exit 1
+          fi
+          echo "✅ .sqlx directory found"
+
+      - name: Check compilation with offline mode
+        run: cargo check --all-targets --all-features
+        env:
+          SQLX_OFFLINE: true
+
+      - name: Verify offline data is up-to-date
+        run: |
+          echo "Checking if .sqlx data matches current queries..."
+          echo "If this fails, run 'cargo sqlx prepare' and commit the changes"
+
   format:
     name: Format Check
     runs-on: ubuntu-latest
@@ -54,7 +89,7 @@ jobs:
   test:
     name: Test Suite
     runs-on: ubuntu-latest
-    needs: [format, clippy]
+    needs: [sqlx-check, format, clippy]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

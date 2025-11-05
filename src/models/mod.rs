@@ -8,3 +8,7 @@ pub use session::{
     CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
     ValidateSessionResponse,
 };
+
+// Internal row types for database mapping (crate-private)
+pub(crate) use api_key::ApiKeyRow;
+pub(crate) use session::SessionRow;

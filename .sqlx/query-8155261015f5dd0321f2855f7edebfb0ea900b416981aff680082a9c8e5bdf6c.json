@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE api_keys\n            SET last_used_at = ?\n            WHERE key_hash = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "8155261015f5dd0321f2855f7edebfb0ea900b416981aff680082a9c8e5bdf6c"
+}
