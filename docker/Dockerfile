@@ -5,7 +5,9 @@ FROM rust:1.90-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && \
-    apt-get install -y pkg-config libsqlite3-dev && \
+    apt-get install -y --no-install-recommends \
+        pkg-config=1.8.1-4 \
+        libsqlite3-dev=3.46.1-7 && \
     rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -20,11 +22,13 @@ RUN mkdir -p src && \
     cargo build --release && \
     rm -rf src
 
-# Copy actual source code and migrations
+# Copy actual source code, migrations, and SQLx prepared queries
 COPY src ./src
 COPY migrations ./migrations
+COPY .sqlx ./.sqlx
 
-# Build the actual application
+# Build the actual application with SQLx offline mode
+ENV SQLX_OFFLINE=true
 RUN cargo build --release --bin captchapi
 
 # Create /data directory with correct ownership for nonroot user (UID 65532)
