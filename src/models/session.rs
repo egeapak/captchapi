@@ -117,7 +117,13 @@ pub struct ValidateSessionResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct GetImageResponse {
-    pub image: String,
+pub struct GetSessionDetailsResponse {
+    pub session_id: String,
+    pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+    pub attempt_count: i64,
+    pub difficulty: i64,
+    pub width: i64,
+    pub height: i64,
+    pub dark_mode: bool,
 }

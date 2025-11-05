@@ -2,8 +2,8 @@ use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
 use crate::models::{
-    CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
-    ValidateSessionResponse,
+    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
+    ValidateSessionRequest, ValidateSessionResponse,
 };
 use crate::services::{CaptchaService, StorageService};
 use axum::{
@@ -47,7 +47,8 @@ pub fn sessions_routes(
     }
 
     router
-        .route("/{id}/image", get(get_image))
+        // Public endpoints (no authentication required)
+        .route("/{id}", get(get_session_details))
         .route("/{id}/image.jpeg", get(get_image_binary))
         .with_state(state)
 }
@@ -116,10 +117,10 @@ async fn create_session(
     ))
 }
 
-async fn get_image(
+async fn get_session_details(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
-) -> Result<Json<GetImageResponse>> {
+) -> Result<Json<GetSessionDetailsResponse>> {
     // Get session from database
     let session = state
         .storage
@@ -134,16 +135,16 @@ async fn get_image(
         return Err(AppError::SessionNotFound);
     }
 
-    // Convert raw bytes to base64 data URI for JSON response
-    let base64_image = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &session.image_bytes,
-    );
-    let data_uri = format!("data:image/jpeg;base64,{}", base64_image);
-
-    Ok(Json(GetImageResponse {
-        image: data_uri,
+    // Return session details without image data
+    Ok(Json(GetSessionDetailsResponse {
+        session_id: session.id.clone(),
+        created_at: session.created_at_datetime(),
         expires_at: session.expires_at_datetime(),
+        attempt_count: session.attempt_count,
+        difficulty: session.difficulty,
+        width: session.width,
+        height: session.height,
+        dark_mode: session.dark_mode,
     }))
 }
 
