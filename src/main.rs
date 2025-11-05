@@ -7,7 +7,9 @@ mod services;
 mod tasks;
 
 use crate::config::Config;
-use crate::middleware::{request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimiterMiddleware};
+use crate::middleware::{
+    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware,
+};
 use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
