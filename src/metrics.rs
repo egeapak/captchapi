@@ -140,4 +140,105 @@ mod tests {
         metrics.sessions_deleted.add(1, &[]);
         metrics.api_keys_created.add(1, &[]);
     }
+
+    #[test]
+    fn test_all_session_counters() {
+        let metrics = Metrics::new();
+
+        // Test all session-related counters can be incremented
+        metrics.sessions_created.add(1, &[]);
+        metrics.sessions_validated.add(1, &[]);
+        metrics.sessions_deleted.add(1, &[]);
+        metrics.sessions_expired_cleaned.add(5, &[]);
+        metrics.session_validation_attempts.add(1, &[]);
+
+        // Test multiple increments work
+        metrics.sessions_created.add(10, &[]);
+        metrics.session_validation_attempts.add(3, &[]);
+    }
+
+    #[test]
+    fn test_all_api_key_counters() {
+        let metrics = Metrics::new();
+
+        // Test all API key-related counters can be incremented
+        metrics.api_keys_created.add(1, &[]);
+        metrics.api_keys_deleted.add(1, &[]);
+        metrics.api_key_authentications.add(1, &[]);
+
+        // Test multiple increments work
+        metrics.api_keys_created.add(5, &[]);
+        metrics.api_key_authentications.add(100, &[]);
+    }
+
+    #[test]
+    fn test_histogram_recording() {
+        let metrics = Metrics::new();
+
+        // Test that histogram recording works (even though not actively used yet)
+        metrics.captcha_generation_duration.record(0.125, &[]);
+        metrics.request_duration.record(0.050, &[]);
+
+        // Test multiple recordings
+        metrics.captcha_generation_duration.record(0.200, &[]);
+        metrics.request_duration.record(0.100, &[]);
+    }
+
+    #[test]
+    fn test_concurrent_counter_increments() {
+        let metrics = init_metrics();
+
+        // Simulate concurrent access from multiple "threads" (Arc safety)
+        let m1 = metrics.clone();
+        let m2 = metrics.clone();
+        let m3 = metrics.clone();
+
+        // All clones should be able to increment counters
+        m1.sessions_created.add(1, &[]);
+        m2.sessions_created.add(1, &[]);
+        m3.sessions_created.add(1, &[]);
+
+        m1.api_key_authentications.add(5, &[]);
+        m2.api_key_authentications.add(10, &[]);
+    }
+
+    #[test]
+    fn test_counter_with_zero() {
+        let metrics = Metrics::new();
+
+        // Test that zero increments don't cause issues
+        metrics.sessions_created.add(0, &[]);
+        metrics.sessions_expired_cleaned.add(0, &[]);
+    }
+
+    #[test]
+    fn test_counter_with_large_values() {
+        let metrics = Metrics::new();
+
+        // Test that large counter values work
+        metrics.session_validation_attempts.add(1000, &[]);
+        metrics.api_key_authentications.add(1000000, &[]);
+    }
+
+    #[test]
+    fn test_all_metrics_accessible() {
+        let metrics = Metrics::new();
+
+        // Verify all metric fields are accessible and non-null
+        // Session counters
+        metrics.sessions_created.add(1, &[]);
+        metrics.sessions_validated.add(1, &[]);
+        metrics.sessions_deleted.add(1, &[]);
+        metrics.sessions_expired_cleaned.add(1, &[]);
+        metrics.session_validation_attempts.add(1, &[]);
+
+        // API key counters
+        metrics.api_keys_created.add(1, &[]);
+        metrics.api_keys_deleted.add(1, &[]);
+        metrics.api_key_authentications.add(1, &[]);
+
+        // Histograms
+        metrics.captcha_generation_duration.record(0.1, &[]);
+        metrics.request_duration.record(0.1, &[]);
+    }
 }
