@@ -29,7 +29,6 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
 rand = "0.8"
-base64 = "0.22"
 
 # Configuration
 dotenvy = "0.15"

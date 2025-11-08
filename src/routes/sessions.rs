@@ -1,10 +1,10 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
-use crate::middleware::AuthMiddleware;
+use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
 use crate::models::{
-    CreateSessionRequest, CreateSessionResponse, GetImageResponse, Session, ValidateSessionRequest,
-    ValidateSessionResponse,
+    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
+    ValidateSessionRequest, ValidateSessionResponse,
 };
 use crate::services::{CaptchaService, StorageService};
 use axum::{
@@ -26,16 +26,31 @@ pub struct SessionsState {
     pub metrics: Arc<Metrics>,
 }
 
-pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
-    Router::new()
+pub fn sessions_routes(
+    state: SessionsState,
+    auth_middleware: AuthMiddleware,
+    rate_limit_middleware: Option<RateLimitMiddleware>,
+) -> Router {
+    let mut router = Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
         .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
-        ))
-        .route("/{id}/image", get(get_image))
+        ));
+
+    // Apply rate limiting only if middleware is provided
+    if let Some(rate_limiter) = rate_limit_middleware {
+        router = router.route_layer(middleware::from_fn_with_state(
+            rate_limiter,
+            RateLimitMiddleware::check,
+        ));
+    }
+
+    router
+        // Public endpoints (no authentication required)
+        .route("/{id}", get(get_session_details))
         .route("/{id}/image.jpeg", get(get_image_binary))
         .with_state(state)
 }
@@ -74,13 +89,17 @@ async fn create_session(
     let width = req.width.unwrap_or(220);
     let height = req.height.unwrap_or(120);
     let dark_mode = req.dark_mode.unwrap_or(false);
-    let compression = 40; // Fixed compression value
+    let compression = state.config.captcha_compression;
 
     // Generate CAPTCHA
-    let (text, image_bytes) =
-        state
-            .captcha
-            .generate(req.text, difficulty, width, height, dark_mode, compression)?;
+    let (text, image_bytes) = state.captcha.generate(
+        req.text,
+        difficulty,
+        width,
+        height,
+        dark_mode,
+        compression.into(),
+    )?;
 
     // Create session
     let session = Session::new(
@@ -115,10 +134,10 @@ async fn create_session(
 }
 
 #[tracing::instrument(skip(state), fields(session_id = %session_id, is_expired))]
-async fn get_image(
+async fn get_session_details(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
-) -> Result<Json<GetImageResponse>> {
+) -> Result<Json<GetSessionDetailsResponse>> {
     // Get session from database
     let session = state
         .storage
@@ -136,16 +155,16 @@ async fn get_image(
 
     tracing::Span::current().record("is_expired", false);
 
-    // Convert raw bytes to base64 data URI for JSON response
-    let base64_image = base64::Engine::encode(
-        &base64::engine::general_purpose::STANDARD,
-        &session.image_bytes,
-    );
-    let data_uri = format!("data:image/jpeg;base64,{}", base64_image);
-
-    Ok(Json(GetImageResponse {
-        image: data_uri,
+    // Return session details without image data
+    Ok(Json(GetSessionDetailsResponse {
+        session_id: session.id.clone(),
+        created_at: session.created_at_datetime(),
         expires_at: session.expires_at_datetime(),
+        attempt_count: session.attempt_count,
+        difficulty: session.difficulty,
+        width: session.width,
+        height: session.height,
+        dark_mode: session.dark_mode,
     }))
 }
 

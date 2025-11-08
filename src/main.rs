@@ -10,14 +10,17 @@ mod telemetry;
 
 use crate::config::Config;
 use crate::metrics::init_metrics;
-use crate::middleware::{AuthMiddleware, MasterKeyMiddleware};
+use crate::middleware::{
+    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware,
+};
+use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
-use crate::routes::{api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, StorageService};
-use crate::tasks::start_cleanup_task;
+use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
+use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
+use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
-use axum::{routing::get, Router};
+use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -100,6 +103,15 @@ async fn main() -> anyhow::Result<()> {
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
+    let rate_limiter = RateLimiter::new(
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds,
+    );
+    tracing::info!(
+        "Rate limiter initialized: {} requests per {} seconds",
+        config.rate_limit_requests_per_minute,
+        config.rate_limit_window_seconds
+    );
 
     // Initialize metrics
     let metrics = init_metrics();
@@ -116,10 +128,21 @@ async fn main() -> anyhow::Result<()> {
         config.cleanup_interval_seconds
     );
 
+    start_rate_limiter_cleanup_task(
+        rate_limiter.clone(),
+        config.rate_limit_cleanup_interval_seconds,
+    );
+    tracing::info!(
+        "Rate limiter cleanup task started (interval: {}s)",
+        config.rate_limit_cleanup_interval_seconds
+    );
+
     // Create middleware
     let auth_middleware =
         AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter);
 
     // Create application state
     let sessions_state = SessionsState {
@@ -135,25 +158,40 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics.clone(),
     };
 
+    let admin_state = AdminState {
+        storage: storage.clone(),
+        metrics: metrics.clone(),
+    };
+
     // Build router
     let app = Router::new()
         .route("/health", get(health_check))
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware),
+            sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
         )
         .nest(
             "/api/v1/api-keys",
             api_keys_routes(api_keys_state, master_middleware),
         )
-        .layer(TraceLayer::new_for_http());
+        .nest(
+            "/api/v1/admin",
+            admin_routes(admin_state, master_middleware_admin),
+        )
+        .layer(TraceLayer::new_for_http())
+        .layer(axum_middleware::from_fn(request_id_middleware));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(config.server_address()).await?;
 
     tracing::info!("Server listening on {}", config.server_address());
 
-    let result = axum::serve(listener, app).await;
+    // Use into_make_service_with_connect_info to extract IP addresses for rate limiting
+    let result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await;
 
     // Shutdown OpenTelemetry gracefully if it was enabled
     if otel_enabled {

@@ -5,8 +5,8 @@ use captchapi::{
     middleware::{AuthMiddleware, MasterKeyMiddleware},
     models::ApiKey,
     routes::{
-        api_keys::ApiKeysState, api_keys_routes, health_check, sessions::SessionsState,
-        sessions_routes,
+        admin::AdminState, admin_routes, api_keys::ApiKeysState, api_keys_routes, health_check,
+        sessions::SessionsState, sessions_routes,
     },
     services::{AuthService, CaptchaService, StorageService},
 };
@@ -78,6 +78,10 @@ impl TestApp {
             max_session_ttl_seconds: 3600,
             max_validation_attempts: 3,
             cleanup_interval_seconds: 60,
+            rate_limit_requests_per_minute: 60,
+            rate_limit_window_seconds: 60,
+            rate_limit_cleanup_interval_seconds: 300,
+            captcha_compression: 40,
         });
 
         let auth_middleware = AuthMiddleware::new(
@@ -86,6 +90,7 @@ impl TestApp {
             metrics.clone(),
         );
         let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
+        let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
 
         let sessions_state = SessionsState {
             storage: self.storage.clone(),
@@ -100,15 +105,24 @@ impl TestApp {
             metrics: metrics.clone(),
         };
 
+        let admin_state = AdminState {
+            storage: self.storage.clone(),
+            metrics: metrics.clone(),
+        };
+
         Router::new()
             .route("/health", axum::routing::get(health_check))
             .nest(
                 "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware),
+                sessions_routes(sessions_state, auth_middleware, None),
             )
             .nest(
                 "/api/v1/api-keys",
                 api_keys_routes(api_keys_state, master_middleware),
+            )
+            .nest(
+                "/api/v1/admin",
+                admin_routes(admin_state, master_middleware_admin),
             )
             .layer(TraceLayer::new_for_http())
     }

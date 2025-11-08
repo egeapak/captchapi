@@ -20,7 +20,8 @@ echo "Using environment: $ENVIRONMENT"
 # This runs all tests in the correct order:
 # 1. Health check
 # 2. API Key tests (unauthorized, create, list, create for testing, update, delete, delete not found)
-# 3. Session tests (unauthorized, invalid params, create, get images, validate wrong/max attempts, not found)
+# 3. Admin tests (cleanup unauthorized, invalid key, success)
+# 4. Session tests (unauthorized, invalid params, create, get images, validate wrong/max attempts, not found)
 
 bru run \
   "Health Check.bru" \
@@ -31,10 +32,13 @@ bru run \
   "Tests/API Keys/Update API Key (Test).bru" \
   "Tests/API Keys/Delete API Key (Test).bru" \
   "Tests/API Keys/Delete API Key - Not Found.bru" \
+  "Tests/Admin/Cleanup - Unauthorized.bru" \
+  "Tests/Admin/Cleanup - Invalid Master Key.bru" \
+  "Tests/Admin/Cleanup - Success.bru" \
   "Tests/Sessions/Create Session - Unauthorized.bru" \
   "Tests/Sessions/Create Session - Invalid Parameters.bru" \
   "Sessions/Create Session.bru" \
-  "Sessions/Get Image (JSON).bru" \
+  "Sessions/Get Session Details.bru" \
   "Sessions/Get Image (Binary).bru" \
   "Tests/Sessions/Get Image - Not Found.bru" \
   "Tests/Sessions/Validate Session - Wrong Answer.bru" \
@@ -51,6 +55,7 @@ echo ""
 echo "Coverage Summary:"
 echo "  ✓ Health Check: 1 endpoint"
 echo "  ✓ API Keys: 4 endpoints (create, list, update, delete)"
+echo "  ✓ Admin: 1 endpoint (cleanup expired sessions)"
 echo "  ✓ Sessions: 5 endpoints (create, get image, validate, delete)"
 echo ""
 echo "Test Scenarios:"

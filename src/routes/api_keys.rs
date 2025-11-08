@@ -1,6 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
+use crate::models::api_key::validate_description;
 use crate::models::{
     ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
 };
@@ -42,6 +43,9 @@ async fn create_api_key(
     State(state): State<ApiKeysState>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
+    // Validate description
+    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
+
     // Generate a random API key
     let api_key: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -104,6 +108,9 @@ async fn update_api_key(
     Path(key_hash): Path<String>,
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>> {
+    // Validate description if present
+    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
+
     // Update the API key
     let updated = state
         .storage
@@ -113,7 +120,7 @@ async fn update_api_key(
     tracing::Span::current().record("updated", updated);
 
     if !updated {
-        return Err(AppError::SessionNotFound); // Reusing this error, could create ApiKeyNotFound
+        return Err(AppError::ApiKeyNotFound);
     }
 
     // Fetch the updated key (use get_api_key_by_hash to get regardless of active status)
@@ -121,7 +128,7 @@ async fn update_api_key(
         .storage
         .get_api_key_by_hash(&key_hash)
         .await?
-        .ok_or(AppError::SessionNotFound)?;
+        .ok_or(AppError::ApiKeyNotFound)?;
 
     tracing::info!("Updated API key with hash: {}", key_hash);
 
@@ -144,6 +151,6 @@ async fn delete_api_key(
         tracing::info!("Deleted API key with hash: {}", key_hash);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {
-        Err(AppError::SessionNotFound)
+        Err(AppError::ApiKeyNotFound)
     }
 }

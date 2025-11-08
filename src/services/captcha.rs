@@ -26,11 +26,11 @@ impl CaptchaService {
     pub fn generate(
         &self,
         text: Option<String>,
-        difficulty: i32,
-        width: i32,
-        height: i32,
+        difficulty: i64,
+        width: i64,
+        height: i64,
         dark_mode: bool,
-        compression: i32,
+        compression: i64,
     ) -> Result<(String, Vec<u8>)> {
         let captcha_text = text.unwrap_or_else(|| Self::generate_random_text(5));
 

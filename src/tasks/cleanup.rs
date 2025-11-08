@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::services::StorageService;
+use crate::services::{RateLimiter, StorageService};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
@@ -32,6 +32,27 @@ pub fn start_cleanup_task(storage: StorageService, interval_seconds: u64, metric
             if let Err(e) = cleanup_expired_sessions(&storage, &metrics).await {
                 tracing::error!("Failed to cleanup expired sessions: {:?}", e);
             }
+        }
+    });
+}
+
+/// Start a background task that periodically cleans up expired rate limit entries
+///
+/// This prevents unbounded memory growth by removing old rate limit tracking data.
+/// Should be called with a reasonable interval (e.g., 5-10 minutes).
+pub fn start_rate_limiter_cleanup_task(rate_limiter: RateLimiter, interval_seconds: u64) {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(interval_seconds));
+
+        loop {
+            interval.tick().await;
+
+            rate_limiter.cleanup().await;
+            let stats = rate_limiter.stats().await;
+            tracing::debug!(
+                "Rate limiter cleanup completed. Tracked IPs: {}",
+                stats.tracked_ips
+            );
         }
     });
 }

@@ -1,0 +1,29 @@
+meta {
+  name: Cleanup Expired Sessions
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/cleanup
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+docs {
+  # Cleanup Expired Sessions
+
+  This endpoint triggers a manual cleanup of expired sessions from the database.
+
+  ## Authentication
+  Requires the master API key via `X-Master-Key` header.
+
+  ## Response
+  Returns the number of sessions deleted and a status message.
+
+  ## Rate Limiting
+  This endpoint is NOT rate limited as it's an admin operation.
+}

@@ -344,7 +344,6 @@ dependencies = [
  "anyhow",
  "axum 0.8.6",
  "axum-test",
- "base64 0.22.1",
  "captcha-rs",
  "chrono",
  "dotenvy",
