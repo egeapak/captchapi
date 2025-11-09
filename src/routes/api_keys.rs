@@ -66,7 +66,7 @@ async fn create_api_key(
     state.storage.create_api_key(&api_key_record).await?;
 
     // Record metrics
-    state.metrics.api_keys_created.add(1, &[]);
+    state.metrics.api_keys.created.add(1, &[]);
 
     tracing::info!(
         "Created API key with hash: {} (description: {:?})",
@@ -91,6 +91,9 @@ async fn list_api_keys(State(state): State<ApiKeysState>) -> Result<Json<Vec<Api
 
     let count = api_keys.len();
     tracing::Span::current().record("count", count);
+
+    // Record metrics
+    state.metrics.api_keys.listed.add(1, &[]);
 
     let api_key_infos: Vec<ApiKeyInfo> = api_keys.into_iter().map(ApiKeyInfo::from).collect();
 
@@ -130,6 +133,9 @@ async fn update_api_key(
         .await?
         .ok_or(AppError::ApiKeyNotFound)?;
 
+    // Record metrics
+    state.metrics.api_keys.updated.add(1, &[]);
+
     tracing::info!("Updated API key with hash: {}", key_hash);
 
     Ok(Json(ApiKeyInfo::from(api_key)))
@@ -146,7 +152,7 @@ async fn delete_api_key(
 
     if deleted {
         // Record metrics
-        state.metrics.api_keys_deleted.add(1, &[]);
+        state.metrics.api_keys.deleted.add(1, &[]);
 
         tracing::info!("Deleted API key with hash: {}", key_hash);
         Ok(axum::http::StatusCode::NO_CONTENT)

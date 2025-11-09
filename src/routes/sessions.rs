@@ -91,7 +91,8 @@ async fn create_session(
     let dark_mode = req.dark_mode.unwrap_or(false);
     let compression = state.config.captcha_compression;
 
-    // Generate CAPTCHA
+    // Generate CAPTCHA (record duration)
+    let start = std::time::Instant::now();
     let (text, image_bytes) = state.captcha.generate(
         req.text,
         difficulty,
@@ -100,6 +101,12 @@ async fn create_session(
         dark_mode,
         compression.into(),
     )?;
+    let generation_duration = start.elapsed().as_secs_f64();
+    state
+        .metrics
+        .performance
+        .captcha_generation_duration
+        .record(generation_duration, &[]);
 
     // Create session
     let session = Session::new(
@@ -119,7 +126,7 @@ async fn create_session(
     state.storage.create_session(&session).await?;
 
     // Record metrics
-    state.metrics.sessions_created.add(1, &[]);
+    state.metrics.sessions.created.add(1, &[]);
 
     tracing::info!("Created session: {}", session.id);
 
@@ -253,6 +260,10 @@ async fn validate_session(
         tracing::Span::current().record("max_attempts_reached", true);
         // Delete session after max attempts
         let _ = state.storage.delete_session(&session_id).await;
+
+        // Record max attempts exceeded
+        state.metrics.sessions.max_attempts_exceeded.add(1, &[]);
+
         return Ok(Json(ValidateSessionResponse {
             valid: false,
             session_id,
@@ -266,19 +277,23 @@ async fn validate_session(
     tracing::Span::current().record("is_valid", is_valid);
 
     // Record validation attempt
-    state.metrics.session_validation_attempts.add(1, &[]);
+    state.metrics.sessions.validation_attempts.add(1, &[]);
 
     if is_valid {
         // Delete session on successful validation
         state.storage.delete_session(&session_id).await?;
 
         // Record successful validation
-        state.metrics.sessions_validated.add(1, &[]);
+        state.metrics.sessions.validated.add(1, &[]);
 
         tracing::info!("Session {} validated successfully", session_id);
     } else {
         // Increment attempt count on failure
         state.storage.increment_attempt_count(&session_id).await?;
+
+        // Record failed validation
+        state.metrics.sessions.validation_failed.add(1, &[]);
+
         tracing::debug!(
             "Session {} validation failed, attempt {}/{}",
             session_id,
@@ -304,7 +319,7 @@ async fn delete_session(
 
     if deleted {
         // Record deletion metric
-        state.metrics.sessions_deleted.add(1, &[]);
+        state.metrics.sessions.deleted.add(1, &[]);
 
         tracing::info!("Deleted session: {}", session_id);
         Ok(axum::http::StatusCode::NO_CONTENT)

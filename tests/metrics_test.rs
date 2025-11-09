@@ -427,16 +427,16 @@ async fn test_all_counter_metrics_initialized() {
 
     // Verify all counter metrics are accessible
     // Session metrics
-    metrics.sessions_created.add(1, &[]);
-    metrics.sessions_validated.add(1, &[]);
-    metrics.sessions_deleted.add(1, &[]);
-    metrics.sessions_expired_cleaned.add(1, &[]);
-    metrics.session_validation_attempts.add(1, &[]);
+    metrics.sessions.created.add(1, &[]);
+    metrics.sessions.validated.add(1, &[]);
+    metrics.sessions.deleted.add(1, &[]);
+    metrics.sessions.expired_cleaned.add(1, &[]);
+    metrics.sessions.validation_attempts.add(1, &[]);
 
     // API key metrics
-    metrics.api_keys_created.add(1, &[]);
-    metrics.api_keys_deleted.add(1, &[]);
-    metrics.api_key_authentications.add(1, &[]);
+    metrics.api_keys.created.add(1, &[]);
+    metrics.api_keys.deleted.add(1, &[]);
+    metrics.api_keys.authentications.add(1, &[]);
 
     // All metrics should be accessible and work without panicking
 }
@@ -447,12 +447,18 @@ async fn test_histogram_metrics_recording() {
     let metrics = captchapi::metrics::Metrics::new();
 
     // Test that histogram metrics exist and can be recorded
-    metrics.captcha_generation_duration.record(0.125, &[]);
-    metrics.request_duration.record(0.050, &[]);
+    metrics
+        .performance
+        .captcha_generation_duration
+        .record(0.125, &[]);
+    metrics.performance.request_duration.record(0.050, &[]);
 
     // Multiple recordings should work
-    metrics.captcha_generation_duration.record(0.200, &[]);
-    metrics.request_duration.record(0.100, &[]);
+    metrics
+        .performance
+        .captcha_generation_duration
+        .record(0.200, &[]);
+    metrics.performance.request_duration.record(0.100, &[]);
 
     // These should not panic even though we're not using them actively yet
 }

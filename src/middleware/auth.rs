@@ -35,7 +35,7 @@ impl AuthMiddleware {
         next: Next,
     ) -> Result<Response, AppError> {
         // Record authentication attempt
-        middleware.metrics.api_key_authentications.add(1, &[]);
+        middleware.metrics.api_keys.authentications.add(1, &[]);
 
         // Extract Authorization header
         let auth_header = request
@@ -59,11 +59,13 @@ impl AuthMiddleware {
             .await?
             .ok_or_else(|| {
                 tracing::Span::current().record("auth_success", false);
+                middleware.metrics.api_keys.auth_failures.add(1, &[]);
                 AppError::Unauthorized("Invalid API key".to_string())
             })?;
 
         if !api_key.is_active {
             tracing::Span::current().record("auth_success", false);
+            middleware.metrics.api_keys.auth_failures.add(1, &[]);
             return Err(AppError::Unauthorized("API key is inactive".to_string()));
         }
 

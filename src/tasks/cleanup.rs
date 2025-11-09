@@ -14,7 +14,7 @@ pub async fn cleanup_expired_sessions(storage: &StorageService, metrics: &Metric
 
     if count > 0 {
         // Record metrics
-        metrics.sessions_expired_cleaned.add(count, &[]);
+        metrics.sessions.expired_cleaned.add(count, &[]);
         tracing::info!("Cleaned up {} expired sessions", count);
     }
 
