@@ -11,7 +11,8 @@ mod telemetry;
 use crate::config::Config;
 use crate::metrics::init_metrics;
 use crate::middleware::{
-    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, RateLimitMiddleware,
+    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, MetricsMiddleware,
+    RateLimitMiddleware,
 };
 use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
@@ -142,7 +143,8 @@ async fn main() -> anyhow::Result<()> {
         AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
     let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter);
+    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter, metrics.clone());
+    let metrics_middleware = MetricsMiddleware::new(metrics.clone());
 
     // Create application state
     let sessions_state = SessionsState {
@@ -166,6 +168,7 @@ async fn main() -> anyhow::Result<()> {
     // Build router
     let app = Router::new()
         .route("/health", get(health_check))
+        .with_state(metrics.clone())
         .nest(
             "/api/v1/sessions",
             sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
@@ -179,7 +182,11 @@ async fn main() -> anyhow::Result<()> {
             admin_routes(admin_state, master_middleware_admin),
         )
         .layer(TraceLayer::new_for_http())
-        .layer(axum_middleware::from_fn(request_id_middleware));
+        .layer(axum_middleware::from_fn(request_id_middleware))
+        .layer(axum_middleware::from_fn_with_state(
+            metrics_middleware.clone(),
+            MetricsMiddleware::track_request_duration,
+        ));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(config.server_address()).await?;

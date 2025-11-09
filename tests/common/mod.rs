@@ -112,6 +112,7 @@ impl TestApp {
 
         Router::new()
             .route("/health", axum::routing::get(health_check))
+            .with_state(metrics.clone())
             .nest(
                 "/api/v1/sessions",
                 sessions_routes(sessions_state, auth_middleware, None),

@@ -29,32 +29,26 @@ pub struct ApiKeyMetrics {
 #[derive(Clone)]
 pub struct PerformanceMetrics {
     pub captcha_generation_duration: Histogram<f64>,
-    #[allow(dead_code)] // TODO: Implement request duration tracking
     pub request_duration: Histogram<f64>,
 }
 
 /// Error tracking metrics
 #[derive(Clone)]
 pub struct ErrorMetrics {
-    #[allow(dead_code)] // TODO: Implement error tracking
     pub http_errors_total: Counter<u64>,
-    #[allow(dead_code)] // TODO: Implement error tracking
     pub database_errors: Counter<u64>,
 }
 
 /// Rate limiting metrics
 #[derive(Clone)]
 pub struct RateLimitMetrics {
-    #[allow(dead_code)] // TODO: Implement rate limit tracking
     pub requests_allowed: Counter<u64>,
-    #[allow(dead_code)] // TODO: Implement rate limit tracking
     pub requests_blocked: Counter<u64>,
 }
 
 /// Health and system metrics
 #[derive(Clone)]
 pub struct SystemMetrics {
-    #[allow(dead_code)] // TODO: Implement health check tracking
     pub health_checks: Counter<u64>,
 }
 
@@ -72,11 +66,8 @@ pub struct Metrics {
     pub sessions: SessionMetrics,
     pub api_keys: ApiKeyMetrics,
     pub performance: PerformanceMetrics,
-    #[allow(dead_code)] // TODO: Implement error tracking
     pub errors: ErrorMetrics,
-    #[allow(dead_code)] // TODO: Implement rate limit tracking
     pub rate_limit: RateLimitMetrics,
-    #[allow(dead_code)] // TODO: Implement system metrics tracking
     pub system: SystemMetrics,
 }
 
