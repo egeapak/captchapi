@@ -158,7 +158,7 @@ impl PerformanceMetrics {
 
             request_duration: meter
                 .f64_histogram("http.request.duration")
-                .with_description("Duration of HTTP requests in seconds")
+                .with_description("Duration of HTTP requests in milliseconds")
                 .build(),
         }
     }
