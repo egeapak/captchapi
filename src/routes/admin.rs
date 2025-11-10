@@ -1,13 +1,16 @@
 use crate::error::Result;
+use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
 use crate::services::StorageService;
 use crate::tasks::cleanup_expired_sessions;
 use axum::{extract::State, middleware, routing::post, Json, Router};
 use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AdminState {
     pub storage: StorageService,
+    pub metrics: Arc<Metrics>,
 }
 
 pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -> Router {
@@ -35,7 +38,7 @@ pub struct CleanupResponse {
 async fn trigger_cleanup(State(state): State<AdminState>) -> Result<Json<CleanupResponse>> {
     tracing::info!("Manual cleanup triggered");
 
-    let sessions_deleted = cleanup_expired_sessions(&state.storage).await?;
+    let sessions_deleted = cleanup_expired_sessions(&state.storage, &state.metrics).await?;
 
     let message = if sessions_deleted > 0 {
         format!(
@@ -103,6 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_deletes_expired_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create expired session
         let expired = create_expired_session();
@@ -113,7 +117,7 @@ mod tests {
         storage.create_session(&valid).await.unwrap();
 
         // Trigger cleanup
-        let result = cleanup_expired_sessions(&storage).await.unwrap();
+        let result = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up 1 session
         assert_eq!(result, 1);
@@ -128,6 +132,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_with_no_expired_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create only valid sessions
         let valid1 = create_valid_session();
@@ -137,7 +142,7 @@ mod tests {
         storage.create_session(&valid2).await.unwrap();
 
         // Trigger cleanup
-        let result = cleanup_expired_sessions(&storage).await.unwrap();
+        let result = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up 0 sessions
         assert_eq!(result, 0);
@@ -150,6 +155,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_multiple_expired_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create multiple expired sessions
         let expired1 = create_expired_session();
@@ -161,7 +167,7 @@ mod tests {
         storage.create_session(&expired3).await.unwrap();
 
         // Trigger cleanup
-        let result = cleanup_expired_sessions(&storage).await.unwrap();
+        let result = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up all 3
         assert_eq!(result, 3);

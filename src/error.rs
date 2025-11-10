@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -36,9 +37,15 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Create metrics instance for tracking errors
+        // Since OpenTelemetry uses a global registry, this will use the same metrics
+        let metrics = Metrics::new();
+
         let (status, error_code, message) = match self {
             AppError::Database(ref e) => {
                 tracing::error!("Database error: {:?}", e);
+                // Track database error
+                metrics.errors.database_errors.add(1, &[]);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "database_error",
@@ -83,6 +90,11 @@ impl IntoResponse for AppError {
                 )
             }
         };
+
+        // Track HTTP errors (4xx and 5xx status codes)
+        if status.is_client_error() || status.is_server_error() {
+            metrics.errors.http_errors_total.add(1, &[]);
+        }
 
         let body = Json(json!({
             "error": error_code,

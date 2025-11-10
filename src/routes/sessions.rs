@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
+use crate::metrics::Metrics;
 use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
@@ -22,6 +23,7 @@ pub struct SessionsState {
     pub storage: StorageService,
     pub captcha: Arc<CaptchaService>,
     pub config: Arc<Config>,
+    pub metrics: Arc<Metrics>,
 }
 
 pub fn sessions_routes(
@@ -53,6 +55,14 @@ pub fn sessions_routes(
         .with_state(state)
 }
 
+#[tracing::instrument(skip(state, req), fields(
+    difficulty = req.difficulty.unwrap_or(5),
+    width = req.width.unwrap_or(220),
+    height = req.height.unwrap_or(120),
+    dark_mode = req.dark_mode.unwrap_or(false),
+    expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
+    session_id
+))]
 async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
@@ -81,7 +91,8 @@ async fn create_session(
     let dark_mode = req.dark_mode.unwrap_or(false);
     let compression = state.config.captcha_compression;
 
-    // Generate CAPTCHA
+    // Generate CAPTCHA (record duration)
+    let start = std::time::Instant::now();
     let (text, image_bytes) = state.captcha.generate(
         req.text,
         difficulty,
@@ -90,6 +101,12 @@ async fn create_session(
         dark_mode,
         compression.into(),
     )?;
+    let generation_duration = start.elapsed().as_secs_f64();
+    state
+        .metrics
+        .performance
+        .captcha_generation_duration
+        .record(generation_duration, &[]);
 
     // Create session
     let session = Session::new(
@@ -102,8 +119,14 @@ async fn create_session(
         dark_mode,
     );
 
+    // Record session_id in the span
+    tracing::Span::current().record("session_id", session.id.as_str());
+
     // Save to database
     state.storage.create_session(&session).await?;
+
+    // Record metrics
+    state.metrics.sessions.created.add(1, &[]);
 
     tracing::info!("Created session: {}", session.id);
 
@@ -117,6 +140,7 @@ async fn create_session(
     ))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, is_expired))]
 async fn get_session_details(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -130,10 +154,13 @@ async fn get_session_details(
 
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         // Delete expired session
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
+
+    tracing::Span::current().record("is_expired", false);
 
     // Return session details without image data
     Ok(Json(GetSessionDetailsResponse {
@@ -148,6 +175,7 @@ async fn get_session_details(
     }))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, is_expired, image_size_bytes))]
 async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -161,10 +189,14 @@ async fn get_image_binary(
 
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         // Delete expired session
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
+
+    tracing::Span::current().record("is_expired", false);
+    tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
 
     // Calculate cache duration (time until expiration)
     let now = Utc::now().timestamp();
@@ -193,6 +225,13 @@ async fn get_image_binary(
     Ok((headers, session.image_bytes))
 }
 
+#[tracing::instrument(skip(state, req), fields(
+    session_id = %session_id,
+    is_valid,
+    is_expired,
+    attempt_count,
+    max_attempts_reached
+))]
 async fn validate_session(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
@@ -205,32 +244,56 @@ async fn validate_session(
         .await?
         .ok_or(AppError::SessionNotFound)?;
 
+    tracing::Span::current().record("attempt_count", session.attempt_count);
+
     // Check if expired
     if session.is_expired() {
+        tracing::Span::current().record("is_expired", true);
         let _ = state.storage.delete_session(&session_id).await;
         return Err(AppError::SessionNotFound);
     }
 
+    tracing::Span::current().record("is_expired", false);
+
     // Check attempt count
     if session.attempt_count >= state.config.max_validation_attempts {
+        tracing::Span::current().record("max_attempts_reached", true);
         // Delete session after max attempts
         let _ = state.storage.delete_session(&session_id).await;
+
+        // Record max attempts exceeded
+        state.metrics.sessions.max_attempts_exceeded.add(1, &[]);
+
         return Ok(Json(ValidateSessionResponse {
             valid: false,
             session_id,
         }));
     }
 
+    tracing::Span::current().record("max_attempts_reached", false);
+
     // Validate solution (case-insensitive)
     let is_valid = session.solution == req.solution.to_lowercase();
+    tracing::Span::current().record("is_valid", is_valid);
+
+    // Record validation attempt
+    state.metrics.sessions.validation_attempts.add(1, &[]);
 
     if is_valid {
         // Delete session on successful validation
         state.storage.delete_session(&session_id).await?;
+
+        // Record successful validation
+        state.metrics.sessions.validated.add(1, &[]);
+
         tracing::info!("Session {} validated successfully", session_id);
     } else {
         // Increment attempt count on failure
         state.storage.increment_attempt_count(&session_id).await?;
+
+        // Record failed validation
+        state.metrics.sessions.validation_failed.add(1, &[]);
+
         tracing::debug!(
             "Session {} validation failed, attempt {}/{}",
             session_id,
@@ -245,13 +308,19 @@ async fn validate_session(
     }))
 }
 
+#[tracing::instrument(skip(state), fields(session_id = %session_id, deleted))]
 async fn delete_session(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<axum::http::StatusCode> {
     let deleted = state.storage.delete_session(&session_id).await?;
 
+    tracing::Span::current().record("deleted", deleted);
+
     if deleted {
+        // Record deletion metric
+        state.metrics.sessions.deleted.add(1, &[]);
+
         tracing::info!("Deleted session: {}", session_id);
         Ok(axum::http::StatusCode::NO_CONTENT)
     } else {

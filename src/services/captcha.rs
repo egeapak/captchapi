@@ -11,6 +11,18 @@ impl CaptchaService {
         Self
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            text_length,
+            difficulty,
+            width,
+            height,
+            dark_mode,
+            compression,
+            image_size_bytes
+        )
+    )]
     pub fn generate(
         &self,
         text: Option<String>,
@@ -21,6 +33,8 @@ impl CaptchaService {
         compression: i64,
     ) -> Result<(String, Vec<u8>)> {
         let captcha_text = text.unwrap_or_else(|| Self::generate_random_text(5));
+
+        tracing::Span::current().record("text_length", captcha_text.len());
 
         let captcha = CaptchaBuilder::new()
             .length(captcha_text.len())
@@ -33,6 +47,8 @@ impl CaptchaService {
 
         // Get raw JPEG bytes from the DynamicImage
         let image_bytes = Self::image_to_jpeg_bytes(&captcha.image, compression as u8)?;
+
+        tracing::Span::current().record("image_size_bytes", image_bytes.len());
 
         Ok((captcha_text, image_bytes))
     }

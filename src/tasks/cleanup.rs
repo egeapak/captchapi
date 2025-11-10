@@ -1,13 +1,20 @@
 use crate::error::Result;
+use crate::metrics::Metrics;
 use crate::services::{RateLimiter, StorageService};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 
 /// Perform a single cleanup operation, removing expired sessions
-pub async fn cleanup_expired_sessions(storage: &StorageService) -> Result<u64> {
+#[tracing::instrument(skip(storage, metrics), fields(cleaned_count))]
+pub async fn cleanup_expired_sessions(storage: &StorageService, metrics: &Metrics) -> Result<u64> {
     let count = storage.delete_expired_sessions().await?;
 
+    tracing::Span::current().record("cleaned_count", count);
+
     if count > 0 {
+        // Record metrics
+        metrics.sessions.expired_cleaned.add(count, &[]);
         tracing::info!("Cleaned up {} expired sessions", count);
     }
 
@@ -15,14 +22,14 @@ pub async fn cleanup_expired_sessions(storage: &StorageService) -> Result<u64> {
 }
 
 /// Start a background task that periodically cleans up expired sessions
-pub fn start_cleanup_task(storage: StorageService, interval_seconds: u64) {
+pub fn start_cleanup_task(storage: StorageService, interval_seconds: u64, metrics: Arc<Metrics>) {
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(interval_seconds));
 
         loop {
             interval.tick().await;
 
-            if let Err(e) = cleanup_expired_sessions(&storage).await {
+            if let Err(e) = cleanup_expired_sessions(&storage, &metrics).await {
                 tracing::error!("Failed to cleanup expired sessions: {:?}", e);
             }
         }
@@ -106,6 +113,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_removes_expired_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create expired session (expires_at is in the past)
         let expired = create_expired_session();
@@ -116,7 +124,7 @@ mod tests {
         storage.create_session(&valid).await.unwrap();
 
         // Run cleanup
-        let count = cleanup_expired_sessions(&storage).await.unwrap();
+        let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up 1 session
         assert_eq!(count, 1);
@@ -131,6 +139,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_preserves_valid_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create only valid sessions
         let valid1 = create_valid_session();
@@ -140,7 +149,7 @@ mod tests {
         storage.create_session(&valid2).await.unwrap();
 
         // Run cleanup
-        let count = cleanup_expired_sessions(&storage).await.unwrap();
+        let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up 0 sessions
         assert_eq!(count, 0);
@@ -153,9 +162,10 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_with_empty_database() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Run cleanup on empty database
-        let result = cleanup_expired_sessions(&storage).await;
+        let result = cleanup_expired_sessions(&storage, &metrics).await;
 
         // Should succeed with 0 count
         assert!(result.is_ok());
@@ -165,6 +175,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_multiple_expired_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create multiple expired sessions
         let expired1 = create_expired_session();
@@ -176,7 +187,7 @@ mod tests {
         storage.create_session(&expired3).await.unwrap();
 
         // Run cleanup
-        let count = cleanup_expired_sessions(&storage).await.unwrap();
+        let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up all 3
         assert_eq!(count, 3);
@@ -190,6 +201,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_mixed_sessions() {
         let storage = setup_test_storage().await;
+        let metrics = crate::metrics::Metrics::new();
 
         // Create mix of expired and valid
         let expired1 = create_expired_session();
@@ -203,7 +215,7 @@ mod tests {
         storage.create_session(&valid2).await.unwrap();
 
         // Run cleanup
-        let count = cleanup_expired_sessions(&storage).await.unwrap();
+        let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
 
         // Should have cleaned up 2 expired sessions
         assert_eq!(count, 2);
