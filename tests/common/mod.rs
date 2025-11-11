@@ -88,6 +88,7 @@ impl TestApp {
             self.storage.clone(),
             self.auth_service.clone(),
             metrics.clone(),
+            config.master_api_key.clone(),
         );
         let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
         let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());

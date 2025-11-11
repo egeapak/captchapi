@@ -139,8 +139,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Create middleware
-    let auth_middleware =
-        AuthMiddleware::new(storage.clone(), auth_service.clone(), metrics.clone());
+    let auth_middleware = AuthMiddleware::new(
+        storage.clone(),
+        auth_service.clone(),
+        metrics.clone(),
+        config.master_api_key.clone(),
+    );
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
     let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
     let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter, metrics.clone());
