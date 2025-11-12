@@ -539,3 +539,147 @@ async fn test_validate_nonexistent_session() {
 
     response.assert_status_not_found();
 }
+
+#[tokio::test]
+async fn test_create_session_with_master_key_succeeds() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "difficulty": 5,
+            "width": 220,
+            "height": 120
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+
+    assert!(body.get("session_id").is_some());
+    assert!(body.get("expires_at").is_some());
+    assert!(body.get("created_at").is_some());
+}
+
+#[tokio::test]
+async fn test_validate_session_with_master_key_succeeds() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session using regular API key
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": "MASTER",
+            "difficulty": 5,
+            "expires_in_seconds": 300
+        }))
+        .await;
+
+    create_response.assert_status(axum::http::StatusCode::CREATED);
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Validate session using master key
+    let validate_response = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "solution": "MASTER"
+        }))
+        .await;
+
+    validate_response.assert_status_ok();
+    let validate_body: serde_json::Value = validate_response.json();
+    assert_eq!(validate_body["valid"], true);
+}
+
+#[tokio::test]
+async fn test_delete_session_with_master_key_succeeds() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session using regular API key
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({}))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Delete session using master key
+    let delete_response = server
+        .delete(&format!("/api/v1/sessions/{}", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .await;
+
+    delete_response.assert_status(axum::http::StatusCode::NO_CONTENT);
+
+    // Session should no longer exist
+    let details_response = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
+        .await;
+
+    details_response.assert_status_not_found();
+}
+
+#[tokio::test]
+async fn test_complete_session_flow_with_master_key() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // 1. Create session with master key
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "text": "MASTER123",
+            "difficulty": 5,
+            "expires_in_seconds": 300
+        }))
+        .await;
+
+    create_response.assert_status(axum::http::StatusCode::CREATED);
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // 2. Get session details (public endpoint)
+    let details_response = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
+        .await;
+
+    details_response.assert_status_ok();
+    let details_body: serde_json::Value = details_response.json();
+    assert_eq!(details_body["session_id"], session_id);
+    assert_eq!(details_body["difficulty"], 5);
+    assert_eq!(details_body["attempt_count"], 0);
+
+    // 3. Validate with correct solution using master key
+    let validate_response = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "solution": "MASTER123"
+        }))
+        .await;
+
+    validate_response.assert_status_ok();
+    let validate_body: serde_json::Value = validate_response.json();
+    assert_eq!(validate_body["valid"], true);
+
+    // 4. Session should be deleted after successful validation
+    let details_response2 = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
+        .await;
+
+    details_response2.assert_status_not_found();
+}

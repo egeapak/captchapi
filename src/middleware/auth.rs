@@ -13,6 +13,7 @@ pub struct AuthMiddleware {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
     pub metrics: Arc<Metrics>,
+    pub master_key: String,
 }
 
 impl AuthMiddleware {
@@ -20,11 +21,13 @@ impl AuthMiddleware {
         storage: StorageService,
         auth_service: Arc<AuthService>,
         metrics: Arc<Metrics>,
+        master_key: String,
     ) -> Self {
         Self {
             storage,
             auth_service,
             metrics,
+            master_key,
         }
     }
 
@@ -48,6 +51,13 @@ impl AuthMiddleware {
         let token = auth_header
             .strip_prefix("Bearer ")
             .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".to_string()))?;
+
+        // Check if token is the master key
+        if token == middleware.master_key {
+            tracing::Span::current().record("auth_success", true);
+            // Continue with the request (master key is always valid)
+            return Ok(next.run(request).await);
+        }
 
         // Hash the token
         let key_hash = middleware.auth_service.hash_api_key(token);
