@@ -12,19 +12,20 @@ use crate::config::Config;
 use crate::metrics::init_metrics;
 use crate::middleware::{
     request_id_middleware, AuthMiddleware, MasterKeyMiddleware, MetricsMiddleware,
-    RateLimitMiddleware,
 };
 use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
-use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
+use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
-use tower_http::trace::TraceLayer;
+use tokio_util::sync::CancellationToken;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -86,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up database connection pool
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database_max_connections)
         .connect_with(
             SqliteConnectOptions::new()
                 .filename(config.database_url.strip_prefix("sqlite:").unwrap())
@@ -104,38 +105,42 @@ async fn main() -> anyhow::Result<()> {
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
-    let rate_limiter = RateLimiter::new(
-        config.rate_limit_requests_per_minute,
-        config.rate_limit_window_seconds,
+
+    // Configure rate limiter using tower_governor
+    // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(config.rate_limit_requests_per_second)
+            .burst_size(config.rate_limit_burst_size)
+            .finish()
+            .expect("Failed to build governor config"),
     );
+    let governor_limiter = governor_conf.limiter().clone();
+    let rate_limit_layer = GovernorLayer::new(governor_conf);
     tracing::info!(
-        "Rate limiter initialized: {} requests per {} seconds",
-        config.rate_limit_requests_per_minute,
-        config.rate_limit_window_seconds
+        "Rate limiter initialized: {} requests/second, burst size {}",
+        config.rate_limit_requests_per_second,
+        config.rate_limit_burst_size
     );
 
     // Initialize metrics
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
 
+    // Create shutdown token for graceful shutdown
+    let shutdown_token = CancellationToken::new();
+
     // Start cleanup task
-    start_cleanup_task(
+    let cleanup_handle = start_cleanup_task(
         storage.clone(),
         config.cleanup_interval_seconds,
         metrics.clone(),
+        governor_limiter,
+        shutdown_token.clone(),
     );
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
-    );
-
-    start_rate_limiter_cleanup_task(
-        rate_limiter.clone(),
-        config.rate_limit_cleanup_interval_seconds,
-    );
-    tracing::info!(
-        "Rate limiter cleanup task started (interval: {}s)",
-        config.rate_limit_cleanup_interval_seconds
     );
 
     // Create middleware
@@ -147,7 +152,6 @@ async fn main() -> anyhow::Result<()> {
     );
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
     let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter, metrics.clone());
     let metrics_middleware = MetricsMiddleware::new(metrics.clone());
 
     // Create application state
@@ -175,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(metrics.clone())
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
+            sessions_routes(sessions_state, auth_middleware).layer(rate_limit_layer),
         )
         .nest(
             "/api/v1/api-keys",
@@ -185,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/admin",
             admin_routes(admin_state, master_middleware_admin),
         )
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum_middleware::from_fn(request_id_middleware))
         .layer(axum_middleware::from_fn_with_state(
@@ -198,18 +203,63 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Server listening on {}", config.server_address());
 
     // Use into_make_service_with_connect_info to extract IP addresses for rate limiting
-    let result = axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await;
+    .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()));
+
+    tracing::info!("Press Ctrl+C to initiate graceful shutdown");
+
+    // Run the server
+    let result = server.await;
+
+    // Wait for background tasks to complete
+    tracing::info!("Waiting for background tasks to complete...");
+    if let Err(e) = cleanup_handle.await {
+        tracing::error!("Cleanup task panicked: {:?}", e);
+    }
 
     // Shutdown OpenTelemetry gracefully if it was enabled
     if otel_enabled {
         shutdown_telemetry();
     }
 
+    tracing::info!("Server shutdown complete");
     result?;
 
     Ok(())
+}
+
+/// Creates a future that completes when a shutdown signal is received.
+/// Triggers the cancellation token to notify background tasks.
+async fn shutdown_signal(shutdown_token: CancellationToken) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, initiating graceful shutdown");
+        },
+    }
+
+    // Signal all background tasks to shutdown
+    shutdown_token.cancel();
 }

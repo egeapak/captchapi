@@ -683,3 +683,203 @@ async fn test_complete_session_flow_with_master_key() {
 
     details_response2.assert_status_not_found();
 }
+
+#[tokio::test]
+async fn test_create_session_with_empty_text_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": ""
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("empty"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_text_too_long_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  // 26 characters, exceeds 20 limit
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("20 characters"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_non_alphanumeric_text_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": "ABC@123"  // Contains special character
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("alphanumeric"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_width_too_small_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "width": 30  // Below minimum of 50
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("width"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_width_too_large_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "width": 2000  // Above maximum of 1000
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("width"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_height_too_small_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "height": 20  // Below minimum of 30
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("height"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_height_too_large_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "height": 600  // Above maximum of 500
+        }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("height"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_valid_boundary_dimensions() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Test minimum boundaries
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "width": 50,
+            "height": 30
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+
+    // Test maximum boundaries
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "width": 1000,
+            "height": 500
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_create_session_with_valid_text_boundary() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Test single character (minimum)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": "A"
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+
+    // Test exactly 20 characters (maximum)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({
+            "text": "ABCDEFGHIJ1234567890"  // Exactly 20 characters
+        }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}

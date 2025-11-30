@@ -5,7 +5,12 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use std::sync::LazyLock;
 use thiserror::Error;
+
+/// Lazily-initialized metrics instance for error tracking.
+/// This avoids creating a new Metrics struct on every error response.
+static ERROR_METRICS: LazyLock<Metrics> = LazyLock::new(Metrics::new);
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -37,9 +42,8 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        // Create metrics instance for tracking errors
-        // Since OpenTelemetry uses a global registry, this will use the same metrics
-        let metrics = Metrics::new();
+        // Use lazily-initialized static metrics instance
+        let metrics = &*ERROR_METRICS;
 
         let (status, error_code, message) = match self {
             AppError::Database(ref e) => {

@@ -1,9 +1,13 @@
 use crate::error::Result;
 use crate::metrics::Metrics;
-use crate::services::{RateLimiter, StorageService};
+use crate::services::StorageService;
+use governor::DefaultKeyedRateLimiter;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::task::JoinHandle;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 /// Perform a single cleanup operation, removing expired sessions
 #[tracing::instrument(skip(storage, metrics), fields(cleaned_count))]
@@ -21,40 +25,46 @@ pub async fn cleanup_expired_sessions(storage: &StorageService, metrics: &Metric
     Ok(count)
 }
 
-/// Start a background task that periodically cleans up expired sessions
-pub fn start_cleanup_task(storage: StorageService, interval_seconds: u64, metrics: Arc<Metrics>) {
+/// Start a background task that periodically cleans up expired sessions and rate limiter entries.
+/// Returns a JoinHandle that can be awaited for graceful shutdown.
+pub fn start_cleanup_task(
+    storage: StorageService,
+    interval_seconds: u64,
+    metrics: Arc<Metrics>,
+    rate_limiter: Arc<DefaultKeyedRateLimiter<IpAddr>>,
+    shutdown_token: CancellationToken,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(interval_seconds));
 
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    tracing::info!("Cleanup task received shutdown signal, performing final cleanup");
+                    // Perform one final cleanup before shutting down
+                    if let Err(e) = cleanup_expired_sessions(&storage, &metrics).await {
+                        tracing::error!("Failed to cleanup expired sessions during shutdown: {:?}", e);
+                    }
+                    rate_limiter.retain_recent();
+                    tracing::info!("Cleanup task shutdown complete");
+                    break;
+                }
+                _ = interval.tick() => {
+                    // Cleanup expired sessions
+                    if let Err(e) = cleanup_expired_sessions(&storage, &metrics).await {
+                        tracing::error!("Failed to cleanup expired sessions: {:?}", e);
+                    }
 
-            if let Err(e) = cleanup_expired_sessions(&storage, &metrics).await {
-                tracing::error!("Failed to cleanup expired sessions: {:?}", e);
+                    // Cleanup old rate limiter entries
+                    rate_limiter.retain_recent();
+                    tracing::debug!(
+                        "Rate limiter cleanup completed. Tracked IPs: {}",
+                        rate_limiter.len()
+                    );
+                }
             }
         }
-    });
-}
-
-/// Start a background task that periodically cleans up expired rate limit entries
-///
-/// This prevents unbounded memory growth by removing old rate limit tracking data.
-/// Should be called with a reasonable interval (e.g., 5-10 minutes).
-pub fn start_rate_limiter_cleanup_task(rate_limiter: RateLimiter, interval_seconds: u64) {
-    tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(interval_seconds));
-
-        loop {
-            interval.tick().await;
-
-            rate_limiter.cleanup().await;
-            let stats = rate_limiter.stats().await;
-            tracing::debug!(
-                "Rate limiter cleanup completed. Tracked IPs: {}",
-                stats.tracked_ips
-            );
-        }
-    });
+    })
 }
 
 #[cfg(test)]

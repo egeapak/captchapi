@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
-use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
+use crate::middleware::AuthMiddleware;
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
     ValidateSessionRequest, ValidateSessionResponse,
@@ -26,29 +26,17 @@ pub struct SessionsState {
     pub metrics: Arc<Metrics>,
 }
 
-pub fn sessions_routes(
-    state: SessionsState,
-    auth_middleware: AuthMiddleware,
-    rate_limit_middleware: Option<RateLimitMiddleware>,
-) -> Router {
-    let mut router = Router::new()
+/// Creates session routes with authentication middleware.
+/// Rate limiting should be applied externally via tower_governor layer.
+pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
+    Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
         .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
-        ));
-
-    // Apply rate limiting only if middleware is provided
-    if let Some(rate_limiter) = rate_limit_middleware {
-        router = router.route_layer(middleware::from_fn_with_state(
-            rate_limiter,
-            RateLimitMiddleware::check,
-        ));
-    }
-
-    router
+        ))
         // Public endpoints (no authentication required)
         .route("/{id}", get(get_session_details))
         .route("/{id}/image.jpeg", get(get_image_binary))
@@ -86,8 +74,40 @@ async fn create_session(
         ));
     }
 
+    // Validate custom text if provided
+    if let Some(ref text) = req.text {
+        if text.is_empty() {
+            return Err(AppError::InvalidSessionParams(
+                "text cannot be empty".to_string(),
+            ));
+        }
+        if text.len() > 20 {
+            return Err(AppError::InvalidSessionParams(
+                "text cannot exceed 20 characters".to_string(),
+            ));
+        }
+        // Ensure text contains only alphanumeric characters
+        if !text.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(AppError::InvalidSessionParams(
+                "text must contain only alphanumeric characters".to_string(),
+            ));
+        }
+    }
+
     let width = req.width.unwrap_or(220);
+    if !(50..=1000).contains(&width) {
+        return Err(AppError::InvalidSessionParams(
+            "width must be between 50 and 1000 pixels".to_string(),
+        ));
+    }
+
     let height = req.height.unwrap_or(120);
+    if !(30..=500).contains(&height) {
+        return Err(AppError::InvalidSessionParams(
+            "height must be between 30 and 500 pixels".to_string(),
+        ));
+    }
+
     let dark_mode = req.dark_mode.unwrap_or(false);
     let compression = state.config.captcha_compression;
 
