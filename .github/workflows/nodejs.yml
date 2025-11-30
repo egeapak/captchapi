@@ -1,23 +1,6 @@
 name: Node.js Native Build
 
 on:
-  push:
-    branches: [master, main]
-    paths:
-      - 'bindings/nodejs/**'
-      - 'src/**'
-      - 'migrations/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/nodejs.yml'
-  pull_request:
-    branches: [master, main]
-    paths:
-      - 'bindings/nodejs/**'
-      - 'src/**'
-      - 'migrations/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   release:
     types: [published]
   workflow_dispatch:
@@ -237,6 +220,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Create npm directories
+        run: npx napi create-npm-dir -t x86_64-pc-windows-msvc -t x86_64-apple-darwin -t aarch64-apple-darwin -t x86_64-unknown-linux-gnu -t aarch64-unknown-linux-gnu -t x86_64-unknown-linux-musl -t aarch64-unknown-linux-musl -t darwin-universal
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -261,7 +247,21 @@ jobs:
             ls -la "$dir" || true
           done
 
-      - name: Publish to npm
+      - name: Publish platform packages
+        run: |
+          npm config set provenance true
+          for dir in npm/*/; do
+            if [ -d "$dir" ]; then
+              echo "Publishing $dir..."
+              cd "$dir"
+              npm publish --access public || echo "Failed to publish $dir (may already exist)"
+              cd ../..
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package
         run: |
           npm config set provenance true
           if [ "${{ github.event.release.prerelease }}" = "true" ]; then
