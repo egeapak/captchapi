@@ -261,7 +261,26 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish main package
+      - name: Publish @captchapi/core
+        run: |
+          npm config set provenance true
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Build and publish the wrapper package
+      - name: Build wrapper package
+        working-directory: packages/captchapi
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish captchapi wrapper
+        working-directory: packages/captchapi
         run: |
           npm config set provenance true
           if [ "${{ github.event.release.prerelease }}" = "true" ]; then
