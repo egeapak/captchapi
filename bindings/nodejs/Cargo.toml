@@ -1,0 +1,41 @@
+[package]
+name = "captchapi-napi"
+version = "0.1.2"
+edition = "2021"
+description = "Node.js native bindings for CaptchAPI"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Core library
+captchapi = { path = "../.." }
+
+# Node.js bindings
+napi = { version = "2", features = ["async", "tokio_rt"] }
+napi-derive = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+napi-build = "2"
+
+[package.metadata.napi]
+name = "captchapi"
+package = "@captchapi/core"
+triples = [
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc"
+]

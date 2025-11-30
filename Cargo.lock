@@ -350,9 +350,6 @@ dependencies = [
  "hex",
  "image",
  "mockito",
- "napi",
- "napi-build",
- "napi-derive",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -372,6 +369,19 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "captchapi-napi"
+version = "0.1.2"
+dependencies = [
+ "captchapi",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "sqlx",
+ "tokio",
  "uuid",
 ]
 

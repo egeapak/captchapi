@@ -9,7 +9,3 @@ pub mod routes;
 pub mod services;
 pub mod tasks;
 pub mod telemetry;
-
-// Node.js bindings (only when napi feature is enabled)
-#[cfg(feature = "napi")]
-pub mod napi;

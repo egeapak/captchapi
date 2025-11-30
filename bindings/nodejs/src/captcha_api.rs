@@ -3,10 +3,10 @@
 //! This provides a high-level API for CAPTCHA operations that can be
 //! used directly from JavaScript/TypeScript.
 
-use super::error::IntoNapiResult;
-use super::types::*;
-use crate::models::{ApiKey, Session};
-use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::error::IntoNapiResult;
+use crate::types::*;
+use captchapi::models::{ApiKey, Session};
+use captchapi::services::{AuthService, CaptchaService, StorageService};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -74,7 +74,7 @@ impl CaptchaApi {
 
         // Run migrations if enabled
         if config.run_migrations.unwrap_or(true) {
-            sqlx::migrate!("./migrations")
+            sqlx::migrate!("../../migrations")
                 .run(&pool)
                 .await
                 .map_err(|e| {
