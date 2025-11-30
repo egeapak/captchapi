@@ -14,9 +14,7 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
         AppError::SessionNotFound => {
             napi::Error::new(Status::GenericFailure, "Session not found or expired")
         }
-        AppError::ApiKeyNotFound => {
-            napi::Error::new(Status::GenericFailure, "API key not found")
-        }
+        AppError::ApiKeyNotFound => napi::Error::new(Status::GenericFailure, "API key not found"),
         AppError::InvalidSessionParams(msg) => {
             napi::Error::new(Status::InvalidArg, format!("Invalid parameters: {}", msg))
         }
