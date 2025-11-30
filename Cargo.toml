@@ -3,7 +3,17 @@ name = "captchapi"
 version = "0.1.2"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+napi = ["dep:napi", "dep:napi-derive", "dep:napi-build"]
+
 [dependencies]
+# Node.js bindings (optional)
+napi = { version = "2", features = ["async", "tokio_rt"], optional = true }
+napi-derive = { version = "2", optional = true }
 # Web framework
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
@@ -48,3 +58,17 @@ axum-test = "18"
 tokio-test = "0.4"
 mockito = "1.7"
 tempfile = "3"
+
+[build-dependencies]
+napi-build = { version = "2", optional = true }
+
+[package.metadata.napi]
+name = "captchapi"
+package = "@captchapi/core"
+triples = [
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc"
+]
