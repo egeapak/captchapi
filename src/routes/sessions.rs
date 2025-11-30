@@ -86,8 +86,40 @@ async fn create_session(
         ));
     }
 
+    // Validate custom text if provided
+    if let Some(ref text) = req.text {
+        if text.is_empty() {
+            return Err(AppError::InvalidSessionParams(
+                "text cannot be empty".to_string(),
+            ));
+        }
+        if text.len() > 20 {
+            return Err(AppError::InvalidSessionParams(
+                "text cannot exceed 20 characters".to_string(),
+            ));
+        }
+        // Ensure text contains only alphanumeric characters
+        if !text.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(AppError::InvalidSessionParams(
+                "text must contain only alphanumeric characters".to_string(),
+            ));
+        }
+    }
+
     let width = req.width.unwrap_or(220);
+    if !(50..=1000).contains(&width) {
+        return Err(AppError::InvalidSessionParams(
+            "width must be between 50 and 1000 pixels".to_string(),
+        ));
+    }
+
     let height = req.height.unwrap_or(120);
+    if !(30..=500).contains(&height) {
+        return Err(AppError::InvalidSessionParams(
+            "height must be between 30 and 500 pixels".to_string(),
+        ));
+    }
+
     let dark_mode = req.dark_mode.unwrap_or(false);
     let compression = state.config.captcha_compression;
 
