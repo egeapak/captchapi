@@ -12,18 +12,18 @@ use crate::config::Config;
 use crate::metrics::init_metrics;
 use crate::middleware::{
     request_id_middleware, AuthMiddleware, MasterKeyMiddleware, MetricsMiddleware,
-    RateLimitMiddleware,
 };
 use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, RateLimiter, StorageService};
-use crate::tasks::{start_cleanup_task, start_rate_limiter_cleanup_task};
+use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -104,14 +104,22 @@ async fn main() -> anyhow::Result<()> {
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
-    let rate_limiter = RateLimiter::new(
-        config.rate_limit_requests_per_minute,
-        config.rate_limit_window_seconds,
+
+    // Configure rate limiter using tower_governor
+    // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
+    let governor_conf = Arc::new(
+        GovernorConfigBuilder::default()
+            .per_second(config.rate_limit_requests_per_second)
+            .burst_size(config.rate_limit_burst_size)
+            .finish()
+            .expect("Failed to build governor config"),
     );
+    let governor_limiter = governor_conf.limiter().clone();
+    let rate_limit_layer = GovernorLayer::new(governor_conf);
     tracing::info!(
-        "Rate limiter initialized: {} requests per {} seconds",
-        config.rate_limit_requests_per_minute,
-        config.rate_limit_window_seconds
+        "Rate limiter initialized: {} requests/second, burst size {}",
+        config.rate_limit_requests_per_second,
+        config.rate_limit_burst_size
     );
 
     // Initialize metrics
@@ -123,19 +131,11 @@ async fn main() -> anyhow::Result<()> {
         storage.clone(),
         config.cleanup_interval_seconds,
         metrics.clone(),
+        governor_limiter,
     );
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
         config.cleanup_interval_seconds
-    );
-
-    start_rate_limiter_cleanup_task(
-        rate_limiter.clone(),
-        config.rate_limit_cleanup_interval_seconds,
-    );
-    tracing::info!(
-        "Rate limiter cleanup task started (interval: {}s)",
-        config.rate_limit_cleanup_interval_seconds
     );
 
     // Create middleware
@@ -147,7 +147,6 @@ async fn main() -> anyhow::Result<()> {
     );
     let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
     let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let rate_limit_middleware = RateLimitMiddleware::new(rate_limiter, metrics.clone());
     let metrics_middleware = MetricsMiddleware::new(metrics.clone());
 
     // Create application state
@@ -175,7 +174,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(metrics.clone())
         .nest(
             "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware, Some(rate_limit_middleware)),
+            sessions_routes(sessions_state, auth_middleware).layer(rate_limit_layer),
         )
         .nest(
             "/api/v1/api-keys",

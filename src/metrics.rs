@@ -40,7 +40,10 @@ pub struct ErrorMetrics {
 }
 
 /// Rate limiting metrics
+/// Note: These metrics are kept for future custom rate limiting needs.
+/// tower_governor handles rate limiting internally.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct RateLimitMetrics {
     pub requests_allowed: Counter<u64>,
     pub requests_blocked: Counter<u64>,
@@ -67,6 +70,7 @@ pub struct Metrics {
     pub api_keys: ApiKeyMetrics,
     pub performance: PerformanceMetrics,
     pub errors: ErrorMetrics,
+    #[allow(dead_code)]
     pub rate_limit: RateLimitMetrics,
     pub system: SystemMetrics,
 }

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
-use crate::middleware::{AuthMiddleware, RateLimitMiddleware};
+use crate::middleware::AuthMiddleware;
 use crate::models::{
     CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
     ValidateSessionRequest, ValidateSessionResponse,
@@ -26,29 +26,17 @@ pub struct SessionsState {
     pub metrics: Arc<Metrics>,
 }
 
-pub fn sessions_routes(
-    state: SessionsState,
-    auth_middleware: AuthMiddleware,
-    rate_limit_middleware: Option<RateLimitMiddleware>,
-) -> Router {
-    let mut router = Router::new()
+/// Creates session routes with authentication middleware.
+/// Rate limiting should be applied externally via tower_governor layer.
+pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) -> Router {
+    Router::new()
         .route("/", post(create_session))
         .route("/{id}/validate", post(validate_session))
         .route("/{id}", delete(delete_session))
         .route_layer(middleware::from_fn_with_state(
             auth_middleware.clone(),
             AuthMiddleware::authenticate,
-        ));
-
-    // Apply rate limiting only if middleware is provided
-    if let Some(rate_limiter) = rate_limit_middleware {
-        router = router.route_layer(middleware::from_fn_with_state(
-            rate_limiter,
-            RateLimitMiddleware::check,
-        ));
-    }
-
-    router
+        ))
         // Public endpoints (no authentication required)
         .route("/{id}", get(get_session_details))
         .route("/{id}/image.jpeg", get(get_image_binary))

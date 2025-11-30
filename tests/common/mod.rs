@@ -78,9 +78,8 @@ impl TestApp {
             max_session_ttl_seconds: 3600,
             max_validation_attempts: 3,
             cleanup_interval_seconds: 60,
-            rate_limit_requests_per_minute: 60,
-            rate_limit_window_seconds: 60,
-            rate_limit_cleanup_interval_seconds: 300,
+            rate_limit_requests_per_second: 2,
+            rate_limit_burst_size: 10,
             captcha_compression: 40,
         });
 
@@ -116,7 +115,7 @@ impl TestApp {
             .with_state(metrics.clone())
             .nest(
                 "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware, None),
+                sessions_routes(sessions_state, auth_middleware),
             )
             .nest(
                 "/api/v1/api-keys",
