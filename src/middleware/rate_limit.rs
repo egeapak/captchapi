@@ -39,11 +39,7 @@ impl RateLimitMiddleware {
         // Check rate limit
         if !middleware.rate_limiter.check_rate_limit(ip).await {
             tracing::warn!("Rate limit exceeded for IP: {}", ip);
-            // Track blocked request
-            middleware.metrics.rate_limit.requests_blocked.add(1, &[]);
-            return Err(AppError::Unauthorized(
-                "Rate limit exceeded. Please try again later.".to_string(),
-            ));
+            return Err(AppError::RateLimitExceeded);
         }
 
         // Track allowed request

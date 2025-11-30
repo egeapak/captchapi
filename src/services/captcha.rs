@@ -2,7 +2,6 @@ use crate::error::Result;
 use captcha_rs::CaptchaBuilder;
 use image::DynamicImage;
 use rand::{distributions::Alphanumeric, Rng};
-use std::io::Cursor;
 
 pub struct CaptchaService;
 
@@ -61,16 +60,16 @@ impl CaptchaService {
             .collect::<String>()
     }
 
-    /// Convert a DynamicImage to JPEG bytes
-    pub fn image_to_jpeg_bytes(image: &DynamicImage, _quality: u8) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        let mut cursor = Cursor::new(&mut bytes);
+    /// Convert a DynamicImage to JPEG bytes with specified quality
+    pub fn image_to_jpeg_bytes(image: &DynamicImage, quality: u8) -> Result<Vec<u8>> {
+        use image::codecs::jpeg::JpegEncoder;
 
-        image
-            .write_to(&mut cursor, image::ImageFormat::Jpeg)
-            .map_err(|e| {
-                crate::error::AppError::Internal(anyhow::anyhow!("Failed to encode JPEG: {}", e))
-            })?;
+        let mut bytes = Vec::new();
+        let mut encoder = JpegEncoder::new_with_quality(&mut bytes, quality);
+
+        encoder.encode_image(image).map_err(|e| {
+            crate::error::AppError::Internal(anyhow::anyhow!("Failed to encode JPEG: {}", e))
+        })?;
 
         Ok(bytes)
     }

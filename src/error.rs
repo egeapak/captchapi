@@ -5,7 +5,12 @@ use axum::{
     Json,
 };
 use serde_json::json;
+use std::sync::LazyLock;
 use thiserror::Error;
+
+/// Lazily-initialized metrics instance for error tracking.
+/// This avoids creating a new Metrics struct on every error response.
+static ERROR_METRICS: LazyLock<Metrics> = LazyLock::new(Metrics::new);
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -27,6 +32,9 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Rate limit exceeded")]
+    RateLimitExceeded,
+
     #[error("CAPTCHA generation failed: {0}")]
     #[allow(dead_code)]
     CaptchaGeneration(String),
@@ -37,9 +45,8 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        // Create metrics instance for tracking errors
-        // Since OpenTelemetry uses a global registry, this will use the same metrics
-        let metrics = Metrics::new();
+        // Use lazily-initialized static metrics instance
+        let metrics = &*ERROR_METRICS;
 
         let (status, error_code, message) = match self {
             AppError::Database(ref e) => {
@@ -72,6 +79,15 @@ impl IntoResponse for AppError {
             ),
             AppError::Unauthorized(ref msg) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
+            }
+            AppError::RateLimitExceeded => {
+                // Track rate limit exceeded
+                metrics.rate_limit.requests_blocked.add(1, &[]);
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limit_exceeded",
+                    "Rate limit exceeded. Please try again later.".to_string(),
+                )
             }
             AppError::CaptchaGeneration(ref msg) => {
                 tracing::error!("CAPTCHA generation error: {}", msg);
@@ -195,6 +211,26 @@ mod tests {
 
         assert_eq!(body["error"], "unauthorized");
         assert_eq!(body["message"], "Invalid API key");
+    }
+
+    #[test]
+    fn test_rate_limit_exceeded_status_code() {
+        let error = AppError::RateLimitExceeded;
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_rate_limit_exceeded_error_code() {
+        let error = AppError::RateLimitExceeded;
+        let response = error.into_response();
+        let body = extract_body_json(response);
+
+        assert_eq!(body["error"], "rate_limit_exceeded");
+        assert_eq!(
+            body["message"],
+            "Rate limit exceeded. Please try again later."
+        );
     }
 
     #[test]
