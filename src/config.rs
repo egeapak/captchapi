@@ -19,6 +19,7 @@ pub struct Config {
     pub server_host: String,
     pub server_port: u16,
     pub database_url: String,
+    pub database_max_connections: u32,
     pub api_key_salt: String,
     pub master_api_key: String,
     pub default_session_ttl_seconds: u64,
@@ -51,6 +52,11 @@ impl Config {
             database_url: env
                 .get("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:./data/captchapi.db".to_string()),
+            database_max_connections: env
+                .get("DATABASE_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .map_err(|_| "Invalid DATABASE_MAX_CONNECTIONS: must be a positive integer")?,
             api_key_salt: env
                 .get("API_KEY_SALT")
                 .map_err(|_| "API_KEY_SALT must be set")?,
@@ -128,6 +134,7 @@ mod tests {
             self.set("SERVER_HOST", "0.0.0.0");
             self.set("SERVER_PORT", "3000");
             self.set("DATABASE_URL", "sqlite::memory:");
+            self.set("DATABASE_MAX_CONNECTIONS", "5");
             self.set("API_KEY_SALT", "test-salt");
             self.set("MASTER_API_KEY", "test-master");
             self.set("DEFAULT_SESSION_TTL_SECONDS", "300");
@@ -155,6 +162,7 @@ mod tests {
         assert_eq!(config.server_host, "0.0.0.0");
         assert_eq!(config.server_port, 3000);
         assert_eq!(config.database_url, "sqlite::memory:");
+        assert_eq!(config.database_max_connections, 5);
         assert_eq!(config.api_key_salt, "test-salt");
         assert_eq!(config.master_api_key, "test-master");
         assert_eq!(config.default_session_ttl_seconds, 300);
@@ -247,6 +255,7 @@ mod tests {
         assert_eq!(config.server_host, "127.0.0.1"); // Default
         assert_eq!(config.server_port, 3000); // Default
         assert_eq!(config.database_url, "sqlite:./data/captchapi.db"); // Default
+        assert_eq!(config.database_max_connections, 5); // Default
         assert_eq!(config.default_session_ttl_seconds, 300); // Default
         assert_eq!(config.max_session_ttl_seconds, 3600); // Default
         assert_eq!(config.max_validation_attempts, 3); // Default
@@ -394,5 +403,28 @@ mod tests {
         let config = Config::from_env_provider(&env).unwrap();
         assert_eq!(config.rate_limit_requests_per_second, 2); // Default
         assert_eq!(config.rate_limit_burst_size, 10); // Default
+    }
+
+    #[test]
+    fn test_config_custom_database_max_connections() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("DATABASE_MAX_CONNECTIONS", "10");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.database_max_connections, 10);
+    }
+
+    #[test]
+    fn test_config_invalid_database_max_connections_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("DATABASE_MAX_CONNECTIONS", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid DATABASE_MAX_CONNECTIONS"));
     }
 }

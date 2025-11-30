@@ -23,8 +23,9 @@ use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -86,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up database connection pool
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(config.database_max_connections)
         .connect_with(
             SqliteConnectOptions::new()
                 .filename(config.database_url.strip_prefix("sqlite:").unwrap())
@@ -126,12 +127,16 @@ async fn main() -> anyhow::Result<()> {
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
 
+    // Create shutdown token for graceful shutdown
+    let shutdown_token = CancellationToken::new();
+
     // Start cleanup task
-    start_cleanup_task(
+    let cleanup_handle = start_cleanup_task(
         storage.clone(),
         config.cleanup_interval_seconds,
         metrics.clone(),
         governor_limiter,
+        shutdown_token.clone(),
     );
     tracing::info!(
         "Background cleanup task started (interval: {}s)",
@@ -184,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/admin",
             admin_routes(admin_state, master_middleware_admin),
         )
+        .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum_middleware::from_fn(request_id_middleware))
         .layer(axum_middleware::from_fn_with_state(
@@ -197,18 +203,63 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Server listening on {}", config.server_address());
 
     // Use into_make_service_with_connect_info to extract IP addresses for rate limiting
-    let result = axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .await;
+    .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()));
+
+    tracing::info!("Press Ctrl+C to initiate graceful shutdown");
+
+    // Run the server
+    let result = server.await;
+
+    // Wait for background tasks to complete
+    tracing::info!("Waiting for background tasks to complete...");
+    if let Err(e) = cleanup_handle.await {
+        tracing::error!("Cleanup task panicked: {:?}", e);
+    }
 
     // Shutdown OpenTelemetry gracefully if it was enabled
     if otel_enabled {
         shutdown_telemetry();
     }
 
+    tracing::info!("Server shutdown complete");
     result?;
 
     Ok(())
+}
+
+/// Creates a future that completes when a shutdown signal is received.
+/// Triggers the cancellation token to notify background tasks.
+async fn shutdown_signal(shutdown_token: CancellationToken) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            tracing::info!("Received Ctrl+C, initiating graceful shutdown");
+        },
+        _ = terminate => {
+            tracing::info!("Received SIGTERM, initiating graceful shutdown");
+        },
+    }
+
+    // Signal all background tasks to shutdown
+    shutdown_token.cancel();
 }

@@ -72,6 +72,7 @@ impl TestApp {
             server_host: "127.0.0.1".to_string(),
             server_port: 3000,
             database_url: "sqlite::memory:".to_string(),
+            database_max_connections: 5,
             api_key_salt: "test-salt".to_string(),
             master_api_key: self.master_key.clone(),
             default_session_ttl_seconds: 300,
