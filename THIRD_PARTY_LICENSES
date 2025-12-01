@@ -1,0 +1,176 @@
+# Third Party Licenses
+
+CaptchAPI includes dependencies with various open source licenses.
+This file documents licenses that require attribution.
+
+Most dependencies are licensed under MIT and/or Apache-2.0, which are
+compatible with this project's Apache-2.0 license.
+
+---
+
+## BSD-3-Clause Licensed Dependencies
+
+The following dependencies are licensed under the BSD-3-Clause license:
+
+### nalgebra
+- Repository: https://github.com/dimforge/nalgebra
+- License: BSD-3-Clause
+- Copyright: Copyright (c) 2013, Sébastien Crozet
+
+### exr
+- Repository: https://github.com/johannesvollmer/exrs
+- License: BSD-3-Clause
+- Copyright: Copyright (c) Johannes Vollmer
+
+### lebe
+- Repository: https://github.com/johannesvollmer/lebe
+- License: BSD-3-Clause
+- Copyright: Copyright (c) Johannes Vollmer
+
+### alloc-no-stdlib / alloc-stdlib
+- Repository: https://github.com/dropbox/rust-alloc-no-stdlib
+- License: BSD-3-Clause
+- Copyright: Copyright (c) 2016, Dropbox, Inc.
+
+### brotli / brotli-decompressor
+- Repository: https://github.com/dropbox/rust-brotli
+- License: BSD-3-Clause AND MIT
+- Copyright: Copyright (c) 2016, Dropbox, Inc.
+
+### encoding_rs
+- Repository: https://github.com/nicholascowan/encoding_rs
+- License: (Apache-2.0 OR MIT) AND BSD-3-Clause
+- Portions Copyright: WHATWG Contributors
+
+### matchit
+- Repository: https://github.com/ibraheemdev/matchit
+- License: MIT AND BSD-3-Clause
+- Copyright: Copyright (c) 2022 Ibraheem Ahmed
+
+---
+
+## BSD-3-Clause License Text
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+   this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+---
+
+## ISC Licensed Dependencies
+
+### forwarded-header-value
+- Repository: https://github.com/inikulin/forwarded-header-value
+- License: ISC
+- Copyright: Copyright (c) Ivan Nikulin
+
+### ISC License Text
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+---
+
+## Zlib Licensed Dependencies
+
+### foldhash
+- Repository: https://github.com/orlp/foldhash
+- License: Zlib
+
+### bytemuck
+- Repository: https://github.com/Lokathor/bytemuck
+- License: Zlib OR Apache-2.0 OR MIT
+
+### Zlib License Text
+
+This software is provided 'as-is', without any express or implied warranty.
+In no event will the authors be held liable for any damages arising from
+the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not
+   be misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source distribution.
+
+---
+
+## Unicode Licensed Dependencies
+
+The following dependencies are licensed under Unicode-3.0:
+
+- icu_collections
+- icu_locale_core
+- icu_normalizer
+- icu_normalizer_data
+- icu_provider
+- potential_utf
+- yoke / yoke-derive
+- zerofrom / zerofrom-derive
+- zerovec / zerovec-derive
+
+Copyright: Copyright (c) Unicode, Inc.
+
+These libraries are used for Unicode text processing and are licensed
+under the Unicode License Agreement for Data Files and Software.
+See: https://www.unicode.org/license.txt
+
+---
+
+## MIT and Apache-2.0 Licensed Dependencies
+
+The majority of dependencies are dual-licensed under MIT and Apache-2.0.
+These licenses are permissive and compatible with this project's Apache-2.0
+license. Notable dependencies include:
+
+- axum, tokio, tower, tower-http (MIT)
+- sqlx (MIT OR Apache-2.0)
+- serde, serde_json (MIT OR Apache-2.0)
+- captcha-rs (MIT)
+- image (MIT OR Apache-2.0)
+- uuid (MIT OR Apache-2.0)
+- chrono (MIT OR Apache-2.0)
+- tracing (MIT)
+- opentelemetry (Apache-2.0)
+
+For the complete list of dependencies and their licenses, run:
+  cargo tree --format "{p} {l}"
