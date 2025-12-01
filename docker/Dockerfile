@@ -16,6 +16,10 @@ WORKDIR /build
 # Copy dependency files first for better caching
 COPY Cargo.toml Cargo.lock ./
 
+# Remove workspace members from Cargo.toml since bindings aren't included in Docker context
+# This prevents Cargo from trying to load excluded workspace members
+RUN sed -i '/\[workspace\]/,/^$/d' Cargo.toml
+
 # Create dummy main.rs to build dependencies
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \

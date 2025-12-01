@@ -52,3 +52,6 @@ Thumbs.db
 
 # Claude docs (not needed in runtime)
 .claude/
+
+# Node.js bindings (not needed in Docker image)
+bindings/
