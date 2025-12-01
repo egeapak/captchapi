@@ -2,6 +2,11 @@
 name = "captchapi"
 version = "0.1.2"
 edition = "2021"
+license = "Apache-2.0"
+description = "A REST API service for creating, validating, and consuming CAPTCHA challenges"
+repository = "https://github.com/egeapak/captchapi"
+keywords = ["captcha", "api", "rest", "security", "verification"]
+categories = ["web-programming", "authentication"]
 
 [workspace]
 members = ["bindings/nodejs"]
