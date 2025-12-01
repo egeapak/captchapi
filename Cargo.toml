@@ -3,6 +3,9 @@ name = "captchapi"
 version = "0.1.2"
 edition = "2021"
 
+[workspace]
+members = ["bindings/nodejs"]
+
 [dependencies]
 # Web framework
 axum = "0.8"

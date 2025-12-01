@@ -1,0 +1,299 @@
+name: Node.js Native Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  DEBUG: napi:*
+  APP_NAME: captchapi
+  MACOSX_DEPLOYMENT_TARGET: '10.13'
+
+defaults:
+  run:
+    working-directory: bindings/nodejs
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x64 (glibc)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            build: |
+              set -e
+              sudo apt-get update
+              sudo apt-get install -y build-essential
+              npm run build -- --target x86_64-unknown-linux-gnu
+              strip -x *.node
+
+          # Linux x64 (musl - Alpine)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            build: |
+              set -e
+              docker run --rm -v $(pwd)/../..:/workspace -w /workspace/bindings/nodejs \
+                ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine \
+                sh -c "npm run build -- --target x86_64-unknown-linux-musl && strip -x *.node"
+
+          # Linux ARM64 (glibc)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            build: |
+              set -e
+              sudo apt-get update
+              sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+              export CC=aarch64-linux-gnu-gcc
+              export CXX=aarch64-linux-gnu-g++
+              npm run build -- --target aarch64-unknown-linux-gnu
+              aarch64-linux-gnu-strip -x *.node
+
+          # Linux ARM64 (musl - Alpine)
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            build: |
+              set -e
+              docker run --rm -v $(pwd)/../..:/workspace -w /workspace/bindings/nodejs \
+                ghcr.io/napi-rs/napi-rs/nodejs-rust:lts-alpine \
+                sh -c "rustup target add aarch64-unknown-linux-musl && npm run build -- --target aarch64-unknown-linux-musl"
+
+          # macOS x64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            build: |
+              npm run build -- --target x86_64-apple-darwin
+              strip -x *.node
+
+          # macOS ARM64 (Apple Silicon)
+          - os: macos-14
+            target: aarch64-apple-darwin
+            build: |
+              npm run build -- --target aarch64-apple-darwin
+              strip -x *.node
+
+          # Windows x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            build: npm run build -- --target x86_64-pc-windows-msvc
+
+    name: Build - ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: ${{ matrix.target }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native module
+        run: ${{ matrix.build }}
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/nodejs/*.node
+          if-no-files-found: error
+
+  # Build universal macOS binary
+  universal-macos:
+    name: Build - Universal macOS
+    needs: build
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-x86_64-apple-darwin
+          path: bindings/nodejs/artifacts/x64
+
+      - name: Download ARM64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-aarch64-apple-darwin
+          path: bindings/nodejs/artifacts/arm64
+
+      - name: Create universal binary
+        run: |
+          npm run universal
+        env:
+          NAPI_ARTIFACTS_PATH: artifacts
+
+      - name: Upload universal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings-darwin-universal
+          path: bindings/nodejs/*.node
+          if-no-files-found: error
+
+  # Test the built modules
+  test:
+    name: Test - ${{ matrix.os }}
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings-${{ matrix.target }}
+          path: bindings/nodejs
+
+      - name: List files
+        run: ls -la
+        shell: bash
+
+      - name: Run tests
+        run: npm test
+
+  # Publish to npm on release
+  publish:
+    name: Publish to npm
+    if: github.event_name == 'release'
+    needs: [test, universal-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create npm directories
+        run: npx napi create-npm-dir -t x86_64-pc-windows-msvc -t x86_64-apple-darwin -t aarch64-apple-darwin -t x86_64-unknown-linux-gnu -t aarch64-unknown-linux-gnu -t x86_64-unknown-linux-musl -t aarch64-unknown-linux-musl -t darwin-universal
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bindings/nodejs/artifacts
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find artifacts -type f -name "*.node" | head -20
+
+      - name: Move artifacts
+        run: npm run artifacts
+        env:
+          NAPI_ARTIFACTS_PATH: artifacts
+
+      - name: List platform packages
+        run: |
+          echo "Platform packages:"
+          ls -la npm/ || echo "No npm directory"
+          for dir in npm/*/; do
+            echo "=== $dir ==="
+            ls -la "$dir" || true
+          done
+
+      - name: Publish platform packages
+        run: |
+          npm config set provenance true
+          for dir in npm/*/; do
+            if [ -d "$dir" ]; then
+              echo "Publishing $dir..."
+              cd "$dir"
+              npm publish --access public || echo "Failed to publish $dir (may already exist)"
+              cd ../..
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @captchapi/core
+        run: |
+          npm config set provenance true
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Build and publish the wrapper package
+      - name: Build wrapper package
+        working-directory: packages/captchapi
+        run: |
+          npm ci
+          npm run build
+
+      - name: Publish captchapi wrapper
+        working-directory: packages/captchapi
+        run: |
+          npm config set provenance true
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bindings/nodejs/*.node
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
