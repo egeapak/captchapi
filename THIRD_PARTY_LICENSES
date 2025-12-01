@@ -172,5 +172,17 @@ license. Notable dependencies include:
 - tracing (MIT)
 - opentelemetry (Apache-2.0)
 
+### Node.js Bindings (NAPI-RS)
+
+The Node.js native bindings use NAPI-RS, licensed under MIT:
+
+- napi (MIT)
+- napi-sys (MIT)
+- napi-derive (MIT)
+- napi-build (MIT)
+
+Repository: https://github.com/napi-rs/napi-rs
+Copyright: Copyright (c) napi-rs contributors
+
 For the complete list of dependencies and their licenses, run:
   cargo tree --format "{p} {l}"
