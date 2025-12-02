@@ -76,28 +76,48 @@ The server will start on `http://localhost:3000` with automatic database initial
 
 ## Docker Deployment
 
-The `docker/` folder contains multiple deployment configurations optimized for different use cases. All configurations use nonroot containers (UID 65532) with distroless images.
+**Optimized Static Image: 7.42 MB** 🚀
 
-### Available Options
+CaptchAPI uses a highly optimized static musl binary with distroless base image, achieving one of the smallest Rust web service images possible.
 
-**Transient Mode** (`docker-compose.transient.yml`)
-No data persistence. Database lives in container memory and is lost on restart. Perfect for testing and development.
+### Quick Build
 
-```bash
-cd docker
-docker-compose -f docker-compose.transient.yml up -d
-```
+**Prerequisites:**
+- [cross](https://github.com/cross-rs/cross): `cargo install cross`
+- [just](https://github.com/casey/just): `cargo install just`
 
-**Volume Mode** (`docker-compose.volume.yml` or `docker-compose.yml`)
-Recommended for production. Uses Docker-managed volumes with automatic permission handling via init container. Data persists across restarts.
+**Build & Run:**
 
 ```bash
-cd docker
-docker-compose up -d
+# Build optimized static image (7.42 MB)
+just
+
+# Run transient (testing)
+just run
+
+# Run with persistent volume (production)
+just run-volume
 ```
 
-**Bind Mount Mode** (`docker-compose.bindmount.yml`)
-Mounts a host directory. Useful when you need direct access to the database file for backups or inspection. Requires one-time permission setup.
+### Manual Docker Usage
+
+```bash
+# Transient (no volume)
+docker run -p 3000:3000 \
+  -e API_KEY_SALT=your-salt \
+  -e MASTER_API_KEY=your-key \
+  captchapi:latest
+
+# Production (with volume)
+docker volume create captchapi-data
+docker run -p 3000:3000 \
+  -v captchapi-data:/data \
+  -e API_KEY_SALT=your-salt \
+  -e MASTER_API_KEY=your-key \
+  captchapi:latest
+```
+
+See `docker/README.md` for detailed Docker build documentation and CI/CD setup.
 
 ```bash
 cd docker

@@ -1,0 +1,127 @@
+name: Build Static Docker Image
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+      - main
+
+env:
+  IMAGE_NAME: captchapi
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build-static:
+    name: Build Static Musl Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build musl static binary
+        run: |
+          echo "🔨 Building musl binary for ${{ env.TARGET }}..."
+          cross build --release --target ${{ env.TARGET }} --bin ${{ env.IMAGE_NAME }}
+
+          echo "📊 Binary size:"
+          ls -lh target/${{ env.TARGET }}/release/${{ env.IMAGE_NAME }}
+
+      - name: Prepare Docker build context
+        run: |
+          echo "📦 Preparing binary for Docker build..."
+          mkdir -p docker/bin
+          cp target/${{ env.TARGET }}/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-musl
+          chmod +x docker/bin/${{ env.IMAGE_NAME }}-musl
+
+          echo "✅ Binary ready:"
+          ls -lh docker/bin/${{ env.IMAGE_NAME }}-musl
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=static,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.static
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show build results
+        run: |
+          echo "=== BUILD RESULTS ==="
+          echo ""
+          echo "📦 Binary size:"
+          ls -lh docker/bin/${{ env.IMAGE_NAME }}-musl
+          echo ""
+          echo "🐳 Docker images:"
+          docker images | grep ${{ env.IMAGE_NAME }} || true
+          echo ""
+          echo "✅ Build complete!"
+
+      - name: Test image (smoke test)
+        run: |
+          echo "🧪 Running smoke test..."
+          docker run --rm -d --name test-captchapi -p 3001:3000 ${{ env.IMAGE_NAME }}:static
+          sleep 3
+
+          # Test health endpoint
+          curl -f http://localhost:3001/health || exit 1
+          echo "✅ Health check passed"
+
+          docker stop test-captchapi
+          echo "✅ Smoke test passed"
+
+      # Optional: Push to registry (uncomment and configure)
+      # - name: Login to GitHub Container Registry
+      #   if: github.event_name != 'pull_request'
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # - name: Push to registry
+      #   if: github.event_name != 'pull_request'
+      #   run: |
+      #     docker push ghcr.io/${{ github.repository }}:static
