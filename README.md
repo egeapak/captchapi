@@ -160,6 +160,7 @@ curl -X POST http://localhost:3000/api/v1/sessions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
+    "length": 5,
     "difficulty": 5,
     "expires_in_seconds": 300,
     "dark_mode": false
@@ -170,10 +171,13 @@ Response:
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "text": "aBc5X",
   "created_at": "2025-01-15T10:35:00Z",
   "expires_at": "2025-01-15T10:40:00Z"
 }
 ```
+
+**Note:** The `text` field contains the actual CAPTCHA solution. Save this value if you need to test validation programmatically.
 
 ---
 
@@ -218,7 +222,7 @@ curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-44665
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "solution": "abc123"
+    "solution": "aBc5X"
   }'
 ```
 
@@ -238,7 +242,10 @@ Failure response (attempt count incremented):
 }
 ```
 
-Note: After 3 failed attempts, the session is automatically deleted.
+**Important Notes:**
+- Validation is **case-sensitive**: "aBc5X" ≠ "abc5x"
+- After 3 failed attempts, the session is automatically deleted
+- Use the exact `text` value from the session creation response
 
 ---
 

@@ -23,12 +23,14 @@ const api = await CaptchaApiBuilder.create()
 
 // Create a CAPTCHA session
 const session = await api.createSession({
+  length: 5,      // CAPTCHA text length (1-20)
   difficulty: 5,
   width: 220,
   height: 120,
 });
 
 console.log('Session ID:', session.sessionId);
+console.log('CAPTCHA text:', session.text);
 console.log('Image size:', session.image.length, 'bytes');
 
 // Validate user input
@@ -84,7 +86,7 @@ const api = await inMemory();
 ```typescript
 // Create session
 const session = await api.createSession({
-  text: 'CUSTOM',           // Optional custom text
+  length: 5,                // Optional: CAPTCHA text length 1-20 (default: 5)
   difficulty: 5,            // 1-10
   width: 220,               // pixels
   height: 120,              // pixels
@@ -93,14 +95,18 @@ const session = await api.createSession({
   expiresInSeconds: 300,    // TTL
 });
 
+// Response includes generated text
+console.log('Generated text:', session.text);
+
 // Get image
 const imageBuffer = await api.getImage(session.sessionId);
 
 // Get session info
 const info = await api.getSession(session.sessionId);
 
-// Validate solution
+// Validate solution (case-sensitive)
 const result = await api.validate(session.sessionId, userAnswer);
+// Note: Validation is case-sensitive - "aBc5X" !== "abc5x"
 
 // Delete session
 await api.deleteSession(session.sessionId);

@@ -23,12 +23,13 @@ This file provides project overview, architecture, and development workflow. For
 
 ### Key Features
 
-- ✅ Configurable CAPTCHA generation (difficulty 1-10, dark mode, custom dimensions)
+- ✅ Configurable CAPTCHA generation (difficulty 1-10, dark mode, custom dimensions, custom length)
 - ✅ API key authentication for protected operations
 - ✅ Public image retrieval (requires session ID)
 - ✅ Automatic session expiration and cleanup
 - ✅ Validation attempt limiting (max 3 attempts)
-- ✅ Case-insensitive solution matching
+- ✅ Case-sensitive solution matching (secure validation)
+- ✅ Generated text returned in API response
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
 
