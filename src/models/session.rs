@@ -63,7 +63,7 @@ impl Session {
         let now = Utc::now().timestamp();
         Self {
             id: Uuid::new_v4().to_string(),
-            solution: solution.to_lowercase(),
+            solution,
             image_bytes,
             created_at: now,
             expires_at: now + expires_in_seconds as i64,
@@ -90,7 +90,7 @@ impl Session {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateSessionRequest {
-    pub text: Option<String>,
+    pub length: Option<i64>,
     pub expires_in_seconds: Option<u64>,
     pub difficulty: Option<i64>,
     pub width: Option<i64>,
@@ -101,6 +101,7 @@ pub struct CreateSessionRequest {
 #[derive(Debug, Serialize)]
 pub struct CreateSessionResponse {
     pub session_id: String,
+    pub text: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }

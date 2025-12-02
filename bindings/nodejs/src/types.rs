@@ -46,8 +46,8 @@ impl Default for CaptchaConfig {
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct CreateSessionOptions {
-    /// Custom text for the CAPTCHA (random if not provided)
-    pub text: Option<String>,
+    /// CAPTCHA text length 1-20 characters (default: 5)
+    pub length: Option<i32>,
 
     /// Session expiration in seconds (uses default if not provided)
     pub expires_in_seconds: Option<u32>,
@@ -74,6 +74,9 @@ pub struct CreateSessionOptions {
 pub struct SessionResult {
     /// Unique session identifier (UUID)
     pub session_id: String,
+
+    /// The generated CAPTCHA text (solution)
+    pub text: String,
 
     /// Session creation timestamp (Unix milliseconds)
     pub created_at: i64,
@@ -163,8 +166,8 @@ pub struct CreateApiKeyResult {
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct GenerateOptions {
-    /// Custom text for the CAPTCHA (random if not provided)
-    pub text: Option<String>,
+    /// CAPTCHA text length 1-20 characters (default: 5)
+    pub length: Option<i32>,
 
     /// Difficulty level from 1-10 (default: 5)
     pub difficulty: Option<i32>,

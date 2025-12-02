@@ -70,26 +70,25 @@ async fn test_sessions_validated_metric() {
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // Create a session with known text
+    // Create a session
     let response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "TEST123"
+            "length": 7
         }))
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
-    let session_id = response.json::<serde_json::Value>()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let json_response = response.json::<serde_json::Value>();
+    let session_id = json_response["session_id"].as_str().unwrap().to_string();
+    let text = json_response["text"].as_str().unwrap().to_string();
 
-    // Validate with correct solution (text is lowercased)
+    // Validate with correct solution (case-sensitive)
     let response = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "test123"}))
+        .json(&json!({"solution": text}))
         .await;
 
     response.assert_status_ok();
@@ -250,22 +249,21 @@ async fn test_metrics_in_complete_flow() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "FLOW123"
+            "length": 7
         }))
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
-    let session_id = response.json::<serde_json::Value>()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let json_response = response.json::<serde_json::Value>();
+    let session_id = json_response["session_id"].as_str().unwrap().to_string();
+    let text = json_response["text"].as_str().unwrap().to_string();
 
     // 2. Make failed validation attempts (session_validation_attempts + api_key_authentications)
     for _ in 0..2 {
         let response = server
             .post(&format!("/api/v1/sessions/{}/validate", session_id))
             .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-            .json(&json!({"solution": "wrong"}))
+            .json(&json!({"solution": "wrong_solution"}))
             .await;
 
         response.assert_status_ok();
@@ -276,7 +274,7 @@ async fn test_metrics_in_complete_flow() {
     let response = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "flow123"}))
+        .json(&json!({"solution": text}))
         .await;
 
     response.assert_status_ok();
@@ -470,26 +468,25 @@ async fn test_metrics_no_double_count_after_validation() {
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // Create a session with known text
+    // Create a session
     let response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "UNIQUE99"
+            "length": 8
         }))
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
-    let session_id = response.json::<serde_json::Value>()["session_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let json_response = response.json::<serde_json::Value>();
+    let session_id = json_response["session_id"].as_str().unwrap().to_string();
+    let text = json_response["text"].as_str().unwrap().to_string();
 
     // Validate successfully
     let response = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "unique99"}))
+        .json(&json!({"solution": text.clone()}))
         .await;
 
     response.assert_status_ok();
@@ -499,7 +496,7 @@ async fn test_metrics_no_double_count_after_validation() {
     let response = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "unique99"}))
+        .json(&json!({"solution": text}))
         .await;
 
     response.assert_status(axum::http::StatusCode::NOT_FOUND);

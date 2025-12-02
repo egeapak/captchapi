@@ -151,16 +151,18 @@ impl CaptchaApi {
             )));
         }
 
+        let length = opts.length.unwrap_or(5) as i64;
+
         // Generate CAPTCHA
         let (solution, image_bytes) = self
             .captcha
-            .generate(opts.text, difficulty, width, height, dark_mode, compression)
+            .generate(length, difficulty, width, height, dark_mode, compression)
             .into_napi()?;
 
         // Create session
         let session = Session::new(
-            solution,
-            image_bytes,
+            solution.clone(),
+            image_bytes.clone(),
             expires_in,
             difficulty,
             width,
@@ -173,9 +175,10 @@ impl CaptchaApi {
 
         Ok(SessionResult {
             session_id: session.id,
+            text: solution,
             created_at: session.created_at * 1000, // Convert to milliseconds
             expires_at: session.expires_at * 1000,
-            image: Buffer::from(session.image_bytes),
+            image: Buffer::from(image_bytes),
         })
     }
 
@@ -320,6 +323,7 @@ impl CaptchaApi {
     pub fn generate(&self, options: Option<GenerateOptions>) -> Result<GenerateResult> {
         let opts = options.unwrap_or_default();
 
+        let length = opts.length.unwrap_or(5) as i64;
         let difficulty = opts.difficulty.unwrap_or(5) as i64;
         let width = opts.width.unwrap_or(220) as i64;
         let height = opts.height.unwrap_or(120) as i64;
@@ -328,7 +332,7 @@ impl CaptchaApi {
 
         let (solution, image_bytes) = self
             .captcha
-            .generate(opts.text, difficulty, width, height, dark_mode, compression)
+            .generate(length, difficulty, width, height, dark_mode, compression)
             .into_napi()?;
 
         Ok(GenerateResult {

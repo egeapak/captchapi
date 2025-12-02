@@ -55,6 +55,7 @@ async fn test_create_session_with_auth_succeeds() {
     let body: serde_json::Value = response.json();
 
     assert!(body.get("session_id").is_some());
+    assert!(body.get("text").is_some());
     assert!(body.get("expires_at").is_some());
     assert!(body.get("created_at").is_some());
 }
@@ -65,12 +66,12 @@ async fn test_complete_session_flow() {
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // 1. Create session with custom text
+    // 1. Create session with custom length
     let create_response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "ABC123",
+            "length": 6,
             "difficulty": 5,
             "expires_in_seconds": 300
         }))
@@ -79,6 +80,10 @@ async fn test_complete_session_flow() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
+    let text = create_body["text"].as_str().unwrap();
+
+    // Verify text has correct length
+    assert_eq!(text.len(), 6);
 
     // 2. Get session details (public endpoint)
     let details_response = server
@@ -98,7 +103,7 @@ async fn test_complete_session_flow() {
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "solution": "ABC123"
+            "solution": text
         }))
         .await;
 
@@ -125,7 +130,7 @@ async fn test_validate_session_with_wrong_solution() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "CORRECT",
+            "length": 7,
         }))
         .await;
 
@@ -137,7 +142,7 @@ async fn test_validate_session_with_wrong_solution() {
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "solution": "WRONG"
+            "solution": "WRONG11"
         }))
         .await;
 
@@ -220,12 +225,12 @@ async fn test_get_binary_image() {
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // Create session with custom text
+    // Create session with custom length
     let create_response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "BINARY",
+            "length": 6,
             "expires_in_seconds": 300
         }))
         .await;
@@ -354,30 +359,66 @@ async fn test_create_session_difficulty_boundaries() {
 }
 
 #[tokio::test]
-async fn test_validation_case_insensitive() {
+async fn test_validation_case_sensitive() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // Create session with mixed case text
+    // Create session
     let create_response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"text": "AbC123"}))
+        .json(&json!({"length": 6}))
         .await;
 
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
+    let text = create_body["text"].as_str().unwrap().to_string();
 
-    // Test lowercase
+    // Test exact match (should be valid)
     let response1 = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "abc123"}))
+        .json(&json!({"solution": text.clone()}))
         .await;
     response1.assert_status_ok();
     let body1: serde_json::Value = response1.json();
     assert_eq!(body1["valid"], true);
+
+    // Create another session to test case mismatch
+    let create_response2 = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+
+    let create_body2: serde_json::Value = create_response2.json();
+    let session_id2 = create_body2["session_id"].as_str().unwrap();
+    let text2 = create_body2["text"].as_str().unwrap().to_string();
+
+    // Test with different case (should be invalid if text contains letters)
+    let text2_swapped_case: String = text2
+        .chars()
+        .map(|c| {
+            if c.is_uppercase() {
+                c.to_lowercase().to_string()
+            } else {
+                c.to_uppercase().to_string()
+            }
+        })
+        .collect();
+
+    // Only test if the swapped case is actually different
+    if text2 != text2_swapped_case {
+        let response2 = server
+            .post(&format!("/api/v1/sessions/{}/validate", session_id2))
+            .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+            .json(&json!({"solution": text2_swapped_case}))
+            .await;
+        response2.assert_status_ok();
+        let body2: serde_json::Value = response2.json();
+        assert_eq!(body2["valid"], false);
+    }
 }
 
 #[tokio::test]
@@ -390,11 +431,12 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let create_response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"text": "CORRECT"}))
+        .json(&json!({"length": 7}))
         .await;
 
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
+    let correct_text = create_body["text"].as_str().unwrap();
 
     // First failed attempt
     let response1 = server
@@ -427,7 +469,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let response4 = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "CORRECT"}))
+        .json(&json!({"solution": correct_text}))
         .await;
     response4.assert_status_ok();
     let body4: serde_json::Value = response4.json();
@@ -437,7 +479,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let response5 = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": "CORRECT"}))
+        .json(&json!({"solution": correct_text}))
         .await;
     response5.assert_status_not_found();
 }
@@ -560,6 +602,7 @@ async fn test_create_session_with_master_key_succeeds() {
     let body: serde_json::Value = response.json();
 
     assert!(body.get("session_id").is_some());
+    assert!(body.get("text").is_some());
     assert!(body.get("expires_at").is_some());
     assert!(body.get("created_at").is_some());
 }
@@ -575,7 +618,7 @@ async fn test_validate_session_with_master_key_succeeds() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "MASTER",
+            "length": 6,
             "difficulty": 5,
             "expires_in_seconds": 300
         }))
@@ -584,13 +627,14 @@ async fn test_validate_session_with_master_key_succeeds() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
+    let text = create_body["text"].as_str().unwrap();
 
     // Validate session using master key
     let validate_response = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.master_key))
         .json(&json!({
-            "solution": "MASTER"
+            "solution": text
         }))
         .await;
 
@@ -642,7 +686,7 @@ async fn test_complete_session_flow_with_master_key() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.master_key))
         .json(&json!({
-            "text": "MASTER123",
+            "length": 9,
             "difficulty": 5,
             "expires_in_seconds": 300
         }))
@@ -651,6 +695,10 @@ async fn test_complete_session_flow_with_master_key() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
+    let text = create_body["text"].as_str().unwrap();
+
+    // Verify text length
+    assert_eq!(text.len(), 9);
 
     // 2. Get session details (public endpoint)
     let details_response = server
@@ -668,7 +716,7 @@ async fn test_complete_session_flow_with_master_key() {
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.master_key))
         .json(&json!({
-            "solution": "MASTER123"
+            "solution": text
         }))
         .await;
 
@@ -685,7 +733,7 @@ async fn test_complete_session_flow_with_master_key() {
 }
 
 #[tokio::test]
-async fn test_create_session_with_empty_text_fails() {
+async fn test_create_session_with_length_zero_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
@@ -694,18 +742,18 @@ async fn test_create_session_with_empty_text_fails() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": ""
+            "length": 0
         }))
         .await;
 
     response.assert_status_bad_request();
     let body: serde_json::Value = response.json();
     assert_eq!(body["error"], "invalid_parameters");
-    assert!(body["message"].as_str().unwrap().contains("empty"));
+    assert!(body["message"].as_str().unwrap().contains("length"));
 }
 
 #[tokio::test]
-async fn test_create_session_with_text_too_long_fails() {
+async fn test_create_session_with_length_too_large_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
@@ -714,7 +762,7 @@ async fn test_create_session_with_text_too_long_fails() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  // 26 characters, exceeds 20 limit
+            "length": 21  // Exceeds 20 limit
         }))
         .await;
 
@@ -725,7 +773,7 @@ async fn test_create_session_with_text_too_long_fails() {
 }
 
 #[tokio::test]
-async fn test_create_session_with_non_alphanumeric_text_fails() {
+async fn test_create_session_with_negative_length_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
@@ -734,14 +782,13 @@ async fn test_create_session_with_non_alphanumeric_text_fails() {
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "ABC@123"  // Contains special character
+            "length": -1
         }))
         .await;
 
     response.assert_status_bad_request();
     let body: serde_json::Value = response.json();
     assert_eq!(body["error"], "invalid_parameters");
-    assert!(body["message"].as_str().unwrap().contains("alphanumeric"));
 }
 
 #[tokio::test]
@@ -856,30 +903,34 @@ async fn test_create_session_with_valid_boundary_dimensions() {
 }
 
 #[tokio::test]
-async fn test_create_session_with_valid_text_boundary() {
+async fn test_create_session_with_valid_length_boundary() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
     let server = TestServer::new(app).unwrap();
 
-    // Test single character (minimum)
+    // Test length = 1 (minimum)
     let response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "A"
+            "length": 1
         }))
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["text"].as_str().unwrap().len(), 1);
 
-    // Test exactly 20 characters (maximum)
+    // Test length = 20 (maximum)
     let response = server
         .post("/api/v1/sessions")
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
         .json(&json!({
-            "text": "ABCDEFGHIJ1234567890"  // Exactly 20 characters
+            "length": 20
         }))
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["text"].as_str().unwrap().len(), 20);
 }

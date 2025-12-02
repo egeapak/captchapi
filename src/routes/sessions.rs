@@ -44,6 +44,7 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
 }
 
 #[tracing::instrument(skip(state, req), fields(
+    length = req.length.unwrap_or(5),
     difficulty = req.difficulty.unwrap_or(5),
     width = req.width.unwrap_or(220),
     height = req.height.unwrap_or(120),
@@ -74,24 +75,12 @@ async fn create_session(
         ));
     }
 
-    // Validate custom text if provided
-    if let Some(ref text) = req.text {
-        if text.is_empty() {
-            return Err(AppError::InvalidSessionParams(
-                "text cannot be empty".to_string(),
-            ));
-        }
-        if text.len() > 20 {
-            return Err(AppError::InvalidSessionParams(
-                "text cannot exceed 20 characters".to_string(),
-            ));
-        }
-        // Ensure text contains only alphanumeric characters
-        if !text.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(AppError::InvalidSessionParams(
-                "text must contain only alphanumeric characters".to_string(),
-            ));
-        }
+    // Validate length if provided
+    let length = req.length.unwrap_or(5);
+    if !(1..=20).contains(&length) {
+        return Err(AppError::InvalidSessionParams(
+            "length must be between 1 and 20 characters".to_string(),
+        ));
     }
 
     let width = req.width.unwrap_or(220);
@@ -114,7 +103,7 @@ async fn create_session(
     // Generate CAPTCHA (record duration)
     let start = std::time::Instant::now();
     let (text, image_bytes) = state.captcha.generate(
-        req.text,
+        length,
         difficulty,
         width,
         height,
@@ -130,7 +119,7 @@ async fn create_session(
 
     // Create session
     let session = Session::new(
-        text,
+        text.clone(),
         image_bytes,
         expires_in,
         difficulty,
@@ -154,6 +143,7 @@ async fn create_session(
         axum::http::StatusCode::CREATED,
         Json(CreateSessionResponse {
             session_id: session.id.clone(),
+            text,
             expires_at: session.expires_at_datetime(),
             created_at: session.created_at_datetime(),
         }),
@@ -292,8 +282,8 @@ async fn validate_session(
 
     tracing::Span::current().record("max_attempts_reached", false);
 
-    // Validate solution (case-insensitive)
-    let is_valid = session.solution == req.solution.to_lowercase();
+    // Validate solution (case-sensitive)
+    let is_valid = session.solution == req.solution;
     tracing::Span::current().record("is_valid", is_valid);
 
     // Record validation attempt
