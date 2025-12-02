@@ -50,7 +50,7 @@ jobs:
           echo "✅ Version match confirmed: $TAG_VERSION"
 
   build-and-push:
-    name: Build and Push Docker Image
+    name: Build and Push Multi-Platform Docker Image
     runs-on: ubuntu-latest
     needs: validate-version
     permissions:
@@ -59,6 +59,39 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build AMD64 binary
+        run: |
+          echo "🔨 Building AMD64 binary..."
+          cross build --release --target x86_64-unknown-linux-musl --bin captchapi
+          ls -lh target/x86_64-unknown-linux-musl/release/captchapi
+
+      - name: Build ARM64 binary
+        run: |
+          echo "🔨 Building ARM64 binary..."
+          cross build --release --target aarch64-unknown-linux-musl --bin captchapi
+          ls -lh target/aarch64-unknown-linux-musl/release/captchapi
+
+      - name: Prepare Docker build context
+        run: |
+          echo "📦 Preparing binaries for Docker build..."
+          mkdir -p docker/bin
+          cp target/x86_64-unknown-linux-musl/release/captchapi docker/bin/captchapi-amd64
+          cp target/aarch64-unknown-linux-musl/release/captchapi docker/bin/captchapi-arm64
+          chmod +x docker/bin/captchapi-*
+          echo "✅ Binaries ready:"
+          ls -lh docker/bin/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -81,17 +114,28 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest
 
-      - name: Build and push Docker image
+      - name: Build and push multi-platform Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./docker/Dockerfile
-          platforms: linux/amd64
+          file: ./docker/Dockerfile.multiarch
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build summary
+        run: |
+          echo "🎉 Multi-platform image built and pushed!"
+          echo ""
+          echo "📦 Binary sizes:"
+          ls -lh docker/bin/
+          echo ""
+          echo "🐳 Platforms: linux/amd64, linux/arm64"
+          echo "📍 Registry: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          echo "🏷️  Tags: ${{ steps.meta.outputs.tags }}"
 
   create-release:
     name: Create GitHub Release

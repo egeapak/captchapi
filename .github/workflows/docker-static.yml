@@ -14,11 +14,10 @@ on:
 
 env:
   IMAGE_NAME: captchapi
-  TARGET: x86_64-unknown-linux-musl
 
 jobs:
-  build-static:
-    name: Build Static Musl Image
+  build-static-multiarch:
+    name: Build Multi-Platform Static Image
     runs-on: ubuntu-latest
 
     permissions:
@@ -34,31 +33,36 @@ jobs:
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ env.TARGET }}
 
       - name: Install cross
         uses: taiki-e/install-action@v2
         with:
           tool: cross
 
-      - name: Build musl static binary
+      - name: Build AMD64 binary
         run: |
-          echo "🔨 Building musl binary for ${{ env.TARGET }}..."
-          cross build --release --target ${{ env.TARGET }} --bin ${{ env.IMAGE_NAME }}
+          echo "🔨 Building AMD64 binary..."
+          cross build --release --target x86_64-unknown-linux-musl --bin ${{ env.IMAGE_NAME }}
+          echo "📊 AMD64 binary size:"
+          ls -lh target/x86_64-unknown-linux-musl/release/${{ env.IMAGE_NAME }}
 
-          echo "📊 Binary size:"
-          ls -lh target/${{ env.TARGET }}/release/${{ env.IMAGE_NAME }}
+      - name: Build ARM64 binary
+        run: |
+          echo "🔨 Building ARM64 binary..."
+          cross build --release --target aarch64-unknown-linux-musl --bin ${{ env.IMAGE_NAME }}
+          echo "📊 ARM64 binary size:"
+          ls -lh target/aarch64-unknown-linux-musl/release/${{ env.IMAGE_NAME }}
 
       - name: Prepare Docker build context
         run: |
-          echo "📦 Preparing binary for Docker build..."
+          echo "📦 Preparing binaries for Docker build..."
           mkdir -p docker/bin
-          cp target/${{ env.TARGET }}/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-musl
-          chmod +x docker/bin/${{ env.IMAGE_NAME }}-musl
+          cp target/x86_64-unknown-linux-musl/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-amd64
+          cp target/aarch64-unknown-linux-musl/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-arm64
+          chmod +x docker/bin/${{ env.IMAGE_NAME }}-*
 
-          echo "✅ Binary ready:"
-          ls -lh docker/bin/${{ env.IMAGE_NAME }}-musl
+          echo "✅ Binaries ready:"
+          ls -lh docker/bin/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -76,11 +80,12 @@ jobs:
             type=raw,value=static,enable={{is_default_branch}}
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build Docker image
+      - name: Build multi-platform Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: docker/Dockerfile.static
+          file: docker/Dockerfile.multiarch
+          platforms: linux/amd64,linux/arm64
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -91,18 +96,19 @@ jobs:
         run: |
           echo "=== BUILD RESULTS ==="
           echo ""
-          echo "📦 Binary size:"
-          ls -lh docker/bin/${{ env.IMAGE_NAME }}-musl
+          echo "📦 Binary sizes:"
+          ls -lh docker/bin/
           echo ""
+          echo "🐳 Platforms: linux/amd64, linux/arm64"
           echo "🐳 Docker images:"
           docker images | grep ${{ env.IMAGE_NAME }} || true
           echo ""
-          echo "✅ Build complete!"
+          echo "✅ Multi-platform build complete!"
 
-      - name: Test image (smoke test)
+      - name: Test image (smoke test - AMD64)
         run: |
-          echo "🧪 Running smoke test..."
-          docker run --rm -d --name test-captchapi -p 3001:3000 ${{ env.IMAGE_NAME }}:static
+          echo "🧪 Running smoke test on AMD64..."
+          docker run --rm -d --name test-captchapi --platform linux/amd64 -p 3001:3000 ${{ env.IMAGE_NAME }}:static
           sleep 3
 
           # Test health endpoint
@@ -110,7 +116,7 @@ jobs:
           echo "✅ Health check passed"
 
           docker stop test-captchapi
-          echo "✅ Smoke test passed"
+          echo "✅ Smoke test passed (AMD64)"
 
       # Optional: Push to registry (uncomment and configure)
       # - name: Login to GitHub Container Registry

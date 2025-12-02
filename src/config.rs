@@ -252,7 +252,7 @@ mod tests {
         env.set("MASTER_API_KEY", "test-master");
 
         let config = Config::from_env_provider(&env).unwrap();
-        assert_eq!(config.server_host, "127.0.0.1"); // Default
+        assert_eq!(config.server_host, "0.0.0.0"); // Default (changed for Docker compatibility)
         assert_eq!(config.server_port, 3000); // Default
         assert_eq!(config.database_url, "sqlite:./data/captchapi.db"); // Default
         assert_eq!(config.database_max_connections, 5); // Default
