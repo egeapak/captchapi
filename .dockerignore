@@ -44,3 +44,6 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Node.js bindings (not needed in Docker image)
+bindings/
