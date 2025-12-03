@@ -7,10 +7,11 @@ on:
       - main
     tags:
       - 'v*'
-  pull_request:
-    branches:
-      - master
-      - main
+  # Docker builds disabled for PRs - use 'just docker' locally for testing
+  # pull_request:
+  #   branches:
+  #     - master
+  #     - main
 
 env:
   IMAGE_NAME: captchapi
