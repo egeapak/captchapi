@@ -20,6 +20,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Database**: SQLite via SQLx 0.8 (async, compile-time checked queries)
 - **CAPTCHA Generation**: captcha-rs 0.2.11
 - **Authentication**: API key-based with SHA256 hashing
+- **Deployment**: Static musl binary in distroless container (7.42 MB)
 
 ### Key Features
 
@@ -32,6 +33,8 @@ This file provides project overview, architecture, and development workflow. For
 - ✅ Generated text returned in API response
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
+- ✅ Ultra-small Docker image (7.42 MB with full LTO and static linking)
+- ✅ Zero runtime dependencies (fully static binary)
 
 ## Project Structure
 

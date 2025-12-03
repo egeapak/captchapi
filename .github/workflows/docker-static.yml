@@ -1,0 +1,134 @@
+name: Build Static Docker Image
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - 'v*'
+  # Docker builds disabled for PRs - use 'just docker' locally for testing
+  # pull_request:
+  #   branches:
+  #     - master
+  #     - main
+
+env:
+  IMAGE_NAME: captchapi
+
+jobs:
+  build-static-multiarch:
+    name: Build Multi-Platform Static Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Build AMD64 binary
+        run: |
+          echo "🔨 Building AMD64 binary..."
+          cross build --release --target x86_64-unknown-linux-musl --bin ${{ env.IMAGE_NAME }}
+          echo "📊 AMD64 binary size:"
+          ls -lh target/x86_64-unknown-linux-musl/release/${{ env.IMAGE_NAME }}
+
+      - name: Build ARM64 binary
+        run: |
+          echo "🔨 Building ARM64 binary..."
+          cross build --release --target aarch64-unknown-linux-musl --bin ${{ env.IMAGE_NAME }}
+          echo "📊 ARM64 binary size:"
+          ls -lh target/aarch64-unknown-linux-musl/release/${{ env.IMAGE_NAME }}
+
+      - name: Prepare Docker build context
+        run: |
+          echo "📦 Preparing binaries for Docker build..."
+          mkdir -p docker/bin
+          cp target/x86_64-unknown-linux-musl/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-amd64
+          cp target/aarch64-unknown-linux-musl/release/${{ env.IMAGE_NAME }} docker/bin/${{ env.IMAGE_NAME }}-arm64
+          chmod +x docker/bin/${{ env.IMAGE_NAME }}-*
+
+          echo "✅ Binaries ready:"
+          ls -lh docker/bin/
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=static,enable={{is_default_branch}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build multi-platform Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.multiarch
+          platforms: linux/amd64,linux/arm64
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show build results
+        run: |
+          echo "=== BUILD RESULTS ==="
+          echo ""
+          echo "📦 Binary sizes:"
+          ls -lh docker/bin/
+          echo ""
+          echo "🐳 Platforms: linux/amd64, linux/arm64"
+          echo "🐳 Docker images:"
+          docker images | grep ${{ env.IMAGE_NAME }} || true
+          echo ""
+          echo "✅ Multi-platform build complete!"
+
+      - name: Test image (smoke test - AMD64)
+        run: |
+          echo "🧪 Running smoke test on AMD64..."
+          docker run --rm -d --name test-captchapi --platform linux/amd64 -p 3001:3000 ${{ env.IMAGE_NAME }}:static
+          sleep 3
+
+          # Test health endpoint
+          curl -f http://localhost:3001/health || exit 1
+          echo "✅ Health check passed"
+
+          docker stop test-captchapi
+          echo "✅ Smoke test passed (AMD64)"
+
+      # Optional: Push to registry (uncomment and configure)
+      # - name: Login to GitHub Container Registry
+      #   if: github.event_name != 'pull_request'
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ghcr.io
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # - name: Push to registry
+      #   if: github.event_name != 'pull_request'
+      #   run: |
+      #     docker push ghcr.io/${{ github.repository }}:static

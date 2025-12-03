@@ -1,0 +1,63 @@
+# ============================================================
+# CaptchAPI - Multi-Architecture Static Build
+# ============================================================
+# This Dockerfile builds multi-platform images for AMD64 and ARM64
+# Expects pre-built musl binaries at:
+#   - docker/bin/captchapi-x86_64-musl (for linux/amd64)
+#   - docker/bin/captchapi-aarch64-musl (for linux/arm64)
+#
+# Build both binaries with: just build-multiarch
+# Build multi-arch image with: just docker-multiarch
+
+# ============================================================
+# Stage 1: Create /data directory with correct permissions
+# ============================================================
+FROM alpine:latest AS datadir
+
+# Create /data directory with correct ownership for nonroot user (UID 65532)
+RUN mkdir -p /data && chown 65532:65532 /data
+
+# ============================================================
+# Stage 2: Static Distroless Runtime (~2 MB base)
+# ============================================================
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# Docker buildx provides TARGETARCH automatically
+ARG TARGETARCH
+
+# Set working directory
+WORKDIR /app
+
+# Layer order: least frequently changed → most frequently changed
+# This maximizes Docker layer caching
+
+# Layer 1: /data directory (never changes - created once)
+COPY --from=datadir --chown=nonroot:nonroot /data /data
+
+# Layer 2: Migrations (rarely change)
+COPY --chown=nonroot:nonroot migrations /app/migrations
+
+# Layer 3: Binary (changes most frequently)
+# Copy the correct binary based on target architecture
+# TARGETARCH is automatically set by buildx to either "amd64" or "arm64"
+COPY --chown=nonroot:nonroot docker/bin/captchapi-${TARGETARCH} /app/captchapi
+
+# Expose application port
+EXPOSE 3000
+
+# Runtime configuration:
+# - User: nonroot (UID 65532, GID 65532)
+# - Binary: Fully static musl (architecture-specific)
+# - Database: SQLite in /data (writable by nonroot)
+#
+# Supported architectures:
+# - linux/amd64 (x86_64) - Intel/AMD servers
+# - linux/arm64 (aarch64) - AWS Graviton, Apple Silicon
+#
+# Usage:
+#   docker run -p 3000:3000 \
+#     -e API_KEY_SALT=your-salt \
+#     -e MASTER_API_KEY=your-key \
+#     captchapi:latest
+
+ENTRYPOINT ["/app/captchapi"]

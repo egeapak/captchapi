@@ -11,13 +11,20 @@ categories = ["web-programming", "authentication"]
 [workspace]
 members = ["bindings/nodejs"]
 
+[profile.release]
+lto = true                # Full LTO for maximum size reduction
+codegen-units = 1         # Better optimization (slower compile, smaller binary)
+opt-level = "z"           # Optimize for size instead of speed
+strip = true              # Strip debug symbols from binary
+panic = "abort"           # Smaller panic handler
+
 [dependencies]
 # Web framework
 axum = "0.8"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 tokio-util = "0.7"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "compression-br"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip"] }
 tower_governor = "0.8"
 governor = "0.10"
 

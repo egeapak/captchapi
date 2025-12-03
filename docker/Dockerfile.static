@@ -1,0 +1,65 @@
+# ============================================================
+# CaptchAPI - Static Distroless Build
+# ============================================================
+# This Dockerfile expects a pre-built musl binary at docker/bin/captchapi-musl
+# Build the binary first with: just build-musl (or: cross build --release --target x86_64-unknown-linux-musl)
+#
+# Benefits of this approach:
+# - Smallest possible image (~7.5 MB)
+# - Fully static binary (no dependencies)
+# - Maximum security (static distroless base)
+# - Fast Docker builds (binary built externally)
+# - Better layer caching
+
+# ============================================================
+# Stage 1: Minimal builder for /data directory creation
+# ============================================================
+FROM alpine:latest AS datadir
+
+# Create /data directory with correct ownership for nonroot user (UID 65532)
+# This is necessary because static distroless has no shell/mkdir/chown
+RUN mkdir -p /data && \
+    chown 65532:65532 /data
+
+# ============================================================
+# Stage 2: Static Distroless Runtime (~2 MB base)
+# ============================================================
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# Set working directory
+WORKDIR /app
+
+# Layer order: least frequently changed → most frequently changed
+# This maximizes Docker layer caching
+
+# Layer 1: /data directory (never changes - created once)
+COPY --from=datadir --chown=nonroot:nonroot /data /data
+
+# Layer 2: Migrations (rarely change)
+COPY --chown=nonroot:nonroot migrations /app/migrations
+
+# Layer 3: Binary (changes most frequently - rebuild triggers only this layer)
+COPY --chown=nonroot:nonroot docker/bin/captchapi-musl /app/captchapi
+
+# Expose application port
+EXPOSE 3000
+
+# Runtime configuration:
+# - User: nonroot (UID 65532, GID 65532)
+# - Binary: Fully static (no libc needed)
+# - Database: SQLite in /data (writable by nonroot)
+#
+# THREE USAGE MODES:
+# ==================
+# 1. Transient (no volume) - Works out of the box
+#    docker run -p 3000:3000 captchapi:static
+#
+# 2. Docker volume (recommended for production)
+#    docker volume create captchapi-data
+#    docker run -p 3000:3000 -v captchapi-data:/data captchapi:static
+#
+# 3. Bind mount (development)
+#    mkdir -p ./data && sudo chown -R 65532:65532 ./data
+#    docker run -p 3000:3000 -v $(pwd)/data:/data captchapi:static
+
+ENTRYPOINT ["/app/captchapi"]

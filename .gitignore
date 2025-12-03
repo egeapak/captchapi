@@ -9,6 +9,9 @@
 *.db-wal
 /data/
 
+# Docker build artifacts
+docker/bin/
+
 # Environment
 .env
 .env.local
