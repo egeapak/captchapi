@@ -29,6 +29,7 @@ pub struct Config {
     // Rate limiting (tower_governor)
     pub rate_limit_requests_per_second: u64,
     pub rate_limit_burst_size: u32,
+    pub rate_limit_reverse_proxy: bool,
     pub captcha_compression: u8,
 }
 
@@ -95,6 +96,11 @@ impl Config {
                 .unwrap_or_else(|_| "10".to_string())
                 .parse()
                 .map_err(|_| "Invalid RATE_LIMIT_BURST_SIZE: must be a positive integer")?,
+            rate_limit_reverse_proxy: env
+                .get("RATE_LIMIT_REVERSE_PROXY")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .map_err(|_| "Invalid RATE_LIMIT_REVERSE_PROXY: must be 'true' or 'false'")?,
             captcha_compression: env
                 .get("CAPTCHA_COMPRESSION")
                 .unwrap_or_else(|_| "40".to_string())
@@ -143,6 +149,7 @@ mod tests {
             self.set("CLEANUP_INTERVAL_SECONDS", "60");
             self.set("RATE_LIMIT_REQUESTS_PER_SECOND", "2");
             self.set("RATE_LIMIT_BURST_SIZE", "10");
+            self.set("RATE_LIMIT_REVERSE_PROXY", "false");
             self.set("CAPTCHA_COMPRESSION", "40");
         }
     }
@@ -171,6 +178,7 @@ mod tests {
         assert_eq!(config.cleanup_interval_seconds, 60);
         assert_eq!(config.rate_limit_requests_per_second, 2);
         assert_eq!(config.rate_limit_burst_size, 10);
+        assert!(!config.rate_limit_reverse_proxy);
         assert_eq!(config.captcha_compression, 40);
     }
 
@@ -403,6 +411,40 @@ mod tests {
         let config = Config::from_env_provider(&env).unwrap();
         assert_eq!(config.rate_limit_requests_per_second, 2); // Default
         assert_eq!(config.rate_limit_burst_size, 10); // Default
+        assert!(!config.rate_limit_reverse_proxy); // Default is false
+    }
+
+    #[test]
+    fn test_config_rate_limit_reverse_proxy_enabled() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_REVERSE_PROXY", "true");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert!(config.rate_limit_reverse_proxy);
+    }
+
+    #[test]
+    fn test_config_rate_limit_reverse_proxy_disabled() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_REVERSE_PROXY", "false");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert!(!config.rate_limit_reverse_proxy);
+    }
+
+    #[test]
+    fn test_config_invalid_rate_limit_reverse_proxy_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("RATE_LIMIT_REVERSE_PROXY", "not-a-bool");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid RATE_LIMIT_REVERSE_PROXY"));
     }
 
     #[test]
