@@ -17,7 +17,7 @@ use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::services::{AuthService, CaptchaService, RateLimiterConfig, StorageService};
 use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{middleware as axum_middleware, routing::get, Router};
@@ -26,9 +26,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::net::IpAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tower_governor::{
-    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
-};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -113,12 +111,16 @@ async fn main() -> anyhow::Result<()> {
     // Configure rate limiter using tower_governor
     // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
     // When behind a reverse proxy, use SmartIpKeyExtractor to read X-Forwarded-For/X-Real-IP headers
-    let reverse_proxy_mode = config.rate_limit_reverse_proxy;
-    tracing::info!(
-        "Rate limiter initialized: {} requests/second, burst size {}, reverse proxy mode: {}",
+    let rate_limiter_config = RateLimiterConfig::new(
         config.rate_limit_requests_per_second,
         config.rate_limit_burst_size,
-        reverse_proxy_mode
+        config.rate_limit_reverse_proxy,
+    );
+    tracing::info!(
+        "Rate limiter initialized: {} requests/second, burst size {}, reverse proxy mode: {}",
+        rate_limiter_config.requests_per_second,
+        rate_limiter_config.burst_size,
+        rate_limiter_config.reverse_proxy
     );
 
     // Initialize metrics
@@ -172,35 +174,35 @@ async fn main() -> anyhow::Result<()> {
     // When behind a reverse proxy, SmartIpKeyExtractor reads X-Forwarded-For, X-Real-IP, Forwarded headers
     // Otherwise, PeerIpKeyExtractor uses the direct socket connection IP
     let (app, governor_limiter): (Router, Arc<DefaultKeyedRateLimiter<IpAddr>>) =
-        if reverse_proxy_mode {
+        if rate_limiter_config.reverse_proxy {
             let governor_conf = Arc::new(
                 GovernorConfigBuilder::default()
-                    .per_second(config.rate_limit_requests_per_second)
-                    .burst_size(config.rate_limit_burst_size)
+                    .per_second(rate_limiter_config.requests_per_second)
+                    .burst_size(rate_limiter_config.burst_size)
                     .key_extractor(SmartIpKeyExtractor)
                     .finish()
                     .expect("Failed to build governor config"),
             );
             let limiter = governor_conf.limiter().clone();
-            let rate_limit_layer = GovernorLayer::new(governor_conf);
+            let layer = tower_governor::GovernorLayer::new(governor_conf);
             let router = base_router.nest(
                 "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware).layer(rate_limit_layer),
+                sessions_routes(sessions_state, auth_middleware).layer(layer),
             );
             (router, limiter)
         } else {
             let governor_conf = Arc::new(
                 GovernorConfigBuilder::default()
-                    .per_second(config.rate_limit_requests_per_second)
-                    .burst_size(config.rate_limit_burst_size)
+                    .per_second(rate_limiter_config.requests_per_second)
+                    .burst_size(rate_limiter_config.burst_size)
                     .finish()
                     .expect("Failed to build governor config"),
             );
             let limiter = governor_conf.limiter().clone();
-            let rate_limit_layer = GovernorLayer::new(governor_conf);
+            let layer = tower_governor::GovernorLayer::new(governor_conf);
             let router = base_router.nest(
                 "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware).layer(rate_limit_layer),
+                sessions_routes(sessions_state, auth_middleware).layer(layer),
             );
             (router, limiter)
         };
