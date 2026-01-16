@@ -81,6 +81,7 @@ impl TestApp {
             cleanup_interval_seconds: 60,
             rate_limit_requests_per_second: 2,
             rate_limit_burst_size: 10,
+            rate_limit_reverse_proxy: false,
             captcha_compression: 40,
         });
 

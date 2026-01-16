@@ -17,14 +17,16 @@ use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, StorageService};
+use crate::services::{AuthService, CaptchaService, RateLimiterConfig, StorageService};
 use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use axum::{middleware as axum_middleware, routing::get, Router};
+use governor::DefaultKeyedRateLimiter;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::net::IpAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor};
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -108,40 +110,22 @@ async fn main() -> anyhow::Result<()> {
 
     // Configure rate limiter using tower_governor
     // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
-    let governor_conf = Arc::new(
-        GovernorConfigBuilder::default()
-            .per_second(config.rate_limit_requests_per_second)
-            .burst_size(config.rate_limit_burst_size)
-            .finish()
-            .expect("Failed to build governor config"),
-    );
-    let governor_limiter = governor_conf.limiter().clone();
-    let rate_limit_layer = GovernorLayer::new(governor_conf);
-    tracing::info!(
-        "Rate limiter initialized: {} requests/second, burst size {}",
+    // When behind a reverse proxy, use SmartIpKeyExtractor to read X-Forwarded-For/X-Real-IP headers
+    let rate_limiter_config = RateLimiterConfig::new(
         config.rate_limit_requests_per_second,
-        config.rate_limit_burst_size
+        config.rate_limit_burst_size,
+        config.rate_limit_reverse_proxy,
+    );
+    tracing::info!(
+        "Rate limiter initialized: {} requests/second, burst size {}, reverse proxy mode: {}",
+        rate_limiter_config.requests_per_second,
+        rate_limiter_config.burst_size,
+        rate_limiter_config.reverse_proxy
     );
 
     // Initialize metrics
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
-
-    // Create shutdown token for graceful shutdown
-    let shutdown_token = CancellationToken::new();
-
-    // Start cleanup task
-    let cleanup_handle = start_cleanup_task(
-        storage.clone(),
-        config.cleanup_interval_seconds,
-        metrics.clone(),
-        governor_limiter,
-        shutdown_token.clone(),
-    );
-    tracing::info!(
-        "Background cleanup task started (interval: {}s)",
-        config.cleanup_interval_seconds
-    );
 
     // Create middleware
     let auth_middleware = AuthMiddleware::new(
@@ -173,14 +157,10 @@ async fn main() -> anyhow::Result<()> {
         metrics: metrics.clone(),
     };
 
-    // Build router
-    let app = Router::new()
+    // Build base router (without rate-limited sessions routes)
+    let base_router = Router::new()
         .route("/health", get(health_check))
         .with_state(metrics.clone())
-        .nest(
-            "/api/v1/sessions",
-            sessions_routes(sessions_state, auth_middleware).layer(rate_limit_layer),
-        )
         .nest(
             "/api/v1/api-keys",
             api_keys_routes(api_keys_state, master_middleware),
@@ -188,7 +168,47 @@ async fn main() -> anyhow::Result<()> {
         .nest(
             "/api/v1/admin",
             admin_routes(admin_state, master_middleware_admin),
-        )
+        );
+
+    // Build router with rate limiting, using appropriate key extractor based on config
+    // When behind a reverse proxy, SmartIpKeyExtractor reads X-Forwarded-For, X-Real-IP, Forwarded headers
+    // Otherwise, PeerIpKeyExtractor uses the direct socket connection IP
+    let (app, governor_limiter): (Router, Arc<DefaultKeyedRateLimiter<IpAddr>>) =
+        if rate_limiter_config.reverse_proxy {
+            let governor_conf = Arc::new(
+                GovernorConfigBuilder::default()
+                    .per_second(rate_limiter_config.requests_per_second)
+                    .burst_size(rate_limiter_config.burst_size)
+                    .key_extractor(SmartIpKeyExtractor)
+                    .finish()
+                    .expect("Failed to build governor config"),
+            );
+            let limiter = governor_conf.limiter().clone();
+            let layer = tower_governor::GovernorLayer::new(governor_conf);
+            let router = base_router.nest(
+                "/api/v1/sessions",
+                sessions_routes(sessions_state, auth_middleware).layer(layer),
+            );
+            (router, limiter)
+        } else {
+            let governor_conf = Arc::new(
+                GovernorConfigBuilder::default()
+                    .per_second(rate_limiter_config.requests_per_second)
+                    .burst_size(rate_limiter_config.burst_size)
+                    .finish()
+                    .expect("Failed to build governor config"),
+            );
+            let limiter = governor_conf.limiter().clone();
+            let layer = tower_governor::GovernorLayer::new(governor_conf);
+            let router = base_router.nest(
+                "/api/v1/sessions",
+                sessions_routes(sessions_state, auth_middleware).layer(layer),
+            );
+            (router, limiter)
+        };
+
+    // Add common layers
+    let app = app
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http())
         .layer(axum_middleware::from_fn(request_id_middleware))
@@ -196,6 +216,22 @@ async fn main() -> anyhow::Result<()> {
             metrics_middleware.clone(),
             MetricsMiddleware::track_request_duration,
         ));
+
+    // Create shutdown token for graceful shutdown
+    let shutdown_token = CancellationToken::new();
+
+    // Start cleanup task
+    let cleanup_handle = start_cleanup_task(
+        storage.clone(),
+        config.cleanup_interval_seconds,
+        metrics.clone(),
+        governor_limiter,
+        shutdown_token.clone(),
+    );
+    tracing::info!(
+        "Background cleanup task started (interval: {}s)",
+        config.cleanup_interval_seconds
+    );
 
     // Start server
     let listener = tokio::net::TcpListener::bind(config.server_address()).await?;
