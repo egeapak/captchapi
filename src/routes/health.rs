@@ -9,7 +9,6 @@ pub async fn health_check(State(metrics): State<Arc<Metrics>>) -> Json<Value> {
     metrics.system.health_checks.add(1, &[]);
 
     Json(json!({
-        "status": "healthy",
-        "version": env!("CARGO_PKG_VERSION")
+        "status": "healthy"
     }))
 }

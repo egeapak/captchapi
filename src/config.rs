@@ -58,12 +58,24 @@ impl Config {
                 .unwrap_or_else(|_| "5".to_string())
                 .parse()
                 .map_err(|_| "Invalid DATABASE_MAX_CONNECTIONS: must be a positive integer")?,
-            api_key_salt: env
-                .get("API_KEY_SALT")
-                .map_err(|_| "API_KEY_SALT must be set")?,
-            master_api_key: env
-                .get("MASTER_API_KEY")
-                .map_err(|_| "MASTER_API_KEY must be set")?,
+            api_key_salt: {
+                let salt = env
+                    .get("API_KEY_SALT")
+                    .map_err(|_| "API_KEY_SALT must be set")?;
+                if salt.len() < 16 {
+                    return Err("API_KEY_SALT must be at least 16 bytes for security".to_string());
+                }
+                salt
+            },
+            master_api_key: {
+                let key = env
+                    .get("MASTER_API_KEY")
+                    .map_err(|_| "MASTER_API_KEY must be set")?;
+                if key.len() < 16 {
+                    return Err("MASTER_API_KEY must be at least 16 bytes for security".to_string());
+                }
+                key
+            },
             default_session_ttl_seconds: env
                 .get("DEFAULT_SESSION_TTL_SECONDS")
                 .unwrap_or_else(|_| "300".to_string())
@@ -141,8 +153,8 @@ mod tests {
             self.set("SERVER_PORT", "3000");
             self.set("DATABASE_URL", "sqlite::memory:");
             self.set("DATABASE_MAX_CONNECTIONS", "5");
-            self.set("API_KEY_SALT", "test-salt");
-            self.set("MASTER_API_KEY", "test-master");
+            self.set("API_KEY_SALT", "test-salt-minimum-16chars");
+            self.set("MASTER_API_KEY", "test-master-minimum-16chars");
             self.set("DEFAULT_SESSION_TTL_SECONDS", "300");
             self.set("MAX_SESSION_TTL_SECONDS", "3600");
             self.set("MAX_VALIDATION_ATTEMPTS", "3");
@@ -170,8 +182,8 @@ mod tests {
         assert_eq!(config.server_port, 3000);
         assert_eq!(config.database_url, "sqlite::memory:");
         assert_eq!(config.database_max_connections, 5);
-        assert_eq!(config.api_key_salt, "test-salt");
-        assert_eq!(config.master_api_key, "test-master");
+        assert_eq!(config.api_key_salt, "test-salt-minimum-16chars");
+        assert_eq!(config.master_api_key, "test-master-minimum-16chars");
         assert_eq!(config.default_session_ttl_seconds, 300);
         assert_eq!(config.max_session_ttl_seconds, 3600);
         assert_eq!(config.max_validation_attempts, 3);
@@ -202,6 +214,28 @@ mod tests {
         let result = Config::from_env_provider(&env);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "MASTER_API_KEY must be set");
+    }
+
+    #[test]
+    fn test_config_api_key_salt_too_short() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("API_KEY_SALT", "short");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 16 bytes"));
+    }
+
+    #[test]
+    fn test_config_master_api_key_too_short() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("MASTER_API_KEY", "short");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 16 bytes"));
     }
 
     #[test]
@@ -256,8 +290,8 @@ mod tests {
     fn test_config_uses_default_values() {
         let mut env = MockEnv::new();
         // Only set required vars, not optional ones
-        env.set("API_KEY_SALT", "test-salt");
-        env.set("MASTER_API_KEY", "test-master");
+        env.set("API_KEY_SALT", "test-salt-minimum-16chars");
+        env.set("MASTER_API_KEY", "test-master-minimum-16chars");
 
         let config = Config::from_env_provider(&env).unwrap();
         assert_eq!(config.server_host, "0.0.0.0"); // Default (changed for Docker compatibility)
@@ -405,8 +439,8 @@ mod tests {
     fn test_config_rate_limit_default_values() {
         let mut env = MockEnv::new();
         // Only set required vars
-        env.set("API_KEY_SALT", "test-salt");
-        env.set("MASTER_API_KEY", "test-master");
+        env.set("API_KEY_SALT", "test-salt-minimum-16chars");
+        env.set("MASTER_API_KEY", "test-master-minimum-16chars");
 
         let config = Config::from_env_provider(&env).unwrap();
         assert_eq!(config.rate_limit_requests_per_second, 2); // Default

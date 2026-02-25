@@ -46,7 +46,7 @@ impl TestApp {
             .expect("Failed to run migrations");
 
         let storage = StorageService::new(pool);
-        let auth_service = Arc::new(AuthService::new("test-salt".to_string()));
+        let auth_service = Arc::new(AuthService::new("test-salt-minimum-16chars".to_string()));
 
         // Create a test API key
         let api_key = "test-api-key-123";
@@ -61,7 +61,7 @@ impl TestApp {
             storage,
             auth_service,
             api_key: api_key.to_string(),
-            master_key: "test-master-key".to_string(),
+            master_key: "test-master-key-minimum-16chars".to_string(),
         }
     }
 
@@ -73,7 +73,7 @@ impl TestApp {
             server_port: 3000,
             database_url: "sqlite::memory:".to_string(),
             database_max_connections: 5,
-            api_key_salt: "test-salt".to_string(),
+            api_key_salt: "test-salt-minimum-16chars".to_string(),
             master_api_key: self.master_key.clone(),
             default_session_ttl_seconds: 300,
             max_session_ttl_seconds: 3600,

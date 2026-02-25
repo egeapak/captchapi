@@ -38,7 +38,7 @@ The following dependencies are licensed under the BSD-3-Clause license:
 - Copyright: Copyright (c) 2016, Dropbox, Inc.
 
 ### encoding_rs
-- Repository: https://github.com/nicholascowan/encoding_rs
+- Repository: https://github.com/hsivonen/encoding_rs
 - License: (Apache-2.0 OR MIT) AND BSD-3-Clause
 - Portions Copyright: WHATWG Contributors
 
@@ -186,3 +186,11 @@ Copyright: Copyright (c) napi-rs contributors
 
 For the complete list of dependencies and their licenses, run:
   cargo tree --format "{p} {l}"
+
+## ISC Licensed Dependencies
+
+### ring
+- Repository: https://github.com/briansmith/ring
+- License: ISC AND (MIT OR Apache-2.0) AND OpenSSL AND ISC
+- Copyright: Copyright (c) Brian Smith. Portions Copyright (c) Google Inc. and BoringSSL contributors.
+- Note: ring contains code derived from BoringSSL (ISC license), OpenSSL (OpenSSL license), and other sources.

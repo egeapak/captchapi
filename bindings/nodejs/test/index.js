@@ -107,7 +107,7 @@ async function runTests() {
     assert(api, 'API should be reopened');
 
     // Verify it works
-    const session = await api.createSession({ text: 'TEST', difficulty: 3 });
+    const session = await api.createSession({ difficulty: 3 });
     assert(session.sessionId, 'Should be able to create session after reopen');
     await api.deleteSession(session.sessionId);
   });
@@ -140,9 +140,10 @@ async function runTests() {
     assert(result.image[0] === 0xFF && result.image[1] === 0xD8, 'Should be JPEG');
   });
 
-  runner.test('Generate: Custom text', async () => {
-    const result = api.generate({ text: 'CUSTOM123' });
-    assert.strictEqual(result.solution, 'CUSTOM123');
+  runner.test('Generate: Custom length', async () => {
+    const result = api.generate({ length: 8 });
+    assert(result.solution.length === 8, 'Solution should be 8 characters');
+    assert(result.image instanceof Buffer, 'Image should be Buffer');
   });
 
   runner.test('Generate: Dark mode', async () => {
@@ -172,7 +173,6 @@ async function runTests() {
 
   runner.test('Session: Create with custom options', async () => {
     const session = await api.createSession({
-      text: 'MYTEST',
       difficulty: 7,
       width: 300,
       height: 150,
@@ -191,7 +191,7 @@ async function runTests() {
   });
 
   runner.test('Session: Get image separately', async () => {
-    const session = await api.createSession({ text: 'IMG' });
+    const session = await api.createSession({ difficulty: 3 });
     const image = await api.getImage(session.sessionId);
     assert(image instanceof Buffer);
     assert(image[0] === 0xFF && image[1] === 0xD8, 'Should be JPEG');
@@ -199,7 +199,7 @@ async function runTests() {
   });
 
   runner.test('Session: Delete returns true for existing', async () => {
-    const session = await api.createSession({ text: 'DEL' });
+    const session = await api.createSession();
     const deleted = await api.deleteSession(session.sessionId);
     assert.strictEqual(deleted, true);
   });
@@ -213,16 +213,16 @@ async function runTests() {
   // VALIDATION TESTS
   // ============================================
 
-  runner.test('Validation: Correct solution (case-insensitive)', async () => {
-    const session = await api.createSession({ text: 'AbCdE' });
-    const result = await api.validate(session.sessionId, 'abcde');
+  runner.test('Validation: Correct solution (case-sensitive)', async () => {
+    const session = await api.createSession();
+    const result = await api.validate(session.sessionId, session.text);
     assert.strictEqual(result.valid, true);
     assert.strictEqual(result.attemptsRemaining, 0);
   });
 
   runner.test('Validation: Session deleted after success', async () => {
-    const session = await api.createSession({ text: 'GONE' });
-    await api.validate(session.sessionId, 'GONE');
+    const session = await api.createSession();
+    await api.validate(session.sessionId, session.text);
 
     try {
       await api.getSession(session.sessionId);
@@ -233,25 +233,25 @@ async function runTests() {
   });
 
   runner.test('Validation: Wrong solution decrements attempts', async () => {
-    const session = await api.createSession({ text: 'RIGHT' });
+    const session = await api.createSession();
 
-    const result1 = await api.validate(session.sessionId, 'WRONG');
+    const result1 = await api.validate(session.sessionId, 'DEFINITELY_WRONG_ANSWER');
     assert.strictEqual(result1.valid, false);
     assert.strictEqual(result1.attemptsRemaining, 2);
 
-    const result2 = await api.validate(session.sessionId, 'WRONG');
+    const result2 = await api.validate(session.sessionId, 'STILL_WRONG_ANSWER');
     assert.strictEqual(result2.attemptsRemaining, 1);
 
     await api.deleteSession(session.sessionId);
   });
 
   runner.test('Validation: Max attempts exhausted', async () => {
-    const session = await api.createSession({ text: 'MAXED' });
+    const session = await api.createSession();
 
     // Exhaust all 3 attempts
-    await api.validate(session.sessionId, 'W1');
-    await api.validate(session.sessionId, 'W2');
-    const result = await api.validate(session.sessionId, 'W3');
+    await api.validate(session.sessionId, 'WRONG1');
+    await api.validate(session.sessionId, 'WRONG2');
+    const result = await api.validate(session.sessionId, 'WRONG3');
 
     assert.strictEqual(result.valid, false);
     assert.strictEqual(result.attemptsRemaining, 0);
@@ -363,7 +363,7 @@ async function runTests() {
 
   runner.test('Error: Invalid width', async () => {
     try {
-      await api.createSession({ width: 50 }); // Too small
+      await api.createSession({ width: 10 }); // Too small (min: 50)
       assert.fail('Should have thrown');
     } catch (e) {
       assert(e.message.includes('Width'));
@@ -372,7 +372,7 @@ async function runTests() {
 
   runner.test('Error: Invalid height', async () => {
     try {
-      await api.createSession({ height: 10 }); // Too small
+      await api.createSession({ height: 10 }); // Too small (min: 30)
       assert.fail('Should have thrown');
     } catch (e) {
       assert(e.message.includes('Height'));

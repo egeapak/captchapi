@@ -37,13 +37,13 @@ import type {
 // =============================================================================
 
 /** Current wrapper package version */
-export const VERSION = "0.1.2";
+export const VERSION = "1.0.0";
 
 /** Minimum compatible @captchapi/core version */
-export const MIN_CORE_VERSION = "0.1.0";
+export const MIN_CORE_VERSION = "1.0.0";
 
 /** Maximum compatible @captchapi/core version (exclusive) */
-export const MAX_CORE_VERSION = "1.0.0";
+export const MAX_CORE_VERSION = "2.0.0";
 
 /**
  * Check if the installed @captchapi/core version is compatible

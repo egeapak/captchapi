@@ -14,8 +14,7 @@ async fn test_health_check() {
 
     response.assert_status_ok();
     response.assert_json(&json!({
-        "status": "healthy",
-        "version": env!("CARGO_PKG_VERSION")
+        "status": "healthy"
     }));
 }
 
@@ -55,9 +54,9 @@ async fn test_create_session_with_auth_succeeds() {
     let body: serde_json::Value = response.json();
 
     assert!(body.get("session_id").is_some());
-    assert!(body.get("text").is_some());
     assert!(body.get("expires_at").is_some());
     assert!(body.get("created_at").is_some());
+    assert!(body.get("text").is_none());
 }
 
 #[tokio::test]
@@ -80,7 +79,15 @@ async fn test_complete_session_flow() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let text = create_body["text"].as_str().unwrap();
+
+    // Get solution from the database (text is no longer in the response)
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = &session.solution;
 
     // Verify text has correct length
     assert_eq!(text.len(), 6);
@@ -373,7 +380,13 @@ async fn test_validation_case_sensitive() {
 
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let text = create_body["text"].as_str().unwrap().to_string();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // Test exact match (should be valid)
     let response1 = server
@@ -394,7 +407,13 @@ async fn test_validation_case_sensitive() {
 
     let create_body2: serde_json::Value = create_response2.json();
     let session_id2 = create_body2["session_id"].as_str().unwrap();
-    let text2 = create_body2["text"].as_str().unwrap().to_string();
+    let session2 = test_app
+        .storage
+        .get_session(session_id2)
+        .await
+        .unwrap()
+        .unwrap();
+    let text2 = session2.solution.clone();
 
     // Test with different case (should be invalid if text contains letters)
     let text2_swapped_case: String = text2
@@ -436,7 +455,13 @@ async fn test_validate_three_failed_attempts_deletes_session() {
 
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let correct_text = create_body["text"].as_str().unwrap();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let correct_text = session.solution.clone();
 
     // First failed attempt
     let response1 = server
@@ -469,7 +494,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let response4 = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": correct_text}))
+        .json(&json!({"solution": correct_text.clone()}))
         .await;
     response4.assert_status_ok();
     let body4: serde_json::Value = response4.json();
@@ -479,7 +504,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let response5 = server
         .post(&format!("/api/v1/sessions/{}/validate", session_id))
         .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"solution": correct_text}))
+        .json(&json!({"solution": correct_text.clone()}))
         .await;
     response5.assert_status_not_found();
 }
@@ -602,9 +627,9 @@ async fn test_create_session_with_master_key_succeeds() {
     let body: serde_json::Value = response.json();
 
     assert!(body.get("session_id").is_some());
-    assert!(body.get("text").is_some());
     assert!(body.get("expires_at").is_some());
     assert!(body.get("created_at").is_some());
+    assert!(body.get("text").is_none());
 }
 
 #[tokio::test]
@@ -627,7 +652,13 @@ async fn test_validate_session_with_master_key_succeeds() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let text = create_body["text"].as_str().unwrap();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // Validate session using master key
     let validate_response = server
@@ -695,7 +726,13 @@ async fn test_complete_session_flow_with_master_key() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let text = create_body["text"].as_str().unwrap();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // Verify text length
     assert_eq!(text.len(), 9);
@@ -919,7 +956,14 @@ async fn test_create_session_with_valid_length_boundary() {
 
     response.assert_status(axum::http::StatusCode::CREATED);
     let body: serde_json::Value = response.json();
-    assert_eq!(body["text"].as_str().unwrap().len(), 1);
+    let session_id = body["session_id"].as_str().unwrap();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.solution.len(), 1);
 
     // Test length = 20 (maximum)
     let response = server
@@ -932,5 +976,54 @@ async fn test_create_session_with_valid_length_boundary() {
 
     response.assert_status(axum::http::StatusCode::CREATED);
     let body: serde_json::Value = response.json();
-    assert_eq!(body["text"].as_str().unwrap().len(), 20);
+    let session_id = body["session_id"].as_str().unwrap();
+    let session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.solution.len(), 20);
+}
+
+#[tokio::test]
+async fn test_validate_session_solution_too_long() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create session
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({}))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Solution of exactly 101 characters should be rejected
+    let long_solution = "a".repeat(101);
+    let response = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": long_solution}))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_parameters");
+    assert!(body["message"].as_str().unwrap().contains("100 characters"));
+
+    // Solution of exactly 100 characters should be accepted (not rejected by length check)
+    let max_solution = "a".repeat(100);
+    let response = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": max_solution}))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["valid"], false); // Wrong answer, but length is accepted
 }

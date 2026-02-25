@@ -237,4 +237,4 @@ console.log('Environment:', getEnvironment());
 
 ## License
 
-MIT
+Apache-2.0

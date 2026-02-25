@@ -34,6 +34,26 @@ docker run -p 3000:3000 \
   captchapi:latest
 ```
 
+## Using the Published Image
+
+Pre-built multi-platform images are available on GitHub Container Registry:
+
+```bash
+# Pull latest
+docker pull ghcr.io/egeapak/captchapi:latest
+
+# Pull specific version
+docker pull ghcr.io/egeapak/captchapi:1.0.0
+
+# Run
+docker run -p 3000:3000 \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
+  ghcr.io/egeapak/captchapi:latest
+```
+
+---
+
 ## Image Details
 
 - **Base**: `gcr.io/distroless/static-debian12:nonroot`

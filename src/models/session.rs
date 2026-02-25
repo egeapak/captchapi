@@ -101,7 +101,6 @@ pub struct CreateSessionRequest {
 #[derive(Debug, Serialize)]
 pub struct CreateSessionResponse {
     pub session_id: String,
-    pub text: String,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }
