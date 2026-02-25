@@ -1027,3 +1027,109 @@ async fn test_validate_session_solution_too_long() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["valid"], false); // Wrong answer, but length is accepted
 }
+
+#[tokio::test]
+async fn test_create_session_width_at_boundary_minus_one() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // width=49 should be rejected (boundary-1)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"width": 49}))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("width"));
+
+    // width=50 should succeed (exact boundary)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"width": 50}))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_create_session_height_at_boundary_minus_one() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // height=29 should be rejected (boundary-1)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"height": 29}))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("height"));
+
+    // height=30 should succeed (exact boundary)
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"height": 30}))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_create_session_with_compression_too_low() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // compression=0 is below the minimum of 1
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"compression": 0}))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("compression"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_compression_too_high() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // compression=101 is above the maximum of 100
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"compression": 101}))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert!(body["message"].as_str().unwrap().contains("compression"));
+}
+
+#[tokio::test]
+async fn test_create_session_with_valid_compression() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // compression=50 is within the valid 1-100 range
+    let response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"compression": 50}))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CREATED);
+}

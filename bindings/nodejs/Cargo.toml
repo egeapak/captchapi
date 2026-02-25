@@ -17,14 +17,14 @@ captchapi = { path = "../.." }
 napi = { version = "2", features = ["async", "tokio_rt"] }
 napi-derive = "2"
 
+# Logging
+tracing = "0.1"
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
-
-# Utilities
-uuid = { version = "1", features = ["v4"] }
 
 [build-dependencies]
 napi-build = "2"

@@ -9,7 +9,11 @@ use napi::Status;
 pub fn app_error_to_napi(err: AppError) -> napi::Error {
     match err {
         AppError::Database(e) => {
-            napi::Error::new(Status::GenericFailure, format!("Database error: {}", e))
+            tracing::error!("Database error: {:?}", e);
+            napi::Error::new(
+                Status::GenericFailure,
+                "An internal database error occurred",
+            )
         }
         AppError::SessionNotFound => {
             napi::Error::new(Status::GenericFailure, "Session not found or expired")
@@ -25,12 +29,9 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
         AppError::Unauthorized(msg) => {
             napi::Error::new(Status::GenericFailure, format!("Unauthorized: {}", msg))
         }
-        AppError::CaptchaGeneration(msg) => napi::Error::new(
-            Status::GenericFailure,
-            format!("CAPTCHA generation failed: {}", msg),
-        ),
         AppError::Internal(e) => {
-            napi::Error::new(Status::GenericFailure, format!("Internal error: {}", e))
+            tracing::error!("Internal error: {:?}", e);
+            napi::Error::new(Status::GenericFailure, "An internal error occurred")
         }
     }
 }

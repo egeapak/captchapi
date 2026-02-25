@@ -7,6 +7,7 @@ mod routes;
 mod services;
 mod tasks;
 mod telemetry;
+mod validation;
 
 use crate::config::Config;
 use crate::metrics::init_metrics;
@@ -119,11 +120,17 @@ async fn main() -> anyhow::Result<()> {
     // Configure rate limiter using tower_governor
     // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
     // When behind a reverse proxy, use SmartIpKeyExtractor to read X-Forwarded-For/X-Real-IP headers
-    let rate_limiter_config = RateLimiterConfig::new(
-        config.rate_limit_requests_per_second,
-        config.rate_limit_burst_size,
-        config.rate_limit_reverse_proxy,
-    );
+    let rate_limiter_config = if config.rate_limit_reverse_proxy {
+        RateLimiterConfig::for_reverse_proxy(
+            config.rate_limit_requests_per_second,
+            config.rate_limit_burst_size,
+        )
+    } else {
+        RateLimiterConfig::direct(
+            config.rate_limit_requests_per_second,
+            config.rate_limit_burst_size,
+        )
+    };
     tracing::info!(
         "Rate limiter initialized: {} requests/second, burst size {}, reverse proxy mode: {}",
         rate_limiter_config.requests_per_second,

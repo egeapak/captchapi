@@ -1,3 +1,4 @@
+use crate::models::SessionConfig;
 use std::env;
 
 /// Trait for providing environment variables (enables testing without modifying global state)
@@ -124,6 +125,19 @@ impl Config {
 
     pub fn server_address(&self) -> String {
         format!("{}:{}", self.server_host, self.server_port)
+    }
+
+    /// Create a `SessionConfig` from the relevant config fields.
+    ///
+    /// Used by external crates (e.g., NAPI bindings) that depend on this library.
+    #[allow(dead_code)]
+    pub fn session_config(&self) -> SessionConfig {
+        SessionConfig {
+            default_session_ttl_seconds: self.default_session_ttl_seconds,
+            max_session_ttl_seconds: self.max_session_ttl_seconds,
+            max_validation_attempts: self.max_validation_attempts,
+            captcha_compression: self.captcha_compression as i64,
+        }
     }
 }
 

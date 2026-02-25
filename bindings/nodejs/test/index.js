@@ -348,7 +348,7 @@ async function runTests() {
       await api.createSession({ difficulty: 0 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Difficulty'));
+      assert(e.message.includes('difficulty'));
     }
   });
 
@@ -357,7 +357,7 @@ async function runTests() {
       await api.createSession({ difficulty: 11 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Difficulty'));
+      assert(e.message.includes('difficulty'));
     }
   });
 
@@ -366,7 +366,7 @@ async function runTests() {
       await api.createSession({ width: 10 }); // Too small (min: 50)
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Width'));
+      assert(e.message.includes('width'));
     }
   });
 
@@ -375,7 +375,7 @@ async function runTests() {
       await api.createSession({ height: 10 }); // Too small (min: 30)
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Height'));
+      assert(e.message.includes('height'));
     }
   });
 
@@ -384,7 +384,82 @@ async function runTests() {
       await api.createSession({ expiresInSeconds: 99999 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('TTL') || e.message.includes('maximum'));
+      assert(e.message.includes('expires_in_seconds') || e.message.includes('cannot exceed'));
+    }
+  });
+
+  runner.test('Error: createApiKey with empty description throws', async () => {
+    try {
+      await api.createApiKey('');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description') || e.message.toLowerCase().includes('empty'));
+    }
+  });
+
+  runner.test('Error: updateApiKey with empty description throws', async () => {
+    const key = await api.createApiKey('Valid key');
+    try {
+      await api.updateApiKey(key.keyHash, true, '');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description') || e.message.toLowerCase().includes('empty'));
+    } finally {
+      await api.deleteApiKey(key.keyHash);
+    }
+  });
+
+  runner.test('Error: Invalid length (zero)', async () => {
+    try {
+      await api.createSession({ length: 0 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('length'));
+    }
+  });
+
+  runner.test('Error: Invalid length (too high)', async () => {
+    try {
+      await api.createSession({ length: 21 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('length'));
+    }
+  });
+
+  runner.test('Error: Invalid compression (too low)', async () => {
+    try {
+      await api.createSession({ compression: 0 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('compression'));
+    }
+  });
+
+  runner.test('Error: Invalid compression (too high)', async () => {
+    try {
+      await api.createSession({ compression: 101 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('compression'));
+    }
+  });
+
+  runner.test('Error: createApiKey with too long description throws', async () => {
+    try {
+      await api.createApiKey('a'.repeat(256));
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description'));
+    }
+  });
+
+  runner.test('Error: createApiKey with whitespace description throws', async () => {
+    try {
+      await api.createApiKey('   ');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description'));
     }
   });
 

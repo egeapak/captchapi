@@ -17,6 +17,8 @@ export interface CaptchaConfig {
   maxValidationAttempts?: number
   /** Run database migrations on startup (default: true) */
   runMigrations?: boolean
+  /** Default JPEG compression quality 1-100 (default: 40) */
+  captchaCompression?: number
 }
 /** Options for creating a new CAPTCHA session */
 export interface CreateSessionOptions {

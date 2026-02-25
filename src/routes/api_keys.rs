@@ -1,18 +1,15 @@
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
-use crate::models::api_key::validate_description;
-use crate::models::{
-    ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
-};
-use crate::services::{AuthService, StorageService};
+use crate::models::{ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest};
+use crate::services::{create_api_key_orchestrated, AuthService, StorageService};
+use crate::validation;
 use axum::{
     extract::{Path, State},
     middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
-use rand::{distributions::Alphanumeric, Rng};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -43,43 +40,30 @@ async fn create_api_key(
     State(state): State<ApiKeysState>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
-    // Validate description
-    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
-
-    // Generate a random API key
-    let api_key: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
-
-    // Hash the API key
-    let key_hash = state.auth_service.hash_api_key(&api_key);
+    // Use orchestration function: validate + generate + hash + persist + metrics
+    let (api_key, api_key_record) = create_api_key_orchestrated(
+        &state.storage,
+        &state.auth_service,
+        &state.metrics,
+        req.description.clone(),
+    )
+    .await?;
 
     // Record key_hash in span
-    tracing::Span::current().record("key_hash", key_hash.as_str());
-
-    // Create the API key record
-    let api_key_record = ApiKey::new(key_hash.clone(), req.description.clone());
-
-    // Save to database
-    state.storage.create_api_key(&api_key_record).await?;
-
-    // Record metrics
-    state.metrics.api_keys.created.add(1, &[]);
+    tracing::Span::current().record("key_hash", api_key_record.key_hash.as_str());
 
     tracing::info!(
         "Created API key with hash: {} (description: {:?})",
-        key_hash,
-        req.description
+        api_key_record.key_hash,
+        api_key_record.description
     );
 
     Ok((
         axum::http::StatusCode::CREATED,
         Json(CreateApiKeyResponse {
             api_key,
-            key_hash,
-            description: req.description,
+            key_hash: api_key_record.key_hash.clone(),
+            description: api_key_record.description.clone(),
             created_at: api_key_record.created_at_datetime(),
         }),
     ))
@@ -112,7 +96,8 @@ async fn update_api_key(
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>> {
     // Validate description if present
-    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
+    validation::validate_api_key_description(&req.description)
+        .map_err(AppError::InvalidApiKeyParams)?;
 
     // Update the API key
     let updated = state

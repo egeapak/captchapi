@@ -32,10 +32,6 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
-    #[error("CAPTCHA generation failed: {0}")]
-    #[allow(dead_code)]
-    CaptchaGeneration(String),
-
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
 }
@@ -76,14 +72,6 @@ impl IntoResponse for AppError {
             ),
             AppError::Unauthorized(ref msg) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
-            }
-            AppError::CaptchaGeneration(ref msg) => {
-                tracing::error!("CAPTCHA generation error: {}", msg);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "captcha_generation_failed",
-                    "Failed to generate CAPTCHA".to_string(),
-                )
             }
             AppError::Internal(ref e) => {
                 tracing::error!("Internal error: {:?}", e);
@@ -153,13 +141,6 @@ mod tests {
     #[test]
     fn test_database_error_status_code() {
         let error = AppError::Database(sqlx::Error::RowNotFound);
-        let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[test]
-    fn test_captcha_generation_status_code() {
-        let error = AppError::CaptchaGeneration("Test error".to_string());
         let response = error.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

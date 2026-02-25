@@ -25,13 +25,11 @@ impl RateLimiterConfig {
     }
 
     /// Create a configuration for direct connections (no reverse proxy)
-    #[allow(dead_code)]
     pub fn direct(requests_per_second: u64, burst_size: u32) -> Self {
         Self::new(requests_per_second, burst_size, false)
     }
 
     /// Create a configuration for reverse proxy mode
-    #[allow(dead_code)]
     pub fn for_reverse_proxy(requests_per_second: u64, burst_size: u32) -> Self {
         Self::new(requests_per_second, burst_size, true)
     }

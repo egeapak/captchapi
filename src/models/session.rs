@@ -89,41 +89,42 @@ impl Session {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CreateSessionRequest {
-    pub length: Option<i64>,
-    pub expires_in_seconds: Option<u64>,
-    pub difficulty: Option<i64>,
-    pub width: Option<i64>,
-    pub height: Option<i64>,
-    pub dark_mode: Option<bool>,
+pub(crate) struct CreateSessionRequest {
+    pub(crate) length: Option<i64>,
+    pub(crate) expires_in_seconds: Option<u64>,
+    pub(crate) difficulty: Option<i64>,
+    pub(crate) width: Option<i64>,
+    pub(crate) height: Option<i64>,
+    pub(crate) dark_mode: Option<bool>,
+    pub(crate) compression: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CreateSessionResponse {
-    pub session_id: String,
-    pub expires_at: DateTime<Utc>,
-    pub created_at: DateTime<Utc>,
+pub(crate) struct CreateSessionResponse {
+    pub(crate) session_id: String,
+    pub(crate) expires_at: DateTime<Utc>,
+    pub(crate) created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ValidateSessionRequest {
-    pub solution: String,
+pub(crate) struct ValidateSessionRequest {
+    pub(crate) solution: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ValidateSessionResponse {
-    pub valid: bool,
-    pub session_id: String,
+pub(crate) struct ValidateSessionResponse {
+    pub(crate) valid: bool,
+    pub(crate) session_id: String,
 }
 
 #[derive(Debug, Serialize)]
-pub struct GetSessionDetailsResponse {
-    pub session_id: String,
-    pub created_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
-    pub attempt_count: i64,
-    pub difficulty: i64,
-    pub width: i64,
-    pub height: i64,
-    pub dark_mode: bool,
+pub(crate) struct GetSessionDetailsResponse {
+    pub(crate) session_id: String,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) expires_at: DateTime<Utc>,
+    pub(crate) attempt_count: i64,
+    pub(crate) difficulty: i64,
+    pub(crate) width: i64,
+    pub(crate) height: i64,
+    pub(crate) dark_mode: bool,
 }

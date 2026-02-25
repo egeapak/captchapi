@@ -3,10 +3,14 @@ use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::AuthMiddleware;
 use crate::models::{
-    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
-    ValidateSessionRequest, ValidateSessionResponse,
+    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, ValidateSessionRequest,
+    ValidateSessionResponse,
 };
-use crate::services::{CaptchaService, StorageService};
+use crate::services::{
+    create_session_orchestrated, validate_session_orchestrated, CaptchaService, StorageService,
+    ValidationOutcome,
+};
+use crate::validation;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue},
@@ -44,11 +48,11 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
 }
 
 #[tracing::instrument(skip(state, req), fields(
-    length = req.length.unwrap_or(5),
-    difficulty = req.difficulty.unwrap_or(5),
-    width = req.width.unwrap_or(220),
-    height = req.height.unwrap_or(120),
-    dark_mode = req.dark_mode.unwrap_or(false),
+    length = req.length.unwrap_or(validation::DEFAULT_LENGTH),
+    difficulty = req.difficulty.unwrap_or(validation::DEFAULT_DIFFICULTY),
+    width = req.width.unwrap_or(validation::DEFAULT_WIDTH),
+    height = req.height.unwrap_or(validation::DEFAULT_HEIGHT),
+    dark_mode = req.dark_mode.unwrap_or(validation::DEFAULT_DARK_MODE),
     expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
     session_id
 ))]
@@ -56,86 +60,30 @@ async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
-    // Validate parameters
-    let expires_in = req
-        .expires_in_seconds
-        .unwrap_or(state.config.default_session_ttl_seconds);
+    // Validate parameters — use client-supplied compression if provided, else fall back to
+    // the server-configured default so existing behaviour is preserved.
+    let compression = req
+        .compression
+        .or_else(|| Some(state.config.captcha_compression.into()));
+    let params = validation::validate_session_params(
+        req.length,
+        req.difficulty,
+        req.width,
+        req.height,
+        req.dark_mode,
+        compression,
+        req.expires_in_seconds,
+        state.config.default_session_ttl_seconds,
+        state.config.max_session_ttl_seconds,
+    )
+    .map_err(AppError::InvalidSessionParams)?;
 
-    if expires_in > state.config.max_session_ttl_seconds {
-        return Err(AppError::InvalidSessionParams(format!(
-            "expires_in_seconds cannot exceed {} seconds",
-            state.config.max_session_ttl_seconds
-        )));
-    }
-
-    let difficulty = req.difficulty.unwrap_or(5);
-    if !(1..=10).contains(&difficulty) {
-        return Err(AppError::InvalidSessionParams(
-            "difficulty must be between 1 and 10".to_string(),
-        ));
-    }
-
-    // Validate length if provided
-    let length = req.length.unwrap_or(5);
-    if !(1..=20).contains(&length) {
-        return Err(AppError::InvalidSessionParams(
-            "length must be between 1 and 20 characters".to_string(),
-        ));
-    }
-
-    let width = req.width.unwrap_or(220);
-    if !(50..=1000).contains(&width) {
-        return Err(AppError::InvalidSessionParams(
-            "width must be between 50 and 1000 pixels".to_string(),
-        ));
-    }
-
-    let height = req.height.unwrap_or(120);
-    if !(30..=500).contains(&height) {
-        return Err(AppError::InvalidSessionParams(
-            "height must be between 30 and 500 pixels".to_string(),
-        ));
-    }
-
-    let dark_mode = req.dark_mode.unwrap_or(false);
-    let compression = state.config.captcha_compression;
-
-    // Generate CAPTCHA (record duration)
-    let start = std::time::Instant::now();
-    let (text, image_bytes) = state.captcha.generate(
-        length,
-        difficulty,
-        width,
-        height,
-        dark_mode,
-        compression.into(),
-    )?;
-    let generation_duration = start.elapsed().as_secs_f64();
-    state
-        .metrics
-        .performance
-        .captcha_generation_duration
-        .record(generation_duration, &[]);
-
-    // Create session
-    let session = Session::new(
-        text.clone(),
-        image_bytes,
-        expires_in,
-        difficulty,
-        width,
-        height,
-        dark_mode,
-    );
+    // Use orchestration function for generate + store + metrics
+    let (session, _image_bytes) =
+        create_session_orchestrated(&state.storage, &state.captcha, &state.metrics, params).await?;
 
     // Record session_id in the span
     tracing::Span::current().record("session_id", session.id.as_str());
-
-    // Save to database
-    state.storage.create_session(&session).await?;
-
-    // Record metrics
-    state.metrics.sessions.created.add(1, &[]);
 
     tracing::info!("Created session: {}", session.id);
 
@@ -154,20 +102,12 @@ async fn get_session_details(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<GetSessionDetailsResponse>> {
-    // Get session from database
+    // get_active_session handles expiry check and eager deletion
     let session = state
         .storage
-        .get_session(&session_id)
+        .get_active_session(&session_id)
         .await?
         .ok_or(AppError::SessionNotFound)?;
-
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        // Delete expired session
-        let _ = state.storage.delete_session(&session_id).await;
-        return Err(AppError::SessionNotFound);
-    }
 
     tracing::Span::current().record("is_expired", false);
 
@@ -189,20 +129,12 @@ async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    // Get session from database
+    // get_active_session handles expiry check and eager deletion
     let session = state
         .storage
-        .get_session(&session_id)
+        .get_active_session(&session_id)
         .await?
         .ok_or(AppError::SessionNotFound)?;
-
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        // Delete expired session
-        let _ = state.storage.delete_session(&session_id).await;
-        return Err(AppError::SessionNotFound);
-    }
 
     tracing::Span::current().record("is_expired", false);
     tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
@@ -246,82 +178,49 @@ async fn validate_session(
     Path(session_id): Path<String>,
     Json(req): Json<ValidateSessionRequest>,
 ) -> Result<Json<ValidateSessionResponse>> {
-    // Get session from database
-    let session = state
-        .storage
-        .get_session(&session_id)
-        .await?
-        .ok_or(AppError::SessionNotFound)?;
+    // Input length limit on solution to prevent abuse — validate before any DB read
+    validation::validate_solution(&req.solution).map_err(AppError::InvalidSessionParams)?;
 
-    tracing::Span::current().record("attempt_count", session.attempt_count);
+    // Use orchestration function for full validation flow
+    let outcome = validate_session_orchestrated(
+        &state.storage,
+        &state.metrics,
+        &session_id,
+        &req.solution,
+        state.config.max_validation_attempts,
+    )
+    .await?;
 
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        let _ = state.storage.delete_session(&session_id).await;
-        return Err(AppError::SessionNotFound);
+    match outcome {
+        ValidationOutcome::Correct => {
+            tracing::Span::current().record("is_valid", true);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", false);
+            tracing::info!("Session {} validated successfully", session_id);
+            Ok(Json(ValidateSessionResponse {
+                valid: true,
+                session_id,
+            }))
+        }
+        ValidationOutcome::Wrong { .. } => {
+            tracing::Span::current().record("is_valid", false);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", false);
+            Ok(Json(ValidateSessionResponse {
+                valid: false,
+                session_id,
+            }))
+        }
+        ValidationOutcome::MaxAttemptsExceeded => {
+            tracing::Span::current().record("is_valid", false);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", true);
+            Ok(Json(ValidateSessionResponse {
+                valid: false,
+                session_id,
+            }))
+        }
     }
-
-    tracing::Span::current().record("is_expired", false);
-
-    // Input length limit on solution to prevent abuse
-    if req.solution.len() > 100 {
-        return Err(AppError::InvalidSessionParams(
-            "solution must not exceed 100 characters".to_string(),
-        ));
-    }
-
-    // Check attempt count
-    if session.attempt_count >= state.config.max_validation_attempts {
-        tracing::Span::current().record("max_attempts_reached", true);
-        // Delete session after max attempts
-        let _ = state.storage.delete_session(&session_id).await;
-
-        // Record max attempts exceeded
-        state.metrics.sessions.max_attempts_exceeded.add(1, &[]);
-
-        return Ok(Json(ValidateSessionResponse {
-            valid: false,
-            session_id,
-        }));
-    }
-
-    tracing::Span::current().record("max_attempts_reached", false);
-
-    // Validate solution (case-sensitive)
-    let is_valid = session.solution == req.solution;
-    tracing::Span::current().record("is_valid", is_valid);
-
-    // Record validation attempt
-    state.metrics.sessions.validation_attempts.add(1, &[]);
-
-    if is_valid {
-        // Delete session on successful validation
-        state.storage.delete_session(&session_id).await?;
-
-        // Record successful validation
-        state.metrics.sessions.validated.add(1, &[]);
-
-        tracing::info!("Session {} validated successfully", session_id);
-    } else {
-        // Increment attempt count on failure
-        state.storage.increment_attempt_count(&session_id).await?;
-
-        // Record failed validation
-        state.metrics.sessions.validation_failed.add(1, &[]);
-
-        tracing::debug!(
-            "Session {} validation failed, attempt {}/{}",
-            session_id,
-            session.attempt_count + 1,
-            state.config.max_validation_attempts
-        );
-    }
-
-    Ok(Json(ValidateSessionResponse {
-        valid: is_valid,
-        session_id,
-    }))
 }
 
 #[tracing::instrument(skip(state), fields(session_id = %session_id, deleted))]

@@ -1,12 +1,19 @@
 pub mod api_key;
 pub mod session;
+pub mod session_config;
 
-pub use api_key::{
-    ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
+// Domain types: stable public API
+pub use api_key::ApiKey;
+pub use session::Session;
+pub use session_config::SessionConfig;
+
+// HTTP DTOs: crate-private (only needed by HTTP routes)
+pub(crate) use api_key::{
+    ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
 };
-pub use session::{
-    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
-    ValidateSessionRequest, ValidateSessionResponse,
+pub(crate) use session::{
+    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, ValidateSessionRequest,
+    ValidateSessionResponse,
 };
 
 // Internal row types for database mapping (crate-private)
