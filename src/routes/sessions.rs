@@ -136,7 +136,13 @@ async fn get_session_details(
     if session.is_expired() {
         tracing::Span::current().record("is_expired", true);
         // Delete expired session
-        let _ = state.storage.delete_session(&session_id).await;
+        if let Err(e) = state.storage.delete_session(&session_id).await {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to delete expired session during eager cleanup"
+            );
+        }
         return Err(AppError::SessionNotFound);
     }
 
@@ -171,7 +177,13 @@ async fn get_image_binary(
     if session.is_expired() {
         tracing::Span::current().record("is_expired", true);
         // Delete expired session
-        let _ = state.storage.delete_session(&session_id).await;
+        if let Err(e) = state.storage.delete_session(&session_id).await {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to delete expired session during eager cleanup"
+            );
+        }
         return Err(AppError::SessionNotFound);
     }
 
@@ -217,6 +229,9 @@ async fn validate_session(
     Path(session_id): Path<String>,
     Json(req): Json<ValidateSessionRequest>,
 ) -> Result<Json<ValidateSessionResponse>> {
+    // Input length limit on solution to prevent abuse — validate before any DB read
+    validation::validate_solution(&req.solution).map_err(AppError::InvalidSessionParams)?;
+
     // Get session from database
     let session = state
         .storage
@@ -229,22 +244,32 @@ async fn validate_session(
     // Check if expired
     if session.is_expired() {
         tracing::Span::current().record("is_expired", true);
-        let _ = state.storage.delete_session(&session_id).await;
+        if let Err(e) = state.storage.delete_session(&session_id).await {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to delete expired session during eager cleanup"
+            );
+        }
         return Err(AppError::SessionNotFound);
     }
 
     tracing::Span::current().record("is_expired", false);
 
-    // Input length limit on solution to prevent abuse
-    validation::validate_solution(&req.solution).map_err(AppError::InvalidSessionParams)?;
-
     // Check attempt count
     if session.attempt_count >= state.config.max_validation_attempts {
         tracing::Span::current().record("max_attempts_reached", true);
         // Delete session after max attempts
-        let _ = state.storage.delete_session(&session_id).await;
+        if let Err(e) = state.storage.delete_session(&session_id).await {
+            tracing::warn!(
+                session_id = %session_id,
+                error = %e,
+                "Failed to delete session after max attempts exceeded"
+            );
+        }
 
-        // Record max attempts exceeded
+        // Record both validation_attempts and max attempts exceeded
+        state.metrics.sessions.validation_attempts.add(1, &[]);
         state.metrics.sessions.max_attempts_exceeded.add(1, &[]);
 
         return Ok(Json(ValidateSessionResponse {

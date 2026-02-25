@@ -388,6 +388,27 @@ async function runTests() {
     }
   });
 
+  runner.test('Error: createApiKey with empty description throws', async () => {
+    try {
+      await api.createApiKey('');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description') || e.message.toLowerCase().includes('empty'));
+    }
+  });
+
+  runner.test('Error: updateApiKey with empty description throws', async () => {
+    const key = await api.createApiKey('Valid key');
+    try {
+      await api.updateApiKey(key.keyHash, true, '');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description') || e.message.toLowerCase().includes('empty'));
+    } finally {
+      await api.deleteApiKey(key.keyHash);
+    }
+  });
+
   // ============================================
   // CLEANUP TESTS
   // ============================================

@@ -17,6 +17,9 @@ captchapi = { path = "../.." }
 napi = { version = "2", features = ["async", "tokio_rt"] }
 napi-derive = "2"
 
+# Logging
+tracing = "0.1"
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 

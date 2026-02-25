@@ -3,7 +3,6 @@
 //! This module is the single source of truth for all input validation,
 //! shared between the HTTP server and NAPI bindings.
 
-use crate::models::api_key::validate_description;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
@@ -16,6 +15,8 @@ pub const WIDTH_MIN: i64 = 50;
 pub const WIDTH_MAX: i64 = 1000;
 pub const HEIGHT_MIN: i64 = 30;
 pub const HEIGHT_MAX: i64 = 500;
+pub const COMPRESSION_MIN: i64 = 1;
+pub const COMPRESSION_MAX: i64 = 100;
 pub const SOLUTION_MAX_LEN: usize = 100;
 
 // Default values
@@ -28,6 +29,7 @@ pub const DEFAULT_COMPRESSION: i64 = 40;
 
 // API key constants
 pub const API_KEY_LENGTH: usize = 32;
+pub const MAX_DESCRIPTION_LENGTH: usize = 255;
 
 /// Validated and defaulted session creation parameters.
 #[derive(Debug, Clone)]
@@ -98,7 +100,14 @@ pub fn validate_session_params(
     }
 
     let dark_mode = dark_mode.unwrap_or(DEFAULT_DARK_MODE);
+
     let compression = compression.unwrap_or(DEFAULT_COMPRESSION);
+    if !(COMPRESSION_MIN..=COMPRESSION_MAX).contains(&compression) {
+        return Err(format!(
+            "compression must be between {} and {}",
+            COMPRESSION_MIN, COMPRESSION_MAX
+        ));
+    }
 
     Ok(ValidatedSessionParams {
         length,
@@ -131,9 +140,34 @@ pub fn generate_api_key() -> String {
         .collect()
 }
 
-/// Validate an API key description, delegating to the model's validation.
+/// Validate an API key description.
+///
+/// Returns `Ok(())` if valid, or `Err` with a descriptive error message if invalid.
 pub fn validate_api_key_description(description: &Option<String>) -> Result<(), String> {
-    validate_description(description)
+    if let Some(desc) = description {
+        // Check if empty/whitespace only
+        if desc.trim().is_empty() {
+            return Err("Description cannot be empty or whitespace only".to_string());
+        }
+
+        // Check length
+        if desc.len() > MAX_DESCRIPTION_LENGTH {
+            return Err(format!(
+                "Description exceeds maximum length of {} characters",
+                MAX_DESCRIPTION_LENGTH
+            ));
+        }
+
+        // Check for control characters (except newlines and tabs which are acceptable)
+        if desc
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
+        {
+            return Err("Description contains invalid control characters".to_string());
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -300,6 +334,33 @@ mod tests {
         );
         assert!(
             validate_session_params(None, None, None, Some(500), None, None, None, 300, 3600)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_compression_below_min() {
+        let result =
+            validate_session_params(None, None, None, None, None, Some(0), None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("compression"));
+    }
+
+    #[test]
+    fn test_compression_above_max() {
+        let result =
+            validate_session_params(None, None, None, None, None, Some(101), None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("compression"));
+    }
+
+    #[test]
+    fn test_compression_at_boundaries() {
+        assert!(
+            validate_session_params(None, None, None, None, None, Some(1), None, 300, 3600).is_ok()
+        );
+        assert!(
+            validate_session_params(None, None, None, None, None, Some(100), None, 300, 3600)
                 .is_ok()
         );
     }

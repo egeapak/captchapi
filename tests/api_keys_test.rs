@@ -260,3 +260,95 @@ async fn test_update_nonexistent_api_key() {
 
     response.assert_status_not_found();
 }
+
+#[tokio::test]
+async fn test_create_api_key_with_empty_description_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "" }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
+}
+
+#[tokio::test]
+async fn test_create_api_key_with_description_too_long_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let long_desc: String = "a".repeat(256);
+    let response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": long_desc }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
+}
+
+#[tokio::test]
+async fn test_update_api_key_with_empty_description_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create a key first
+    let create_response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "Valid key" }))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let key_hash = create_body["key_hash"].as_str().unwrap();
+
+    // Try to update with empty description
+    let response = server
+        .put(&format!("/api/v1/api-keys/{}", key_hash))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "" }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
+}
+
+#[tokio::test]
+async fn test_update_api_key_with_description_too_long_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create a key first
+    let create_response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "Valid key" }))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let key_hash = create_body["key_hash"].as_str().unwrap();
+
+    // Try to update with too-long description
+    let long_desc: String = "a".repeat(256);
+    let response = server
+        .put(&format!("/api/v1/api-keys/{}", key_hash))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": long_desc }))
+        .await;
+
+    response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
+}
