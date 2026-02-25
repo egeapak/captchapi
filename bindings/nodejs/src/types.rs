@@ -75,7 +75,9 @@ pub struct SessionResult {
     /// Unique session identifier (UUID)
     pub session_id: String,
 
-    /// The generated CAPTCHA text (solution)
+    /// The generated CAPTCHA text (solution).
+    /// Available in the library API for server-side use.
+    /// Note: The HTTP REST API does NOT expose this field to clients.
     pub text: String,
 
     /// Session creation timestamp (Unix milliseconds)

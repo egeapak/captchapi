@@ -127,14 +127,14 @@ impl CaptchaApi {
                 "Difficulty must be between 1 and 10",
             ));
         }
-        if !(100..=500).contains(&width) {
+        if !(50..=1000).contains(&width) {
             return Err(napi::Error::from_reason(
-                "Width must be between 100 and 500",
+                "Width must be between 50 and 1000",
             ));
         }
-        if !(50..=300).contains(&height) {
+        if !(30..=500).contains(&height) {
             return Err(napi::Error::from_reason(
-                "Height must be between 50 and 300",
+                "Height must be between 30 and 500",
             ));
         }
 
@@ -207,6 +207,13 @@ impl CaptchaApi {
             return Err(napi::Error::from_reason("Session has expired"));
         }
 
+        // Input length limit on solution to prevent abuse
+        if solution.len() > 100 {
+            return Err(napi::Error::from_reason(
+                "Solution must not exceed 100 characters",
+            ));
+        }
+
         // Check attempt count
         if session.attempt_count >= self.config.max_validation_attempts {
             self.storage.delete_session(&session_id).await.into_napi()?;
@@ -217,8 +224,8 @@ impl CaptchaApi {
             });
         }
 
-        // Check solution (case-insensitive)
-        let is_valid = session.solution == solution.to_lowercase();
+        // Check solution (case-sensitive, matching HTTP API behavior)
+        let is_valid = session.solution == solution;
 
         if is_valid {
             // Delete session on success
