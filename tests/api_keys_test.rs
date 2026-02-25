@@ -352,3 +352,59 @@ async fn test_update_api_key_with_description_too_long_fails() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["error"], "invalid_api_key_parameters");
 }
+
+#[tokio::test]
+async fn test_create_api_key_with_whitespace_only_description_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "   " }))
+        .await;
+
+    response.assert_status_bad_request();
+}
+
+#[tokio::test]
+async fn test_update_api_key_with_whitespace_only_description_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Create an API key first
+    let create_response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "Test Key" }))
+        .await;
+
+    let create_body: serde_json::Value = create_response.json();
+    let key_hash = create_body["key_hash"].as_str().unwrap();
+
+    // Try to update with whitespace-only description
+    let response = server
+        .put(&format!("/api/v1/api-keys/{}", key_hash))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "   " }))
+        .await;
+
+    response.assert_status_bad_request();
+}
+
+#[tokio::test]
+async fn test_create_api_key_with_control_chars_description_fails() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    let response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({ "description": "test\x00key" }))
+        .await;
+
+    response.assert_status_bad_request();
+}

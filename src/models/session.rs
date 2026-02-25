@@ -96,6 +96,7 @@ pub(crate) struct CreateSessionRequest {
     pub(crate) width: Option<i64>,
     pub(crate) height: Option<i64>,
     pub(crate) dark_mode: Option<bool>,
+    pub(crate) compression: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]

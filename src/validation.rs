@@ -429,4 +429,74 @@ mod tests {
         let long = "a".repeat(256);
         assert!(validate_api_key_description(&Some(long)).is_err());
     }
+
+    #[test]
+    fn test_description_whitespace_only_rejected() {
+        assert!(validate_api_key_description(&Some("   ".to_string())).is_err());
+        assert!(validate_api_key_description(&Some("\t\n".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_description_control_chars_rejected() {
+        assert!(validate_api_key_description(&Some("test\x00key".to_string())).is_err());
+        assert!(validate_api_key_description(&Some("test\x07key".to_string())).is_err());
+    }
+
+    #[test]
+    fn test_description_allows_newlines_and_tabs() {
+        assert!(validate_api_key_description(&Some("line1\nline2".to_string())).is_ok());
+        assert!(validate_api_key_description(&Some("col1\tcol2".to_string())).is_ok());
+    }
+
+    #[test]
+    fn test_description_at_max_length_ok() {
+        let desc = "a".repeat(MAX_DESCRIPTION_LENGTH);
+        assert!(validate_api_key_description(&Some(desc)).is_ok());
+    }
+
+    #[test]
+    fn test_negative_difficulty_rejected() {
+        let result =
+            validate_session_params(None, Some(-1), None, None, None, None, None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("difficulty"));
+    }
+
+    #[test]
+    fn test_negative_length_rejected() {
+        let result =
+            validate_session_params(Some(-1), None, None, None, None, None, None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("length"));
+    }
+
+    #[test]
+    fn test_negative_width_rejected() {
+        let result =
+            validate_session_params(None, None, Some(-1), None, None, None, None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("width"));
+    }
+
+    #[test]
+    fn test_negative_height_rejected() {
+        let result =
+            validate_session_params(None, None, None, Some(-1), None, None, None, 300, 3600);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("height"));
+    }
+
+    #[test]
+    fn test_expires_in_zero_ok() {
+        let params =
+            validate_session_params(None, None, None, None, None, None, Some(0), 300, 3600)
+                .unwrap();
+        assert_eq!(params.expires_in, 0);
+    }
+
+    #[test]
+    fn test_solution_normal_valid() {
+        assert!(validate_solution("abc123").is_ok());
+        assert!(validate_solution("X7kP2m").is_ok());
+    }
 }

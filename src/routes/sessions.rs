@@ -60,14 +60,18 @@ async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
-    // Validate parameters
+    // Validate parameters — use client-supplied compression if provided, else fall back to
+    // the server-configured default so existing behaviour is preserved.
+    let compression = req
+        .compression
+        .or_else(|| Some(state.config.captcha_compression.into()));
     let params = validation::validate_session_params(
         req.length,
         req.difficulty,
         req.width,
         req.height,
         req.dark_mode,
-        Some(state.config.captcha_compression.into()),
+        compression,
         req.expires_in_seconds,
         state.config.default_session_ttl_seconds,
         state.config.max_session_ttl_seconds,

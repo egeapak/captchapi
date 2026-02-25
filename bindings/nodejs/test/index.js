@@ -409,6 +409,60 @@ async function runTests() {
     }
   });
 
+  runner.test('Error: Invalid length (zero)', async () => {
+    try {
+      await api.createSession({ length: 0 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('length'));
+    }
+  });
+
+  runner.test('Error: Invalid length (too high)', async () => {
+    try {
+      await api.createSession({ length: 21 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('length'));
+    }
+  });
+
+  runner.test('Error: Invalid compression (too low)', async () => {
+    try {
+      await api.createSession({ compression: 0 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('compression'));
+    }
+  });
+
+  runner.test('Error: Invalid compression (too high)', async () => {
+    try {
+      await api.createSession({ compression: 101 });
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.includes('compression'));
+    }
+  });
+
+  runner.test('Error: createApiKey with too long description throws', async () => {
+    try {
+      await api.createApiKey('a'.repeat(256));
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description'));
+    }
+  });
+
+  runner.test('Error: createApiKey with whitespace description throws', async () => {
+    try {
+      await api.createApiKey('   ');
+      assert.fail('Should have thrown');
+    } catch (e) {
+      assert(e.message.toLowerCase().includes('description'));
+    }
+  });
+
   // ============================================
   // CLEANUP TESTS
   // ============================================
