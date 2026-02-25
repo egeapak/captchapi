@@ -60,4 +60,9 @@ EXPOSE 3000
 #     -e MASTER_API_KEY=your-key \
 #     captchapi:latest
 
+LABEL org.opencontainers.image.source="https://github.com/egeapak/captchapi"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.title="CaptchAPI"
+LABEL org.opencontainers.image.description="REST API for CAPTCHA challenges"
+
 ENTRYPOINT ["/app/captchapi"]

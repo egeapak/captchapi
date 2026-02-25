@@ -81,7 +81,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Create data directory if it doesn't exist
     if config.database_url.starts_with("sqlite:") {
-        let db_path = config.database_url.strip_prefix("sqlite:").unwrap();
+        let db_path = config
+            .database_url
+            .strip_prefix("sqlite:")
+            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?;
         if let Some(parent) = std::path::Path::new(db_path).parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -92,7 +95,12 @@ async fn main() -> anyhow::Result<()> {
         .max_connections(config.database_max_connections)
         .connect_with(
             SqliteConnectOptions::new()
-                .filename(config.database_url.strip_prefix("sqlite:").unwrap())
+                .filename(
+                    config
+                        .database_url
+                        .strip_prefix("sqlite:")
+                        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?,
+                )
                 .create_if_missing(true),
         )
         .await?;

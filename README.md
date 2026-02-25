@@ -1,3 +1,6 @@
+[![CI](https://github.com/egeapak/captchapi/actions/workflows/ci.yml/badge.svg)](https://github.com/egeapak/captchapi/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 # CaptchAPI
 
 A secure, high-performance REST API for CAPTCHA generation and validation. Built with Rust, featuring async/await architecture, SQLite persistence, and distroless Docker containers.
@@ -47,14 +50,14 @@ Deploy as a standalone CAPTCHA service that multiple applications can consume vi
 ## Quick Start
 
 **Prerequisites:**
-- Rust 1.70+ and Cargo
+- Rust 1.80+ and Cargo
 - SQLite support (usually built-in)
 
 **Development Setup:**
 
 ```bash
 # 1. Clone the repository
-git clone <repository-url>
+git clone https://github.com/egeapak/captchapi
 cd captchapi
 
 # 2. Copy environment template
@@ -117,14 +120,7 @@ docker run -p 3000:3000 \
   captchapi:latest
 ```
 
-See `docker/README.md` for detailed Docker build documentation and CI/CD setup.
-
-```bash
-cd docker
-mkdir -p ./data
-sudo chown -R 65532:65532 ./data  # Set permissions for nonroot user
-docker-compose -f docker-compose.bindmount.yml up -d
-```
+See `docker/README.md` for detailed Docker build documentation, bind mount instructions, and CI/CD setup.
 
 ### Quick Docker Start
 
@@ -142,9 +138,28 @@ docker-compose up -d
 curl http://localhost:3000/health
 ```
 
-For detailed Docker documentation including Kubernetes deployment, troubleshooting, and backup strategies, see `docker/DOCKER_USAGE.md` in the repository.
+For detailed Docker documentation including Kubernetes deployment, troubleshooting, and backup strategies, see `docker/README.md` in the repository.
+
+## Node.js SDK
+
+Official Node.js packages are available for easy integration:
+
+- **`@captchapi/core`** - Framework-agnostic core client for CaptchAPI
+- **`captchapi`** - Full-featured Node.js SDK with additional helpers
+
+Install via npm:
+
+```bash
+npm install @captchapi/core
+# or
+npm install captchapi
+```
 
 ## Usage Guide
+
+### Breaking Changes in v1.0.0
+
+The `text` field has been removed from the `CreateSessionResponse`. Previously, the session creation response included the CAPTCHA solution in plain text. This was a security risk and has been removed in v1.0.0. To display the CAPTCHA to users, retrieve the image via the image endpoints and have users read and submit the solution themselves.
 
 ### Complete Workflow
 
@@ -191,13 +206,10 @@ Response:
 ```json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "text": "aBc5X",
   "created_at": "2025-01-15T10:35:00Z",
   "expires_at": "2025-01-15T10:40:00Z"
 }
 ```
-
-**Note:** The `text` field contains the actual CAPTCHA solution. Save this value if you need to test validation programmatically.
 
 ---
 
@@ -265,7 +277,6 @@ Failure response (attempt count incremented):
 **Important Notes:**
 - Validation is **case-sensitive**: "aBc5X" ≠ "abc5x"
 - After 3 failed attempts, the session is automatically deleted
-- Use the exact `text` value from the session creation response
 
 ---
 
@@ -408,6 +419,6 @@ Every new endpoint must include:
 
 ---
 
-**Version**: 0.1.2
+**Version**: 1.0.0
 **Rust Edition**: 2021
-**License**: MIT (or specify your license)
+**License**: Apache-2.0

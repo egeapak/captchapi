@@ -1,6 +1,6 @@
 {
   "name": "captchapi",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "High-performance CAPTCHA generation and validation library for Node.js, powered by Rust",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -23,7 +23,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/captchapi/captchapi"
+    "url": "https://github.com/egeapak/captchapi"
   },
   "keywords": [
     "captcha",
@@ -34,8 +34,8 @@
     "native",
     "high-performance"
   ],
-  "author": "",
-  "license": "MIT",
+  "author": "egeapak",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">= 18"
   },
@@ -49,7 +49,7 @@
     "test": "node dist/cjs/index.js"
   },
   "dependencies": {
-    "@captchapi/core": "0.1.2"
+    "@captchapi/core": "1.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -82,7 +82,13 @@ async fn test_sessions_validated_metric() {
     response.assert_status(axum::http::StatusCode::CREATED);
     let json_response = response.json::<serde_json::Value>();
     let session_id = json_response["session_id"].as_str().unwrap().to_string();
-    let text = json_response["text"].as_str().unwrap().to_string();
+    let session = test_app
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // Validate with correct solution (case-sensitive)
     let response = server
@@ -256,7 +262,13 @@ async fn test_metrics_in_complete_flow() {
     response.assert_status(axum::http::StatusCode::CREATED);
     let json_response = response.json::<serde_json::Value>();
     let session_id = json_response["session_id"].as_str().unwrap().to_string();
-    let text = json_response["text"].as_str().unwrap().to_string();
+    let session = test_app
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // 2. Make failed validation attempts (session_validation_attempts + api_key_authentications)
     for _ in 0..2 {
@@ -480,7 +492,13 @@ async fn test_metrics_no_double_count_after_validation() {
     response.assert_status(axum::http::StatusCode::CREATED);
     let json_response = response.json::<serde_json::Value>();
     let session_id = json_response["session_id"].as_str().unwrap().to_string();
-    let text = json_response["text"].as_str().unwrap().to_string();
+    let session = test_app
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let text = session.solution.clone();
 
     // Validate successfully
     let response = server

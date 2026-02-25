@@ -143,7 +143,6 @@ async fn create_session(
         axum::http::StatusCode::CREATED,
         Json(CreateSessionResponse {
             session_id: session.id.clone(),
-            text,
             expires_at: session.expires_at_datetime(),
             created_at: session.created_at_datetime(),
         }),
@@ -264,6 +263,13 @@ async fn validate_session(
     }
 
     tracing::Span::current().record("is_expired", false);
+
+    // Input length limit on solution to prevent abuse
+    if req.solution.len() > 100 {
+        return Err(AppError::InvalidSessionParams(
+            "solution must not exceed 100 characters".to_string(),
+        ));
+    }
 
     // Check attempt count
     if session.attempt_count >= state.config.max_validation_attempts {

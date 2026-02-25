@@ -38,7 +38,7 @@ Open the image to see the CAPTCHA challenge.
 ### 4. Validate the Solution
 Run: **Sessions > Validate Session**
 - Update the `solution` field in the request body with your answer
-- Case-insensitive matching
+- Case-sensitive matching
 - Max 3 attempts per session
 
 ### 5. (Optional) Delete Session

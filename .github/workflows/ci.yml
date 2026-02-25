@@ -41,10 +41,21 @@ jobs:
         env:
           SQLX_OFFLINE: true
 
-      - name: Verify offline data is up-to-date
+      - name: Install sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features sqlite
+
+      - name: Create database for sqlx verification
         run: |
-          echo "Checking if .sqlx data matches current queries..."
-          echo "If this fails, run 'cargo sqlx prepare' and commit the changes"
+          mkdir -p data
+          cargo sqlx database create
+          cargo sqlx migrate run
+        env:
+          DATABASE_URL: sqlite:./data/captchapi.db
+
+      - name: Verify offline data is up-to-date
+        run: cargo sqlx prepare --check --workspace
+        env:
+          DATABASE_URL: sqlite:./data/captchapi.db
 
   format:
     name: Format Check
@@ -204,7 +215,7 @@ jobs:
           echo "Server is ready!"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: '22'
 

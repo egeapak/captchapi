@@ -45,3 +45,11 @@ pnpm-lock.yaml
 *.node
 npm/
 .cargo/
+
+# Coverage and runtime artifacts
+lcov.info
+server.pid
+dist/
+artifacts/
+.env.*
+!.env.example

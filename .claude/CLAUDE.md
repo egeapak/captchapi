@@ -8,8 +8,8 @@ CaptchAPI is a REST API service for creating, validating, and consuming CAPTCHA 
 
 This file provides project overview, architecture, and development workflow. For detailed information:
 
-- **API Documentation**: See `.claude/docs/API.md` for complete endpoint specifications, request/response formats, and usage examples
-- **Testing Guide**: See `.claude/docs/TESTING.md` for test structure, writing tests, and debugging
+- **API Documentation**: See `docs/API.md` for complete endpoint specifications, request/response formats, and usage examples
+- **Testing Guide**: See `docs/TESTING.md` for test structure, writing tests, and debugging
 
 ## Architecture
 
@@ -30,7 +30,7 @@ This file provides project overview, architecture, and development workflow. For
 - ✅ Automatic session expiration and cleanup
 - ✅ Validation attempt limiting (max 3 attempts)
 - ✅ Case-sensitive solution matching (secure validation)
-- ✅ Generated text returned in API response
+- ✅ CAPTCHA solution not returned in API response (removed in v1.0.0 for security)
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
 - ✅ Ultra-small Docker image (7.42 MB with full LTO and static linking)
@@ -75,7 +75,7 @@ captchapi/
 
 ## API Documentation
 
-For complete API documentation including all endpoints, request/response formats, and usage examples, see `.claude/docs/API.md`
+For complete API documentation including all endpoints, request/response formats, and usage examples, see `docs/API.md`
 
 **Quick Reference:**
 - **Public**: Health check, Get CAPTCHA images (JSON/binary)
@@ -222,7 +222,7 @@ These steps ensure:
 
 ### Testing
 
-For comprehensive testing documentation, see `.claude/docs/TESTING.md`
+For comprehensive testing documentation, see `docs/TESTING.md`
 
 #### Rust Tests
 
@@ -305,7 +305,7 @@ The testing documentation includes:
 
 - ✅ Use HTTPS in production
 - ✅ Set strong, random `API_KEY_SALT`
-- ✅ Implement rate limiting (future enhancement)
+- ✅ Rate limiting (implemented via reverse proxy support)
 - ✅ Monitor for unusual patterns (multiple failed validations)
 - ✅ Keep dependencies updated
 
@@ -384,7 +384,6 @@ Logs include:
 
 See `PLAN.md` for detailed future feature ideas:
 
-- Rate limiting (per IP, per API key)
 - Multiple CAPTCHA types (math, audio)
 - Session statistics/analytics
 - Horizontal scaling support
@@ -476,7 +475,7 @@ Every new endpoint MUST have:
 
 ## License
 
-[Specify your license here]
+Apache-2.0
 
 ## Support
 
@@ -484,6 +483,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2025-10-23
-**Version**: 0.1.0
+**Last Updated**: 2026-02-25
+**Version**: 1.0.0
 **Rust Edition**: 2021

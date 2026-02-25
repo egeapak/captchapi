@@ -7,6 +7,7 @@ use axum::{
     response::Response,
 };
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 #[derive(Clone)]
 pub struct AuthMiddleware {
@@ -52,8 +53,12 @@ impl AuthMiddleware {
             .strip_prefix("Bearer ")
             .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".to_string()))?;
 
-        // Check if token is the master key
-        if token == middleware.master_key {
+        // Check if token is the master key (constant-time comparison to prevent timing attacks)
+        if token
+            .as_bytes()
+            .ct_eq(middleware.master_key.as_bytes())
+            .into()
+        {
             tracing::Span::current().record("auth_success", true);
             // Continue with the request (master key is always valid)
             return Ok(next.run(request).await);
@@ -120,8 +125,8 @@ impl MasterKeyMiddleware {
             .strip_prefix("Bearer ")
             .ok_or_else(|| AppError::Unauthorized("Invalid authorization format".to_string()))?;
 
-        // Validate master key
-        if token != middleware.master_key {
+        // Validate master key (constant-time comparison to prevent timing attacks)
+        if !bool::from(token.as_bytes().ct_eq(middleware.master_key.as_bytes())) {
             return Err(AppError::Unauthorized("Invalid master key".to_string()));
         }
 
