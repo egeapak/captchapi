@@ -55,25 +55,25 @@ impl ApiKey {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CreateApiKeyRequest {
-    pub description: Option<String>,
+pub(crate) struct CreateApiKeyRequest {
+    pub(crate) description: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct CreateApiKeyResponse {
-    pub api_key: String,
-    pub key_hash: String,
-    pub description: Option<String>,
-    pub created_at: DateTime<Utc>,
+pub(crate) struct CreateApiKeyResponse {
+    pub(crate) api_key: String,
+    pub(crate) key_hash: String,
+    pub(crate) description: Option<String>,
+    pub(crate) created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ApiKeyInfo {
-    pub key_hash: String,
-    pub description: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub last_used_at: Option<DateTime<Utc>>,
-    pub is_active: bool,
+pub(crate) struct ApiKeyInfo {
+    pub(crate) key_hash: String,
+    pub(crate) description: Option<String>,
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) last_used_at: Option<DateTime<Utc>>,
+    pub(crate) is_active: bool,
 }
 
 impl From<ApiKey> for ApiKeyInfo {
@@ -89,7 +89,7 @@ impl From<ApiKey> for ApiKeyInfo {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct UpdateApiKeyRequest {
-    pub is_active: Option<bool>,
-    pub description: Option<String>,
+pub(crate) struct UpdateApiKeyRequest {
+    pub(crate) is_active: Option<bool>,
+    pub(crate) description: Option<String>,
 }

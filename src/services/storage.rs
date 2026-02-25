@@ -38,6 +38,26 @@ impl StorageService {
         Ok(())
     }
 
+    /// Fetch a session by ID, eagerly deleting if expired.
+    /// Returns Ok(None) for both missing and expired sessions.
+    #[tracing::instrument(skip(self), fields(session_id = %session_id))]
+    pub async fn get_active_session(&self, session_id: &str) -> Result<Option<Session>> {
+        let Some(session) = self.get_session(session_id).await? else {
+            return Ok(None);
+        };
+        if session.is_expired() {
+            if let Err(e) = self.delete_session(session_id).await {
+                tracing::warn!(
+                    session_id = %session_id,
+                    error = %e,
+                    "Failed to delete expired session during eager cleanup"
+                );
+            }
+            return Ok(None);
+        }
+        Ok(Some(session))
+    }
+
     #[tracing::instrument(skip(self), fields(session_id, found))]
     pub async fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let row = sqlx::query_as!(

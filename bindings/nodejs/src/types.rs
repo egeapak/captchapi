@@ -27,6 +27,9 @@ pub struct CaptchaConfig {
 
     /// Run database migrations on startup (default: true)
     pub run_migrations: Option<bool>,
+
+    /// Default JPEG compression quality 1-100 (default: 40)
+    pub captcha_compression: Option<i32>,
 }
 
 impl Default for CaptchaConfig {
@@ -38,6 +41,7 @@ impl Default for CaptchaConfig {
             max_session_ttl_seconds: Some(3600),
             max_validation_attempts: Some(3),
             run_migrations: Some(true),
+            captcha_compression: Some(40),
         }
     }
 }

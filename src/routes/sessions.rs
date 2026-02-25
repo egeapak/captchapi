@@ -3,10 +3,13 @@ use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::AuthMiddleware;
 use crate::models::{
-    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, Session,
-    ValidateSessionRequest, ValidateSessionResponse,
+    CreateSessionRequest, CreateSessionResponse, GetSessionDetailsResponse, ValidateSessionRequest,
+    ValidateSessionResponse,
 };
-use crate::services::{CaptchaService, StorageService};
+use crate::services::{
+    create_session_orchestrated, validate_session_orchestrated, CaptchaService, StorageService,
+    ValidationOutcome,
+};
 use crate::validation;
 use axum::{
     extract::{Path, State},
@@ -71,42 +74,12 @@ async fn create_session(
     )
     .map_err(AppError::InvalidSessionParams)?;
 
-    // Generate CAPTCHA (record duration)
-    let start = std::time::Instant::now();
-    let (text, image_bytes) = state.captcha.generate(
-        params.length,
-        params.difficulty,
-        params.width,
-        params.height,
-        params.dark_mode,
-        params.compression,
-    )?;
-    let generation_duration = start.elapsed().as_secs_f64();
-    state
-        .metrics
-        .performance
-        .captcha_generation_duration
-        .record(generation_duration, &[]);
-
-    // Create session
-    let session = Session::new(
-        text.clone(),
-        image_bytes,
-        params.expires_in,
-        params.difficulty,
-        params.width,
-        params.height,
-        params.dark_mode,
-    );
+    // Use orchestration function for generate + store + metrics
+    let (session, _image_bytes) =
+        create_session_orchestrated(&state.storage, &state.captcha, &state.metrics, params).await?;
 
     // Record session_id in the span
     tracing::Span::current().record("session_id", session.id.as_str());
-
-    // Save to database
-    state.storage.create_session(&session).await?;
-
-    // Record metrics
-    state.metrics.sessions.created.add(1, &[]);
 
     tracing::info!("Created session: {}", session.id);
 
@@ -125,26 +98,12 @@ async fn get_session_details(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<Json<GetSessionDetailsResponse>> {
-    // Get session from database
+    // get_active_session handles expiry check and eager deletion
     let session = state
         .storage
-        .get_session(&session_id)
+        .get_active_session(&session_id)
         .await?
         .ok_or(AppError::SessionNotFound)?;
-
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        // Delete expired session
-        if let Err(e) = state.storage.delete_session(&session_id).await {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %e,
-                "Failed to delete expired session during eager cleanup"
-            );
-        }
-        return Err(AppError::SessionNotFound);
-    }
 
     tracing::Span::current().record("is_expired", false);
 
@@ -166,26 +125,12 @@ async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    // Get session from database
+    // get_active_session handles expiry check and eager deletion
     let session = state
         .storage
-        .get_session(&session_id)
+        .get_active_session(&session_id)
         .await?
         .ok_or(AppError::SessionNotFound)?;
-
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        // Delete expired session
-        if let Err(e) = state.storage.delete_session(&session_id).await {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %e,
-                "Failed to delete expired session during eager cleanup"
-            );
-        }
-        return Err(AppError::SessionNotFound);
-    }
 
     tracing::Span::current().record("is_expired", false);
     tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
@@ -232,88 +177,46 @@ async fn validate_session(
     // Input length limit on solution to prevent abuse — validate before any DB read
     validation::validate_solution(&req.solution).map_err(AppError::InvalidSessionParams)?;
 
-    // Get session from database
-    let session = state
-        .storage
-        .get_session(&session_id)
-        .await?
-        .ok_or(AppError::SessionNotFound)?;
+    // Use orchestration function for full validation flow
+    let outcome = validate_session_orchestrated(
+        &state.storage,
+        &state.metrics,
+        &session_id,
+        &req.solution,
+        state.config.max_validation_attempts,
+    )
+    .await?;
 
-    tracing::Span::current().record("attempt_count", session.attempt_count);
-
-    // Check if expired
-    if session.is_expired() {
-        tracing::Span::current().record("is_expired", true);
-        if let Err(e) = state.storage.delete_session(&session_id).await {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %e,
-                "Failed to delete expired session during eager cleanup"
-            );
+    match outcome {
+        ValidationOutcome::Correct => {
+            tracing::Span::current().record("is_valid", true);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", false);
+            tracing::info!("Session {} validated successfully", session_id);
+            Ok(Json(ValidateSessionResponse {
+                valid: true,
+                session_id,
+            }))
         }
-        return Err(AppError::SessionNotFound);
-    }
-
-    tracing::Span::current().record("is_expired", false);
-
-    // Check attempt count
-    if session.attempt_count >= state.config.max_validation_attempts {
-        tracing::Span::current().record("max_attempts_reached", true);
-        // Delete session after max attempts
-        if let Err(e) = state.storage.delete_session(&session_id).await {
-            tracing::warn!(
-                session_id = %session_id,
-                error = %e,
-                "Failed to delete session after max attempts exceeded"
-            );
+        ValidationOutcome::Wrong { .. } => {
+            tracing::Span::current().record("is_valid", false);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", false);
+            Ok(Json(ValidateSessionResponse {
+                valid: false,
+                session_id,
+            }))
         }
-
-        // Record both validation_attempts and max attempts exceeded
-        state.metrics.sessions.validation_attempts.add(1, &[]);
-        state.metrics.sessions.max_attempts_exceeded.add(1, &[]);
-
-        return Ok(Json(ValidateSessionResponse {
-            valid: false,
-            session_id,
-        }));
+        ValidationOutcome::MaxAttemptsExceeded => {
+            tracing::Span::current().record("is_valid", false);
+            tracing::Span::current().record("is_expired", false);
+            tracing::Span::current().record("max_attempts_reached", true);
+            Ok(Json(ValidateSessionResponse {
+                valid: false,
+                session_id,
+            }))
+        }
     }
-
-    tracing::Span::current().record("max_attempts_reached", false);
-
-    // Validate solution (case-sensitive)
-    let is_valid = session.solution == req.solution;
-    tracing::Span::current().record("is_valid", is_valid);
-
-    // Record validation attempt
-    state.metrics.sessions.validation_attempts.add(1, &[]);
-
-    if is_valid {
-        // Delete session on successful validation
-        state.storage.delete_session(&session_id).await?;
-
-        // Record successful validation
-        state.metrics.sessions.validated.add(1, &[]);
-
-        tracing::info!("Session {} validated successfully", session_id);
-    } else {
-        // Increment attempt count on failure
-        state.storage.increment_attempt_count(&session_id).await?;
-
-        // Record failed validation
-        state.metrics.sessions.validation_failed.add(1, &[]);
-
-        tracing::debug!(
-            "Session {} validation failed, attempt {}/{}",
-            session_id,
-            session.attempt_count + 1,
-            state.config.max_validation_attempts
-        );
-    }
-
-    Ok(Json(ValidateSessionResponse {
-        valid: is_valid,
-        session_id,
-    }))
 }
 
 #[tracing::instrument(skip(state), fields(session_id = %session_id, deleted))]

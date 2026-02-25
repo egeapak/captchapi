@@ -6,8 +6,11 @@
 use crate::error::IntoNapiResult;
 use crate::types::*;
 use captchapi::metrics::Metrics;
-use captchapi::models::{ApiKey, Session};
-use captchapi::services::{AuthService, CaptchaService, StorageService};
+use captchapi::models::SessionConfig;
+use captchapi::services::{
+    create_api_key_orchestrated, create_session_orchestrated, validate_session_orchestrated,
+    AuthService, CaptchaService, StorageService, ValidationOutcome,
+};
 use captchapi::validation;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -37,14 +40,8 @@ pub struct CaptchaApi {
     storage: StorageService,
     captcha: CaptchaService,
     auth: AuthService,
-    config: Arc<InternalConfig>,
+    config: Arc<SessionConfig>,
     metrics: Arc<Metrics>,
-}
-
-struct InternalConfig {
-    default_session_ttl_seconds: u64,
-    max_session_ttl_seconds: u64,
-    max_validation_attempts: i64,
 }
 
 #[napi]
@@ -89,10 +86,11 @@ impl CaptchaApi {
         let auth = AuthService::new(config.api_key_salt.clone());
         let metrics = Arc::new(Metrics::new());
 
-        let internal_config = Arc::new(InternalConfig {
+        let session_config = Arc::new(SessionConfig {
             default_session_ttl_seconds: config.default_session_ttl_seconds.unwrap_or(300) as u64,
             max_session_ttl_seconds: config.max_session_ttl_seconds.unwrap_or(3600) as u64,
             max_validation_attempts: config.max_validation_attempts.unwrap_or(3) as i64,
+            captcha_compression: config.captcha_compression.unwrap_or(40) as i64,
         });
 
         Ok(Self {
@@ -100,7 +98,7 @@ impl CaptchaApi {
             storage,
             captcha,
             auth,
-            config: internal_config,
+            config: session_config,
             metrics,
         })
     }
@@ -119,6 +117,12 @@ impl CaptchaApi {
     ) -> Result<SessionResult> {
         let opts = options.unwrap_or_default();
 
+        // Use per-request compression if specified; fall back to config default
+        let compression = opts
+            .compression
+            .map(|v| v as i64)
+            .or(Some(self.config.captcha_compression));
+
         // Validate parameters using shared validation
         let params = validation::validate_session_params(
             opts.length.map(|v| v as i64),
@@ -126,51 +130,22 @@ impl CaptchaApi {
             opts.width.map(|v| v as i64),
             opts.height.map(|v| v as i64),
             opts.dark_mode,
-            opts.compression.map(|v| v as i64),
+            compression,
             opts.expires_in_seconds.map(|v| v as u64),
             self.config.default_session_ttl_seconds,
             self.config.max_session_ttl_seconds,
         )
         .map_err(napi::Error::from_reason)?;
 
-        // Generate CAPTCHA (record duration)
-        let start = std::time::Instant::now();
-        let (solution, image_bytes) = self
-            .captcha
-            .generate(
-                params.length,
-                params.difficulty,
-                params.width,
-                params.height,
-                params.dark_mode,
-                params.compression,
-            )
-            .into_napi()?;
-        let generation_duration = start.elapsed().as_secs_f64();
-        self.metrics
-            .performance
-            .captcha_generation_duration
-            .record(generation_duration, &[]);
-
-        // Create session
-        let session = Session::new(
-            solution.clone(),
-            image_bytes.clone(),
-            params.expires_in,
-            params.difficulty,
-            params.width,
-            params.height,
-            params.dark_mode,
-        );
-
-        // Store session
-        self.storage.create_session(&session).await.into_napi()?;
-
-        self.metrics.sessions.created.add(1, &[]);
+        // Use orchestration function for generate + store + metrics
+        let (session, image_bytes) =
+            create_session_orchestrated(&self.storage, &self.captcha, &self.metrics, params)
+                .await
+                .into_napi()?;
 
         Ok(SessionResult {
             session_id: session.id,
-            text: solution,
+            text: session.solution,
             created_at: session.created_at * 1000, // Convert to milliseconds
             expires_at: session.expires_at * 1000,
             image: Buffer::from(image_bytes),
@@ -191,67 +166,33 @@ impl CaptchaApi {
         // Input length limit on solution to prevent abuse
         validation::validate_solution(&solution).map_err(napi::Error::from_reason)?;
 
-        // Get session
-        let session = self
-            .storage
-            .get_session(&session_id)
-            .await
-            .into_napi()?
-            .ok_or_else(|| napi::Error::from_reason("Session not found or expired"))?;
+        // Use orchestration function for full validation flow
+        let outcome = validate_session_orchestrated(
+            &self.storage,
+            &self.metrics,
+            &session_id,
+            &solution,
+            self.config.max_validation_attempts,
+        )
+        .await
+        .into_napi()?;
 
-        // Check if expired
-        if session.is_expired() {
-            self.storage.delete_session(&session_id).await.into_napi()?;
-            return Err(napi::Error::from_reason("Session has expired"));
-        }
-
-        // Check attempt count
-        if session.attempt_count >= self.config.max_validation_attempts {
-            self.storage.delete_session(&session_id).await.into_napi()?;
-
-            self.metrics.sessions.validation_attempts.add(1, &[]);
-            self.metrics.sessions.max_attempts_exceeded.add(1, &[]);
-
-            return Ok(ValidationResult {
-                valid: false,
-                session_id,
-                attempts_remaining: 0,
-            });
-        }
-
-        // Check solution (case-sensitive, matching HTTP API behavior)
-        let is_valid = session.solution == solution;
-
-        self.metrics.sessions.validation_attempts.add(1, &[]);
-
-        if is_valid {
-            // Delete session on success
-            self.storage.delete_session(&session_id).await.into_napi()?;
-
-            self.metrics.sessions.validated.add(1, &[]);
-
-            Ok(ValidationResult {
+        match outcome {
+            ValidationOutcome::Correct => Ok(ValidationResult {
                 valid: true,
                 session_id,
                 attempts_remaining: 0,
-            })
-        } else {
-            // Increment attempt count
-            self.storage
-                .increment_attempt_count(&session_id)
-                .await
-                .into_napi()?;
-
-            self.metrics.sessions.validation_failed.add(1, &[]);
-
-            let attempts_remaining =
-                (self.config.max_validation_attempts - session.attempt_count - 1).max(0) as i32;
-
-            Ok(ValidationResult {
+            }),
+            ValidationOutcome::Wrong { attempts_remaining } => Ok(ValidationResult {
                 valid: false,
                 session_id,
-                attempts_remaining,
-            })
+                attempts_remaining: attempts_remaining as i32,
+            }),
+            ValidationOutcome::MaxAttemptsExceeded => Ok(ValidationResult {
+                valid: false,
+                session_id,
+                attempts_remaining: 0,
+            }),
         }
     }
 
@@ -263,22 +204,10 @@ impl CaptchaApi {
     pub async fn get_image(&self, session_id: String) -> Result<Buffer> {
         let session = self
             .storage
-            .get_session(&session_id)
+            .get_active_session(&session_id)
             .await
             .into_napi()?
             .ok_or_else(|| napi::Error::from_reason("Session not found or expired"))?;
-
-        if session.is_expired() {
-            // Delete expired session before returning error
-            if let Err(e) = self.storage.delete_session(&session_id).await {
-                tracing::warn!(
-                    session_id = %session_id,
-                    error = %e,
-                    "Failed to delete expired session during eager cleanup"
-                );
-            }
-            return Err(napi::Error::from_reason("Session not found or expired"));
-        }
 
         Ok(Buffer::from(session.image_bytes))
     }
@@ -291,23 +220,10 @@ impl CaptchaApi {
     pub async fn get_session(&self, session_id: String) -> Result<SessionInfo> {
         let session = self
             .storage
-            .get_session(&session_id)
+            .get_active_session(&session_id)
             .await
             .into_napi()?
             .ok_or_else(|| napi::Error::from_reason("Session not found or expired"))?;
-
-        // Check if expired
-        if session.is_expired() {
-            // Delete expired session before returning error
-            if let Err(e) = self.storage.delete_session(&session_id).await {
-                tracing::warn!(
-                    session_id = %session_id,
-                    error = %e,
-                    "Failed to delete expired session during eager cleanup"
-                );
-            }
-            return Err(napi::Error::from_reason("Session not found or expired"));
-        }
 
         Ok(SessionInfo {
             session_id: session.id,
@@ -399,22 +315,16 @@ impl CaptchaApi {
     /// @returns The API key (store it safely!) and its hash
     #[napi]
     pub async fn create_api_key(&self, description: Option<String>) -> Result<CreateApiKeyResult> {
-        // Validate description
-        validation::validate_api_key_description(&description).map_err(napi::Error::from_reason)?;
+        // Use orchestration function: validate + generate + hash + persist + metrics
+        let (api_key, api_key_model) =
+            create_api_key_orchestrated(&self.storage, &self.auth, &self.metrics, description)
+                .await
+                .into_napi()?;
 
-        // Generate a random API key
-        let api_key = validation::generate_api_key();
-        let key_hash = self.auth.hash_api_key(&api_key);
-
-        let api_key_model = ApiKey::new(key_hash.clone(), description);
-        self.storage
-            .create_api_key(&api_key_model)
-            .await
-            .into_napi()?;
-
-        self.metrics.api_keys.created.add(1, &[]);
-
-        Ok(CreateApiKeyResult { api_key, key_hash })
+        Ok(CreateApiKeyResult {
+            api_key,
+            key_hash: api_key_model.key_hash,
+        })
     }
 
     /// Validate an API key
@@ -425,6 +335,11 @@ impl CaptchaApi {
     pub async fn validate_api_key(&self, api_key: String) -> Result<bool> {
         let key_hash = self.auth.hash_api_key(&api_key);
         let result = self.storage.get_api_key(&key_hash).await.into_napi()?;
+        if result.is_some() {
+            self.metrics.api_keys.authentications.add(1, &[]);
+        } else {
+            self.metrics.api_keys.auth_failures.add(1, &[]);
+        }
         Ok(result.is_some())
     }
 

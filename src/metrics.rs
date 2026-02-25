@@ -39,16 +39,6 @@ pub struct ErrorMetrics {
     pub database_errors: Counter<u64>,
 }
 
-/// Rate limiting metrics
-/// Note: These metrics are kept for future custom rate limiting needs.
-/// tower_governor handles rate limiting internally.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct RateLimitMetrics {
-    pub requests_allowed: Counter<u64>,
-    pub requests_blocked: Counter<u64>,
-}
-
 /// Health and system metrics
 #[derive(Clone)]
 pub struct SystemMetrics {
@@ -62,7 +52,6 @@ pub struct SystemMetrics {
 /// - api_keys: API key management operations
 /// - performance: Timing and duration measurements
 /// - errors: Error tracking and monitoring
-/// - rate_limit: Rate limiting statistics
 /// - system: General system health metrics
 #[derive(Clone)]
 pub struct Metrics {
@@ -70,8 +59,6 @@ pub struct Metrics {
     pub api_keys: ApiKeyMetrics,
     pub performance: PerformanceMetrics,
     pub errors: ErrorMetrics,
-    #[allow(dead_code)]
-    pub rate_limit: RateLimitMetrics,
     pub system: SystemMetrics,
 }
 
@@ -184,22 +171,6 @@ impl ErrorMetrics {
     }
 }
 
-impl RateLimitMetrics {
-    fn new(meter: &opentelemetry::metrics::Meter) -> Self {
-        Self {
-            requests_allowed: meter
-                .u64_counter("rate_limit.requests_allowed")
-                .with_description("Total number of requests allowed through rate limiting")
-                .build(),
-
-            requests_blocked: meter
-                .u64_counter("rate_limit.requests_blocked")
-                .with_description("Total number of requests blocked by rate limiting")
-                .build(),
-        }
-    }
-}
-
 impl SystemMetrics {
     fn new(meter: &opentelemetry::metrics::Meter) -> Self {
         Self {
@@ -220,7 +191,6 @@ impl Metrics {
             api_keys: ApiKeyMetrics::new(&meter),
             performance: PerformanceMetrics::new(&meter),
             errors: ErrorMetrics::new(&meter),
-            rate_limit: RateLimitMetrics::new(&meter),
             system: SystemMetrics::new(&meter),
         }
     }
@@ -334,14 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_metrics() {
-        let metrics = Metrics::new();
-
-        metrics.rate_limit.requests_allowed.add(100, &[]);
-        metrics.rate_limit.requests_blocked.add(5, &[]);
-    }
-
-    #[test]
     fn test_system_metrics() {
         let metrics = Metrics::new();
 
@@ -416,10 +378,6 @@ mod tests {
         // Error counters
         metrics.errors.http_errors_total.add(1, &[]);
         metrics.errors.database_errors.add(1, &[]);
-
-        // Rate limit counters
-        metrics.rate_limit.requests_allowed.add(1, &[]);
-        metrics.rate_limit.requests_blocked.add(1, &[]);
 
         // System counters
         metrics.system.health_checks.add(1, &[]);
