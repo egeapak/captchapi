@@ -388,7 +388,6 @@ dependencies = [
  "napi-derive",
  "sqlx",
  "tokio",
- "uuid",
 ]
 
 [[package]]

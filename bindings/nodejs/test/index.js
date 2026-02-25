@@ -348,7 +348,7 @@ async function runTests() {
       await api.createSession({ difficulty: 0 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Difficulty'));
+      assert(e.message.includes('difficulty'));
     }
   });
 
@@ -357,7 +357,7 @@ async function runTests() {
       await api.createSession({ difficulty: 11 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Difficulty'));
+      assert(e.message.includes('difficulty'));
     }
   });
 
@@ -366,7 +366,7 @@ async function runTests() {
       await api.createSession({ width: 10 }); // Too small (min: 50)
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Width'));
+      assert(e.message.includes('width'));
     }
   });
 
@@ -375,7 +375,7 @@ async function runTests() {
       await api.createSession({ height: 10 }); // Too small (min: 30)
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('Height'));
+      assert(e.message.includes('height'));
     }
   });
 
@@ -384,7 +384,7 @@ async function runTests() {
       await api.createSession({ expiresInSeconds: 99999 });
       assert.fail('Should have thrown');
     } catch (e) {
-      assert(e.message.includes('TTL') || e.message.includes('maximum'));
+      assert(e.message.includes('expires_in_seconds') || e.message.includes('cannot exceed'));
     }
   });
 

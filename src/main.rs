@@ -7,6 +7,7 @@ mod routes;
 mod services;
 mod tasks;
 mod telemetry;
+mod validation;
 
 use crate::config::Config;
 use crate::metrics::init_metrics;

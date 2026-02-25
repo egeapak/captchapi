@@ -1,18 +1,17 @@
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
-use crate::models::api_key::validate_description;
 use crate::models::{
     ApiKey, ApiKeyInfo, CreateApiKeyRequest, CreateApiKeyResponse, UpdateApiKeyRequest,
 };
 use crate::services::{AuthService, StorageService};
+use crate::validation;
 use axum::{
     extract::{Path, State},
     middleware,
     routing::{delete, get, post, put},
     Json, Router,
 };
-use rand::{distributions::Alphanumeric, Rng};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -44,14 +43,11 @@ async fn create_api_key(
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateApiKeyResponse>)> {
     // Validate description
-    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
+    validation::validate_api_key_description(&req.description)
+        .map_err(AppError::InvalidApiKeyParams)?;
 
     // Generate a random API key
-    let api_key: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
+    let api_key = validation::generate_api_key();
 
     // Hash the API key
     let key_hash = state.auth_service.hash_api_key(&api_key);
@@ -112,7 +108,8 @@ async fn update_api_key(
     Json(req): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyInfo>> {
     // Validate description if present
-    validate_description(&req.description).map_err(AppError::InvalidApiKeyParams)?;
+    validation::validate_api_key_description(&req.description)
+        .map_err(AppError::InvalidApiKeyParams)?;
 
     // Update the API key
     let updated = state

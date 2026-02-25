@@ -7,6 +7,7 @@ use crate::models::{
     ValidateSessionRequest, ValidateSessionResponse,
 };
 use crate::services::{CaptchaService, StorageService};
+use crate::validation;
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue},
@@ -44,11 +45,11 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
 }
 
 #[tracing::instrument(skip(state, req), fields(
-    length = req.length.unwrap_or(5),
-    difficulty = req.difficulty.unwrap_or(5),
-    width = req.width.unwrap_or(220),
-    height = req.height.unwrap_or(120),
-    dark_mode = req.dark_mode.unwrap_or(false),
+    length = req.length.unwrap_or(validation::DEFAULT_LENGTH),
+    difficulty = req.difficulty.unwrap_or(validation::DEFAULT_DIFFICULTY),
+    width = req.width.unwrap_or(validation::DEFAULT_WIDTH),
+    height = req.height.unwrap_or(validation::DEFAULT_HEIGHT),
+    dark_mode = req.dark_mode.unwrap_or(validation::DEFAULT_DARK_MODE),
     expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
     session_id
 ))]
@@ -57,58 +58,28 @@ async fn create_session(
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
     // Validate parameters
-    let expires_in = req
-        .expires_in_seconds
-        .unwrap_or(state.config.default_session_ttl_seconds);
-
-    if expires_in > state.config.max_session_ttl_seconds {
-        return Err(AppError::InvalidSessionParams(format!(
-            "expires_in_seconds cannot exceed {} seconds",
-            state.config.max_session_ttl_seconds
-        )));
-    }
-
-    let difficulty = req.difficulty.unwrap_or(5);
-    if !(1..=10).contains(&difficulty) {
-        return Err(AppError::InvalidSessionParams(
-            "difficulty must be between 1 and 10".to_string(),
-        ));
-    }
-
-    // Validate length if provided
-    let length = req.length.unwrap_or(5);
-    if !(1..=20).contains(&length) {
-        return Err(AppError::InvalidSessionParams(
-            "length must be between 1 and 20 characters".to_string(),
-        ));
-    }
-
-    let width = req.width.unwrap_or(220);
-    if !(50..=1000).contains(&width) {
-        return Err(AppError::InvalidSessionParams(
-            "width must be between 50 and 1000 pixels".to_string(),
-        ));
-    }
-
-    let height = req.height.unwrap_or(120);
-    if !(30..=500).contains(&height) {
-        return Err(AppError::InvalidSessionParams(
-            "height must be between 30 and 500 pixels".to_string(),
-        ));
-    }
-
-    let dark_mode = req.dark_mode.unwrap_or(false);
-    let compression = state.config.captcha_compression;
+    let params = validation::validate_session_params(
+        req.length,
+        req.difficulty,
+        req.width,
+        req.height,
+        req.dark_mode,
+        Some(state.config.captcha_compression.into()),
+        req.expires_in_seconds,
+        state.config.default_session_ttl_seconds,
+        state.config.max_session_ttl_seconds,
+    )
+    .map_err(AppError::InvalidSessionParams)?;
 
     // Generate CAPTCHA (record duration)
     let start = std::time::Instant::now();
     let (text, image_bytes) = state.captcha.generate(
-        length,
-        difficulty,
-        width,
-        height,
-        dark_mode,
-        compression.into(),
+        params.length,
+        params.difficulty,
+        params.width,
+        params.height,
+        params.dark_mode,
+        params.compression,
     )?;
     let generation_duration = start.elapsed().as_secs_f64();
     state
@@ -121,11 +92,11 @@ async fn create_session(
     let session = Session::new(
         text.clone(),
         image_bytes,
-        expires_in,
-        difficulty,
-        width,
-        height,
-        dark_mode,
+        params.expires_in,
+        params.difficulty,
+        params.width,
+        params.height,
+        params.dark_mode,
     );
 
     // Record session_id in the span
@@ -265,11 +236,7 @@ async fn validate_session(
     tracing::Span::current().record("is_expired", false);
 
     // Input length limit on solution to prevent abuse
-    if req.solution.len() > 100 {
-        return Err(AppError::InvalidSessionParams(
-            "solution must not exceed 100 characters".to_string(),
-        ));
-    }
+    validation::validate_solution(&req.solution).map_err(AppError::InvalidSessionParams)?;
 
     // Check attempt count
     if session.attempt_count >= state.config.max_validation_attempts {

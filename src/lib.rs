@@ -9,3 +9,4 @@ pub mod routes;
 pub mod services;
 pub mod tasks;
 pub mod telemetry;
+pub mod validation;
