@@ -1,0 +1,31 @@
+meta {
+  name: Update API Key - Not Found
+  type: http
+  seq: 9
+}
+
+put {
+  url: {{base_url}}/api/v1/api-keys/nonexistent-key-hash
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "is_active": true,
+    "description": "Should fail"
+  }
+}
+
+tests {
+  test("should return 404 Not Found", function() {
+    expect(res.status).to.equal(404);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("api_key_not_found");
+  });
+}

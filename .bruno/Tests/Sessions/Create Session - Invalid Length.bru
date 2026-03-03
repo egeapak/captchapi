@@ -1,0 +1,31 @@
+meta {
+  name: Create Session - Invalid Length
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+  Content-Type: application/json
+}
+
+body {
+  {
+    "length": 0
+  }
+}
+
+tests {
+  test("should return 400 Bad Request", function() {
+    expect(res.status).to.equal(400);
+  });
+
+  test("should return error about invalid length", function() {
+    expect(res.body.error).to.be.a("string");
+    expect(res.body.message).to.include("length");
+  });
+}

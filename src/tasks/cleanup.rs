@@ -73,6 +73,8 @@ mod tests {
     use crate::models::Session;
     use chrono::Utc;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use tokio_util::sync::CancellationToken;
+    use tower_governor::governor::GovernorConfigBuilder;
     use uuid::Uuid;
 
     async fn setup_test_storage() -> StorageService {
@@ -147,65 +149,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cleanup_preserves_valid_sessions() {
-        let storage = setup_test_storage().await;
-        let metrics = crate::metrics::Metrics::new();
-
-        // Create only valid sessions
-        let valid1 = create_valid_session();
-        let valid2 = create_valid_session();
-
-        storage.create_session(&valid1).await.unwrap();
-        storage.create_session(&valid2).await.unwrap();
-
-        // Run cleanup
-        let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
-
-        // Should have cleaned up 0 sessions
-        assert_eq!(count, 0);
-
-        // Both should still exist
-        assert!(storage.get_session(&valid1.id).await.unwrap().is_some());
-        assert!(storage.get_session(&valid2.id).await.unwrap().is_some());
-    }
-
-    #[tokio::test]
     async fn test_cleanup_with_empty_database() {
         let storage = setup_test_storage().await;
         let metrics = crate::metrics::Metrics::new();
 
-        // Run cleanup on empty database
-        let result = cleanup_expired_sessions(&storage, &metrics).await;
-
-        // Should succeed with 0 count
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_multiple_expired_sessions() {
-        let storage = setup_test_storage().await;
-        let metrics = crate::metrics::Metrics::new();
-
-        // Create multiple expired sessions
-        let expired1 = create_expired_session();
-        let expired2 = create_expired_session();
-        let expired3 = create_expired_session();
-
-        storage.create_session(&expired1).await.unwrap();
-        storage.create_session(&expired2).await.unwrap();
-        storage.create_session(&expired3).await.unwrap();
-
-        // Run cleanup
         let count = cleanup_expired_sessions(&storage, &metrics).await.unwrap();
-
-        // Should have cleaned up all 3
-        assert_eq!(count, 3);
-
-        // All should be gone
-        assert!(storage.get_session(&expired1.id).await.unwrap().is_none());
-        assert!(storage.get_session(&expired2.id).await.unwrap().is_none());
-        assert!(storage.get_session(&expired3.id).await.unwrap().is_none());
+        assert_eq!(count, 0, "Cleanup on an empty database should return 0");
     }
 
     #[tokio::test]
@@ -237,5 +186,137 @@ mod tests {
         // Valid should still exist
         assert!(storage.get_session(&valid1.id).await.unwrap().is_some());
         assert!(storage.get_session(&valid2.id).await.unwrap().is_some());
+    }
+
+    /// Build a permissive `DefaultKeyedRateLimiter<IpAddr>` suitable for tests.
+    ///
+    /// Uses the same `GovernorConfigBuilder` path as `main.rs` so the returned
+    /// `Arc<DefaultKeyedRateLimiter<IpAddr>>` is exactly the type that
+    /// `start_cleanup_task` expects.
+    fn make_test_rate_limiter() -> Arc<DefaultKeyedRateLimiter<std::net::IpAddr>> {
+        let governor_conf = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(100)
+                .burst_size(100)
+                .finish()
+                .expect("Failed to build test governor config"),
+        );
+        governor_conf.limiter().clone()
+    }
+
+    // -----------------------------------------------------------------------
+    // start_cleanup_task — lifecycle tests
+    // -----------------------------------------------------------------------
+
+    /// Verify that the cleanup task starts, runs at least one tick, and
+    /// shuts down cleanly when the `CancellationToken` is cancelled.
+    ///
+    /// A 2-second `tokio::time::timeout` guards against the test hanging
+    /// indefinitely should the shutdown branch be broken.
+    #[tokio::test]
+    async fn test_start_cleanup_task_runs_and_shuts_down() {
+        let storage = setup_test_storage().await;
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let rate_limiter = make_test_rate_limiter();
+        let shutdown_token = CancellationToken::new();
+
+        // Use a 100 ms interval so the task ticks quickly in CI.
+        let handle = start_cleanup_task(
+            storage,
+            // interval_seconds is u64 — pass the smallest positive value (1s)
+            // and cancel before the second tick to keep the test fast.
+            1,
+            metrics,
+            rate_limiter,
+            shutdown_token.clone(),
+        );
+
+        // Give the task time to reach its first interval tick.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Signal the task to shut down.
+        shutdown_token.cancel();
+
+        // The task must complete within 2 seconds after cancellation.
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+
+        assert!(
+            result.is_ok(),
+            "cleanup task did not complete within the timeout after cancellation"
+        );
+
+        let join_result = result.unwrap();
+        assert!(
+            join_result.is_ok(),
+            "cleanup task panicked: {:?}",
+            join_result.unwrap_err()
+        );
+    }
+
+    /// Verify that after the cleanup task fires at least one tick, expired
+    /// sessions are removed from the database and valid sessions are preserved.
+    #[tokio::test]
+    async fn test_start_cleanup_task_cleans_expired_sessions() {
+        let storage = setup_test_storage().await;
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let rate_limiter = make_test_rate_limiter();
+        let shutdown_token = CancellationToken::new();
+
+        // Insert one expired and one valid session before starting the task.
+        let expired = create_expired_session();
+        let valid = create_valid_session();
+        storage.create_session(&expired).await.unwrap();
+        storage.create_session(&valid).await.unwrap();
+
+        // Confirm both rows are present before the task runs.
+        assert!(
+            storage.get_session(&expired.id).await.unwrap().is_some(),
+            "expired session should be in the database before task starts"
+        );
+        assert!(
+            storage.get_session(&valid.id).await.unwrap().is_some(),
+            "valid session should be in the database before task starts"
+        );
+
+        // Start the task with a 1-second interval.  The interval fires
+        // immediately on the first tick, so we only need a short wait.
+        let handle = start_cleanup_task(
+            storage.clone(),
+            1,
+            metrics,
+            rate_limiter,
+            shutdown_token.clone(),
+        );
+
+        // Wait long enough for the first interval tick to execute
+        // (tokio's interval fires immediately the first time, so 200 ms is
+        // generous while staying well below any CI timeout).
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Cancel the task now that at least one tick has occurred.
+        shutdown_token.cancel();
+
+        // Wait for the task to finish (2-second safety net).
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(
+            result.is_ok(),
+            "cleanup task did not complete within the timeout"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "cleanup task panicked during shutdown"
+        );
+
+        // The expired session must have been deleted by the background task.
+        assert!(
+            storage.get_session(&expired.id).await.unwrap().is_none(),
+            "expired session should have been cleaned up by the task"
+        );
+
+        // The valid session must still be present.
+        assert!(
+            storage.get_session(&valid.id).await.unwrap().is_some(),
+            "valid session should not have been removed by the task"
+        );
     }
 }

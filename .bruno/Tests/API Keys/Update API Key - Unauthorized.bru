@@ -1,0 +1,31 @@
+meta {
+  name: Update API Key - Unauthorized
+  type: http
+  seq: 10
+}
+
+put {
+  url: {{base_url}}/api/v1/api-keys/some-key-hash
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body {
+  {
+    "is_active": true,
+    "description": "Should fail without master key"
+  }
+}
+
+tests {
+  test("should return 401 Unauthorized", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

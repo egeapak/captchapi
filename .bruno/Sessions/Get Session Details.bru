@@ -8,6 +8,44 @@ get {
   url: {{base_url}}/api/v1/sessions/{{session_id}}
 }
 
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return session_id", function() {
+    expect(res.body.session_id).to.be.a("string");
+  });
+
+  test("should return created_at", function() {
+    expect(res.body.created_at).to.be.a("string");
+  });
+
+  test("should return expires_at", function() {
+    expect(res.body.expires_at).to.be.a("string");
+  });
+
+  test("should return attempt_count", function() {
+    expect(res.body.attempt_count).to.be.a("number");
+  });
+
+  test("should return difficulty", function() {
+    expect(res.body.difficulty).to.be.a("number");
+  });
+
+  test("should return width", function() {
+    expect(res.body.width).to.be.a("number");
+  });
+
+  test("should return height", function() {
+    expect(res.body.height).to.be.a("number");
+  });
+
+  test("should return dark_mode", function() {
+    expect(res.body.dark_mode).to.be.a("boolean");
+  });
+}
+
 docs {
   # Get Session Details
 

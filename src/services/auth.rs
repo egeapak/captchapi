@@ -68,4 +68,16 @@ mod tests {
 
         assert_eq!(hash.len(), 64, "Empty key should still produce valid hash");
     }
+
+    #[test]
+    fn test_hash_api_key_golden_value() {
+        // Regression test: SHA256("test-key-123" + "my-test-salt-1234")
+        // This golden value prevents silent changes to hashing behavior.
+        let auth_service = AuthService::new("my-test-salt-1234".to_string());
+        let hash = auth_service.hash_api_key("test-key-123");
+        assert_eq!(
+            hash, "f2f4d31d7675db7bd4b3836fe8eff60666984159a71f4643c22e9d5111610600",
+            "Hash must match golden value for 'test-key-123' with salt 'my-test-salt-1234'"
+        );
+    }
 }

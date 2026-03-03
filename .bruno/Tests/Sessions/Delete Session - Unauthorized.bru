@@ -1,0 +1,20 @@
+meta {
+  name: Delete Session - Unauthorized
+  type: http
+  seq: 9
+}
+
+delete {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}
+}
+
+tests {
+  test("should return 401 Unauthorized", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

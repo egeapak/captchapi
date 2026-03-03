@@ -19,17 +19,20 @@ echo "Using environment: $ENVIRONMENT"
 # Run comprehensive test suite
 # This runs all tests in the correct order:
 # 1. Health check
-# 2. API Key tests (unauthorized, create, list, create for testing, update, delete, delete not found)
+# 2. API Key tests (unauthorized, create, list, list unauthorized, create for testing, update, update not found, update unauthorized, delete, delete not found)
 # 3. Admin tests (cleanup unauthorized, invalid key, success)
-# 4. Session tests (unauthorized, invalid params, create, get images, validate wrong/max attempts, not found)
+# 4. Session tests (unauthorized, invalid params, create, get details, get images, validate wrong/max attempts, not found, delete unauthorized, delete not found)
 
 bru run \
   "Health Check.bru" \
   "Tests/API Keys/Create API Key - Unauthorized.bru" \
+  "Tests/API Keys/List API Keys - Unauthorized.bru" \
+  "Tests/API Keys/Update API Key - Unauthorized.bru" \
   "API Keys/Create API Key.bru" \
   "API Keys/List API Keys.bru" \
   "Tests/API Keys/Create API Key for Testing.bru" \
   "Tests/API Keys/Update API Key (Test).bru" \
+  "Tests/API Keys/Update API Key - Not Found.bru" \
   "Tests/API Keys/Delete API Key (Test).bru" \
   "Tests/API Keys/Delete API Key - Not Found.bru" \
   "Tests/Admin/Cleanup - Unauthorized.bru" \
@@ -37,7 +40,11 @@ bru run \
   "Tests/Admin/Cleanup - Success.bru" \
   "Tests/Sessions/Create Session - Unauthorized.bru" \
   "Tests/Sessions/Create Session - Invalid Parameters.bru" \
+  "Tests/Sessions/Create Session - Invalid Length.bru" \
+  "Tests/Sessions/Create Session - Invalid Width.bru" \
+  "Tests/Sessions/Create Session - Invalid Height.bru" \
   "Sessions/Create Session.bru" \
+  "Tests/Sessions/Validate Session - Unauthorized.bru" \
   "Sessions/Get Session Details.bru" \
   "Sessions/Get Image (Binary).bru" \
   "Tests/Sessions/Get Image - Not Found.bru" \
@@ -45,6 +52,10 @@ bru run \
   "Tests/Sessions/Validate Session - Max Attempts.bru" \
   "Tests/Sessions/Validate Session - Max Attempts.bru" \
   "Tests/Sessions/Validate Session - Session Deleted.bru" \
+  "Sessions/Create Session.bru" \
+  "Tests/Sessions/Delete Session - Unauthorized.bru" \
+  "Tests/Sessions/Delete Session - Not Found.bru" \
+  "Sessions/Delete Session.bru" \
   --env "$ENVIRONMENT"
 
 echo ""
@@ -56,12 +67,12 @@ echo "Coverage Summary:"
 echo "  ✓ Health Check: 1 endpoint"
 echo "  ✓ API Keys: 4 endpoints (create, list, update, delete)"
 echo "  ✓ Admin: 1 endpoint (cleanup expired sessions)"
-echo "  ✓ Sessions: 5 endpoints (create, get image, validate, delete)"
+echo "  ✓ Sessions: 5 endpoints (create, get details, get image, validate, delete)"
 echo ""
 echo "Test Scenarios:"
 echo "  ✓ Success cases: All endpoints with valid data"
-echo "  ✓ Unauthorized: Missing authentication"
-echo "  ✓ Invalid params: Bad request data"
-echo "  ✓ Not found: Non-existent resources"
+echo "  ✓ Unauthorized: Missing authentication (create/list/update API keys, create/validate/delete sessions, cleanup)"
+echo "  ✓ Invalid params: Bad request data (difficulty, length, width, height)"
+echo "  ✓ Not found: Non-existent resources (API key update, API key delete, session delete)"
 echo "  ✓ Validation: Wrong answers, max attempts"
 echo ""
