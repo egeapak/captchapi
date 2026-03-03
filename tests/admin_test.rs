@@ -8,7 +8,7 @@ use serde_json::json;
 #[tokio::test]
 async fn test_cleanup_endpoint_without_master_key_fails() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     let response = server.post("/api/v1/admin/cleanup").await;
 
@@ -22,7 +22,7 @@ async fn test_cleanup_endpoint_without_master_key_fails() {
 #[tokio::test]
 async fn test_cleanup_endpoint_with_invalid_master_key_fails() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     let response = server
         .post("/api/v1/admin/cleanup")
@@ -39,7 +39,7 @@ async fn test_cleanup_endpoint_with_invalid_master_key_fails() {
 #[tokio::test]
 async fn test_cleanup_endpoint_with_valid_master_key_succeeds() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     let response = server
         .post("/api/v1/admin/cleanup")
@@ -56,7 +56,7 @@ async fn test_cleanup_endpoint_with_valid_master_key_succeeds() {
 #[tokio::test]
 async fn test_cleanup_endpoint_deletes_expired_sessions() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     // Create a session
     let create_response = server
@@ -99,7 +99,7 @@ async fn test_cleanup_endpoint_deletes_expired_sessions() {
 #[tokio::test]
 async fn test_cleanup_endpoint_with_no_expired_sessions() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     // Create a session with long TTL
     let create_response = server
@@ -130,7 +130,7 @@ async fn test_cleanup_endpoint_with_no_expired_sessions() {
 #[tokio::test]
 async fn test_cleanup_endpoint_deletes_multiple_expired_sessions() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     // Create multiple sessions with short TTL
     for _ in 0..3 {
@@ -166,7 +166,7 @@ async fn test_cleanup_endpoint_deletes_multiple_expired_sessions() {
 #[tokio::test]
 async fn test_cleanup_endpoint_preserves_valid_sessions() {
     let app = TestApp::new().await;
-    let server = TestServer::new(app.build_app()).unwrap();
+    let server = TestServer::new(app.build_app());
 
     // Create expired session
     let expired_response = server
