@@ -1,5 +1,6 @@
 // Library exports for testing and potential library usage
 
+pub mod app;
 #[doc(hidden)]
 pub mod config;
 pub mod error;

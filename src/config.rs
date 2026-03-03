@@ -517,4 +517,35 @@ mod tests {
             .unwrap_err()
             .contains("Invalid DATABASE_MAX_CONNECTIONS"));
     }
+
+    #[test]
+    fn test_config_invalid_max_session_ttl_format() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("MAX_SESSION_TTL_SECONDS", "not-a-number");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Invalid MAX_SESSION_TTL_SECONDS"));
+    }
+
+    #[test]
+    fn test_session_config_matches_config_fields() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("DEFAULT_SESSION_TTL_SECONDS", "600");
+        env.set("MAX_SESSION_TTL_SECONDS", "7200");
+        env.set("MAX_VALIDATION_ATTEMPTS", "5");
+        env.set("CAPTCHA_COMPRESSION", "75");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        let session_config = config.session_config();
+
+        assert_eq!(session_config.default_session_ttl_seconds, 600);
+        assert_eq!(session_config.max_session_ttl_seconds, 7200);
+        assert_eq!(session_config.max_validation_attempts, 5);
+        assert_eq!(session_config.captcha_compression, 75);
+    }
 }

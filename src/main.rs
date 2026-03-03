@@ -1,3 +1,4 @@
+mod app;
 mod config;
 mod error;
 mod metrics;
@@ -9,26 +10,14 @@ mod tasks;
 mod telemetry;
 mod validation;
 
+use crate::app::build_app;
 use crate::config::Config;
 use crate::metrics::init_metrics;
-use crate::middleware::{
-    request_id_middleware, AuthMiddleware, MasterKeyMiddleware, MetricsMiddleware,
-};
-use crate::routes::admin::AdminState;
-use crate::routes::api_keys::ApiKeysState;
-use crate::routes::sessions::SessionsState;
-use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, RateLimiterConfig, StorageService};
 use crate::tasks::start_cleanup_task;
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
-use axum::{middleware as axum_middleware, routing::get, Router};
-use governor::DefaultKeyedRateLimiter;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::net::IpAddr;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tower_governor::{governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor};
-use tower_http::{compression::CompressionLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -112,135 +101,22 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("Database migrations completed");
 
-    // Initialize services
-    let storage = StorageService::new(pool);
-    let captcha = Arc::new(CaptchaService::new());
-    let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
-
-    // Configure rate limiter using tower_governor
-    // Uses GCRA (Generic Cell Rate Algorithm) for sophisticated rate limiting
-    // When behind a reverse proxy, use SmartIpKeyExtractor to read X-Forwarded-For/X-Real-IP headers
-    let rate_limiter_config = if config.rate_limit_reverse_proxy {
-        RateLimiterConfig::for_reverse_proxy(
-            config.rate_limit_requests_per_second,
-            config.rate_limit_burst_size,
-        )
-    } else {
-        RateLimiterConfig::direct(
-            config.rate_limit_requests_per_second,
-            config.rate_limit_burst_size,
-        )
-    };
-    tracing::info!(
-        "Rate limiter initialized: {} requests/second, burst size {}, reverse proxy mode: {}",
-        rate_limiter_config.requests_per_second,
-        rate_limiter_config.burst_size,
-        rate_limiter_config.reverse_proxy
-    );
-
     // Initialize metrics
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
 
-    // Create middleware
-    let auth_middleware = AuthMiddleware::new(
-        storage.clone(),
-        auth_service.clone(),
-        metrics.clone(),
-        config.master_api_key.clone(),
-    );
-    let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let metrics_middleware = MetricsMiddleware::new(metrics.clone());
-
-    // Create application state
-    let sessions_state = SessionsState {
-        storage: storage.clone(),
-        captcha,
-        config: config.clone(),
-        metrics: metrics.clone(),
-    };
-
-    let api_keys_state = ApiKeysState {
-        storage: storage.clone(),
-        auth_service: auth_service.clone(),
-        metrics: metrics.clone(),
-    };
-
-    let admin_state = AdminState {
-        storage: storage.clone(),
-        metrics: metrics.clone(),
-    };
-
-    // Build base router (without rate-limited sessions routes)
-    let base_router = Router::new()
-        .route("/health", get(health_check))
-        .with_state(metrics.clone())
-        .nest(
-            "/api/v1/api-keys",
-            api_keys_routes(api_keys_state, master_middleware),
-        )
-        .nest(
-            "/api/v1/admin",
-            admin_routes(admin_state, master_middleware_admin),
-        );
-
-    // Build router with rate limiting, using appropriate key extractor based on config
-    // When behind a reverse proxy, SmartIpKeyExtractor reads X-Forwarded-For, X-Real-IP, Forwarded headers
-    // Otherwise, PeerIpKeyExtractor uses the direct socket connection IP
-    let (app, governor_limiter): (Router, Arc<DefaultKeyedRateLimiter<IpAddr>>) =
-        if rate_limiter_config.reverse_proxy {
-            let governor_conf = Arc::new(
-                GovernorConfigBuilder::default()
-                    .per_second(rate_limiter_config.requests_per_second)
-                    .burst_size(rate_limiter_config.burst_size)
-                    .key_extractor(SmartIpKeyExtractor)
-                    .finish()
-                    .expect("Failed to build governor config"),
-            );
-            let limiter = governor_conf.limiter().clone();
-            let layer = tower_governor::GovernorLayer::new(governor_conf);
-            let router = base_router.nest(
-                "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware).layer(layer),
-            );
-            (router, limiter)
-        } else {
-            let governor_conf = Arc::new(
-                GovernorConfigBuilder::default()
-                    .per_second(rate_limiter_config.requests_per_second)
-                    .burst_size(rate_limiter_config.burst_size)
-                    .finish()
-                    .expect("Failed to build governor config"),
-            );
-            let limiter = governor_conf.limiter().clone();
-            let layer = tower_governor::GovernorLayer::new(governor_conf);
-            let router = base_router.nest(
-                "/api/v1/sessions",
-                sessions_routes(sessions_state, auth_middleware).layer(layer),
-            );
-            (router, limiter)
-        };
-
-    // Add common layers
-    let app = app
-        .layer(CompressionLayer::new())
-        .layer(TraceLayer::new_for_http())
-        .layer(axum_middleware::from_fn(request_id_middleware))
-        .layer(axum_middleware::from_fn_with_state(
-            metrics_middleware.clone(),
-            MetricsMiddleware::track_request_duration,
-        ));
+    // Build application (services, middleware, router, rate limiter)
+    let components = build_app(pool, config.clone(), metrics.clone());
 
     // Create shutdown token for graceful shutdown
     let shutdown_token = CancellationToken::new();
 
     // Start cleanup task
     let cleanup_handle = start_cleanup_task(
-        storage.clone(),
+        components.storage,
         config.cleanup_interval_seconds,
         metrics.clone(),
-        governor_limiter,
+        components.governor_limiter,
         shutdown_token.clone(),
     );
     tracing::info!(
@@ -256,7 +132,9 @@ async fn main() -> anyhow::Result<()> {
     // Use into_make_service_with_connect_info to extract IP addresses for rate limiting
     let server = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        components
+            .router
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal(shutdown_token.clone()));
 
