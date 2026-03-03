@@ -30,7 +30,7 @@ Authorization: Bearer <master_key>
 
 ### Public Endpoints
 - `GET /health` - Health check
-- `GET /api/v1/sessions/{id}/image` - Retrieve CAPTCHA image (JSON with base64 data URI)
+- `GET /api/v1/sessions/{id}` - Get session details (metadata only)
 - `GET /api/v1/sessions/{id}/image.jpeg` - Retrieve CAPTCHA as binary JPEG (for browser display)
 
 ### Protected Endpoints (Require API Key)

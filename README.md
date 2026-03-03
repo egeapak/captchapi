@@ -102,14 +102,20 @@ just run
 just run-volume
 ```
 
-### Manual Docker Usage
+### Pre-built Image
+
+Multi-platform images (amd64 + arm64) are published to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/egeapak/captchapi:latest
+```
 
 ```bash
 # Transient (no volume)
 docker run -p 3000:3000 \
   -e API_KEY_SALT=your-salt \
   -e MASTER_API_KEY=your-key \
-  captchapi:latest
+  ghcr.io/egeapak/captchapi:latest
 
 # Production (with volume)
 docker volume create captchapi-data
@@ -117,7 +123,7 @@ docker run -p 3000:3000 \
   -v captchapi-data:/data \
   -e API_KEY_SALT=your-salt \
   -e MASTER_API_KEY=your-key \
-  captchapi:latest
+  ghcr.io/egeapak/captchapi:latest
 ```
 
 See `docker/README.md` for detailed Docker build documentation, bind mount instructions, and CI/CD setup.
@@ -324,23 +330,20 @@ Note: Cleanup runs automatically in the background every 60 seconds by default. 
 
 ### Running Tests
 
-**Rust Tests** (40 tests total)
+**Rust Tests** (uses [cargo-nextest](https://nexte.st/) for process-per-test isolation)
 
 ```bash
 # Run all tests
-cargo test
+cargo nextest run
 
 # Run only unit tests
-cargo test --lib
+cargo nextest run --lib
 
 # Run only integration tests
-cargo test --test sessions_test
-
-# Run with output
-cargo test -- --nocapture
+cargo nextest run --test sessions_test
 ```
 
-**API Tests with Bruno** (38 tests across 18 requests)
+**API Tests with Bruno**
 
 Requires the server to be running first.
 
@@ -349,11 +352,6 @@ Requires the server to be running first.
 cargo run
 
 # Terminal 2: Run API tests
-
-# Quick test suite (6 requests, 16 tests)
-./.bruno/Tests/Scripts/test-bruno.sh
-
-# Comprehensive test suite (18 requests, 38 tests)
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
@@ -372,7 +370,7 @@ cargo clippy
 cargo check
 
 # 4. Run Rust tests
-cargo test
+cargo nextest run
 
 # 5. Run API tests (requires running server in another terminal)
 ./.bruno/Tests/Scripts/test-bruno-full.sh

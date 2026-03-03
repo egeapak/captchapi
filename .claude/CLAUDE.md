@@ -9,7 +9,6 @@ CaptchAPI is a REST API service for creating, validating, and consuming CAPTCHA 
 This file provides project overview, architecture, and development workflow. For detailed information:
 
 - **API Documentation**: See `docs/API.md` for complete endpoint specifications, request/response formats, and usage examples
-- **Testing Guide**: See `docs/TESTING.md` for test structure, writing tests, and debugging
 
 ## Architecture
 
@@ -44,30 +43,43 @@ captchapi/
 ├── PROGRESS.md                  # Development progress tracking
 ├── CLAUDE.md                    # This file - project documentation
 ├── .env.example                 # Example environment configuration
-├── .gitignore                   # Git ignore rules
 ├── Cargo.toml                   # Rust dependencies
+├── Cross.toml                   # Cross-compilation config
 ├── migrations/                  # SQLx database migrations
 │   └── 20250101000000_init.sql
 └── src/
-    ├── main.rs                  # Application entry point
+    ├── main.rs                  # Application entry point (thin wrapper)
+    ├── lib.rs                   # Library crate exports
+    ├── app.rs                   # App builder (router, services, middleware)
     ├── config.rs                # Environment configuration
     ├── error.rs                 # Error types and handling
+    ├── metrics.rs               # Prometheus-style metrics
+    ├── telemetry.rs             # OpenTelemetry tracing setup
+    ├── validation.rs            # Centralized input validation
     ├── models/                  # Data structures
     │   ├── mod.rs
     │   ├── session.rs           # Session models
+    │   ├── session_config.rs    # Session configuration
     │   └── api_key.rs           # API key models
     ├── services/                # Business logic layer
     │   ├── mod.rs
     │   ├── captcha.rs           # CAPTCHA generation
     │   ├── auth.rs              # API key hashing
-    │   └── storage.rs           # Database operations
+    │   ├── storage.rs           # Database operations
+    │   ├── session_ops.rs       # Session orchestration
+    │   ├── api_key_ops.rs       # API key orchestration
+    │   └── rate_limiter.rs      # Rate limiter configuration
     ├── routes/                  # HTTP endpoints
     │   ├── mod.rs
     │   ├── health.rs            # Health check
-    │   └── sessions.rs          # Session CRUD
+    │   ├── sessions.rs          # Session CRUD
+    │   ├── api_keys.rs          # API key management
+    │   └── admin.rs             # Admin operations
     ├── middleware/              # HTTP middleware
     │   ├── mod.rs
-    │   └── auth.rs              # Authentication
+    │   ├── auth.rs              # Authentication
+    │   ├── metrics.rs           # Request duration tracking
+    │   └── request_id.rs        # Request ID injection
     └── tasks/                   # Background tasks
         ├── mod.rs
         └── cleanup.rs           # Expired session cleanup
@@ -78,9 +90,9 @@ captchapi/
 For complete API documentation including all endpoints, request/response formats, and usage examples, see `docs/API.md`
 
 **Quick Reference:**
-- **Public**: Health check, Get CAPTCHA images (JSON/binary)
+- **Public**: Health check, Get session details, Get CAPTCHA image (binary JPEG)
 - **Protected**: Create sessions, Validate solutions, Delete sessions
-- **Admin**: Manage API keys (create, list, update, delete)
+- **Admin**: Manage API keys (create, list, update, delete), Manual cleanup
 
 The API documentation includes:
 - Full endpoint specifications
@@ -103,6 +115,7 @@ SERVER_PORT=3000
 
 # Database
 DATABASE_URL=sqlite:./data/captchapi.db
+DATABASE_MAX_CONNECTIONS=5
 
 # Security
 API_KEY_SALT=CHANGE-THIS-TO-A-RANDOM-SALT-IN-PRODUCTION
@@ -112,15 +125,27 @@ MASTER_API_KEY=CHANGE-THIS-TO-A-SECURE-MASTER-KEY-IN-PRODUCTION
 DEFAULT_SESSION_TTL_SECONDS=300
 MAX_SESSION_TTL_SECONDS=3600
 MAX_VALIDATION_ATTEMPTS=3
+CAPTCHA_COMPRESSION=40
+
+# Rate Limiting
+RATE_LIMIT_REQUESTS_PER_SECOND=2
+RATE_LIMIT_BURST_SIZE=10
+RATE_LIMIT_REVERSE_PROXY=false    # Set true when behind nginx/Cloudflare
 
 # Background Tasks
 CLEANUP_INTERVAL_SECONDS=60
+
+# OpenTelemetry (optional)
+OTEL_ENABLED=false
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_SERVICE_NAME=captchapi
 ```
 
 **Important**:
 - Always change `API_KEY_SALT` to a random string in production!
 - Always change `MASTER_API_KEY` to a strong, random key in production!
 - The master key has full administrative access - protect it carefully!
+- Only enable `RATE_LIMIT_REVERSE_PROXY` if you trust your proxy — clients can spoof headers otherwise
 
 ## Database Schema
 
@@ -222,52 +247,28 @@ These steps ensure:
 
 ### Testing
 
-For comprehensive testing documentation, see `docs/TESTING.md`
-
 #### Rust Tests
 
-**Quick Start:**
 ```bash
 cargo nextest run                         # Run all tests
 cargo nextest run --lib                   # Unit tests only
 cargo nextest run --test sessions_test    # Integration tests
 ```
 
-**Test Coverage:**
-- 40 total tests (22 unit + 17 integration + 1 migration)
-- Full JPEG signature validation
-- HTTP headers and caching verification
-- Authentication and authorization flows
-- Complete user journey testing
-
 #### API Tests (Bruno)
 
 **Prerequisites:** Server must be running.
 
-**Quick Start:**
 ```bash
 # Terminal 1: Start server
 cargo run
 
 # Terminal 2: Run tests
-# Quick happy path (6 requests, 16 tests)
-./.bruno/Tests/Scripts/test-bruno.sh
-
-# Comprehensive suite (18 requests, 38 tests)
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
-**API Test Coverage:**
-- 38 total tests across 18 requests
-- All 10 endpoints (health, API keys, sessions)
-- Success scenarios + failure scenarios
-- Authentication and authorization
-- Error message formatting
-- HTTP status codes and headers
-
 #### Complete Test Workflow
 
-**Run all tests (with server):**
 ```bash
 # Terminal 1: Start server
 cargo run
@@ -276,15 +277,6 @@ cargo run
 cargo nextest run
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
-
-The testing documentation includes:
-- Detailed test structure and organization
-- How to write new tests
-- Test utilities and helpers (TestApp)
-- Bruno API test organization
-- Debugging failed tests
-- Performance benchmarking
-- Best practices and patterns
 
 ## Security Considerations
 
@@ -388,7 +380,6 @@ See `PLAN.md` for detailed future feature ideas:
 - Session statistics/analytics
 - Horizontal scaling support
 - OpenAPI/Swagger documentation
-- Docker containerization
 - Admin dashboard
 
 ## Troubleshooting
@@ -405,20 +396,31 @@ cargo run
 
 ### API Key Issues
 
-Currently, API keys must be created manually in the database:
+API keys are managed via the admin API endpoints (require master key):
 
-```sql
--- Insert an API key (hash of "test-key-123" with salt "my-salt")
-INSERT INTO api_keys (key_hash, description, created_at, is_active)
-VALUES (
-  '<SHA256_HASH>',
-  'Test Key',
-  strftime('%s', 'now'),
-  1
-);
+```bash
+# Create a new API key
+curl -X POST http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"description": "My Key"}'
+
+# List all keys
+curl http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_KEY"
+
+# Deactivate a key
+curl -X PUT http://localhost:3000/api/v1/api-keys/{key_hash} \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active": false}'
+
+# Delete a key
+curl -X DELETE http://localhost:3000/api/v1/api-keys/{key_hash} \
+  -H "Authorization: Bearer YOUR_MASTER_KEY"
 ```
 
-**Note**: API key management endpoints are planned for future versions.
+See `docs/API.md` for full API key management documentation.
 
 ### Port Already in Use
 
@@ -483,6 +485,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-02-25
+**Last Updated**: 2026-03-03
 **Version**: 1.0.0
 **Rust Edition**: 2021
