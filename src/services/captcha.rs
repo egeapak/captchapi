@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_default_creates_service() {
-        let service = CaptchaService::default();
+        let service = CaptchaService;
         // Verify the default instance works just like one created with new()
         let result = service.generate(5, 5, 220, 120, false, 40);
         assert!(result.is_ok());
