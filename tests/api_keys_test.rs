@@ -8,7 +8,7 @@ use serde_json::json;
 async fn test_create_api_key_without_master_key_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/api-keys")
@@ -24,7 +24,7 @@ async fn test_create_api_key_without_master_key_fails() {
 async fn test_create_api_key_with_master_key_succeeds() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/api-keys")
@@ -51,7 +51,7 @@ async fn test_create_api_key_with_master_key_succeeds() {
 async fn test_list_api_keys() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a couple of API keys
     server
@@ -94,7 +94,7 @@ async fn test_list_api_keys() {
 async fn test_update_api_key() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create an API key
     let create_response = server
@@ -129,7 +129,7 @@ async fn test_update_api_key() {
 async fn test_delete_api_key() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create an API key
     let create_response = server
@@ -168,7 +168,7 @@ async fn test_delete_api_key() {
 async fn test_deactivated_api_key_cannot_access_sessions() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create an API key
     let create_response = server
@@ -217,7 +217,7 @@ async fn test_deactivated_api_key_cannot_access_sessions() {
 async fn test_create_and_use_api_key_end_to_end() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create an API key using master key
     let create_response = server
@@ -250,7 +250,7 @@ async fn test_create_and_use_api_key_end_to_end() {
 async fn test_update_nonexistent_api_key() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .put("/api/v1/api-keys/nonexistent-hash")
@@ -267,7 +267,7 @@ async fn test_update_nonexistent_api_key() {
 async fn test_create_api_key_with_empty_description_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/api-keys")
@@ -284,7 +284,7 @@ async fn test_create_api_key_with_empty_description_fails() {
 async fn test_create_api_key_with_description_too_long_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let long_desc: String = "a".repeat(256);
     let response = server
@@ -302,7 +302,7 @@ async fn test_create_api_key_with_description_too_long_fails() {
 async fn test_update_api_key_with_empty_description_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a key first
     let create_response = server
@@ -330,7 +330,7 @@ async fn test_update_api_key_with_empty_description_fails() {
 async fn test_update_api_key_with_description_too_long_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a key first
     let create_response = server
@@ -359,7 +359,7 @@ async fn test_update_api_key_with_description_too_long_fails() {
 async fn test_create_api_key_with_whitespace_only_description_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/api-keys")
@@ -376,7 +376,7 @@ async fn test_create_api_key_with_whitespace_only_description_fails() {
 async fn test_update_api_key_with_whitespace_only_description_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create an API key first
     let create_response = server
@@ -404,7 +404,7 @@ async fn test_update_api_key_with_whitespace_only_description_fails() {
 async fn test_create_api_key_with_control_chars_description_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/api-keys")
@@ -421,7 +421,7 @@ async fn test_create_api_key_with_control_chars_description_fails() {
 async fn test_reactivate_api_key() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Step 1: Create a fresh API key.
     let create_response = server

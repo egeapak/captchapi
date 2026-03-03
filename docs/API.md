@@ -85,7 +85,8 @@ Content-Type: application/json
   "difficulty": 5,              // Optional: 1-10 (default: 5)
   "width": 220,                 // Optional: pixels (default: 220)
   "height": 120,                // Optional: pixels (default: 120)
-  "dark_mode": false            // Optional: theme (default: false)
+  "dark_mode": false,           // Optional: theme (default: false)
+  "compression": 40             // Optional: JPEG quality 1-100 (default: 40)
 }
 ```
 
@@ -119,7 +120,40 @@ curl -X POST http://localhost:3000/api/v1/sessions \
 - `difficulty` must be between 1 and 10
 - `width` must be between 50 and 1000 pixels
 - `height` must be between 30 and 500 pixels
+- `compression` must be between 1 and 100 (JPEG quality)
 - All parameters are optional
+
+---
+
+### Get Session Details
+
+Retrieve metadata about an existing CAPTCHA session (no image data).
+
+```http
+GET /api/v1/sessions/{id}
+```
+
+**Response: 200 OK**
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "created_at": "2025-01-15T10:35:00Z",
+  "expires_at": "2025-01-15T10:40:00Z",
+  "attempt_count": 0,
+  "difficulty": 5,
+  "width": 220,
+  "height": 120,
+  "dark_mode": false
+}
+```
+
+**Example:**
+```bash
+curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000
+```
+
+**Error Responses:**
+- `404 Not Found` - Session does not exist or has expired
 
 ---
 

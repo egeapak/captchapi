@@ -3,8 +3,8 @@
 //! This module is the single source of truth for all input validation,
 //! shared between the HTTP server and NAPI bindings.
 
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::RngExt;
 
 // Session parameter boundaries
 pub const DIFFICULTY_MIN: i64 = 1;
@@ -133,7 +133,7 @@ pub fn validate_solution(solution: &str) -> Result<(), String> {
 
 /// Generate a random API key (32-char alphanumeric string).
 pub fn generate_api_key() -> String {
-    rand::thread_rng()
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(API_KEY_LENGTH)
         .map(char::from)

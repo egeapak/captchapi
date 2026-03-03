@@ -8,7 +8,7 @@ use serde_json::json;
 async fn test_health_check() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/health").await;
 
@@ -22,7 +22,7 @@ async fn test_health_check() {
 async fn test_create_session_without_auth_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -38,7 +38,7 @@ async fn test_create_session_without_auth_fails() {
 async fn test_create_session_with_auth_succeeds() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -63,7 +63,7 @@ async fn test_create_session_with_auth_succeeds() {
 async fn test_complete_session_flow() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // 1. Create session with custom length
     let create_response = server
@@ -130,7 +130,7 @@ async fn test_complete_session_flow() {
 async fn test_validate_session_with_wrong_solution() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session
     let create_response = server
@@ -169,7 +169,7 @@ async fn test_validate_session_with_wrong_solution() {
 async fn test_delete_session() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session
     let create_response = server
@@ -201,7 +201,7 @@ async fn test_delete_session() {
 async fn test_create_session_with_invalid_parameters() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Difficulty out of range
     let response = server
@@ -219,7 +219,7 @@ async fn test_create_session_with_invalid_parameters() {
 async fn test_get_nonexistent_session() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server.get("/api/v1/sessions/nonexistent-id").await;
 
@@ -230,7 +230,7 @@ async fn test_get_nonexistent_session() {
 async fn test_get_binary_image() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session with custom length
     let create_response = server
@@ -289,7 +289,7 @@ async fn test_get_binary_image() {
 async fn test_create_session_max_ttl() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session with max TTL (3600 seconds)
     let response = server
@@ -307,7 +307,7 @@ async fn test_create_session_max_ttl() {
 async fn test_create_session_exceeds_max_ttl() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Try to create session with TTL exceeding max (3601 > 3600)
     let response = server
@@ -330,7 +330,7 @@ async fn test_create_session_exceeds_max_ttl() {
 async fn test_create_session_difficulty_boundaries() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Test difficulty = 1 (minimum)
     let response1 = server
@@ -369,7 +369,7 @@ async fn test_create_session_difficulty_boundaries() {
 async fn test_validation_case_sensitive() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session
     let create_response = server
@@ -444,7 +444,7 @@ async fn test_validation_case_sensitive() {
 async fn test_validate_three_failed_attempts_deletes_session() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session
     let create_response = server
@@ -513,7 +513,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
 async fn test_binary_image_cache_headers() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session with specific TTL
     let create_response = server
@@ -563,7 +563,7 @@ async fn test_binary_image_cache_headers() {
 async fn test_create_session_with_custom_dimensions() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -582,7 +582,7 @@ async fn test_create_session_with_custom_dimensions() {
 async fn test_delete_nonexistent_session() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .delete("/api/v1/sessions/nonexistent-id")
@@ -596,7 +596,7 @@ async fn test_delete_nonexistent_session() {
 async fn test_validate_nonexistent_session() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions/nonexistent-id/validate")
@@ -611,7 +611,7 @@ async fn test_validate_nonexistent_session() {
 async fn test_create_session_with_master_key_succeeds() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -636,7 +636,7 @@ async fn test_create_session_with_master_key_succeeds() {
 async fn test_validate_session_with_master_key_succeeds() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session using regular API key
     let create_response = server
@@ -678,7 +678,7 @@ async fn test_validate_session_with_master_key_succeeds() {
 async fn test_delete_session_with_master_key_succeeds() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session using regular API key
     let create_response = server
@@ -710,7 +710,7 @@ async fn test_delete_session_with_master_key_succeeds() {
 async fn test_complete_session_flow_with_master_key() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // 1. Create session with master key
     let create_response = server
@@ -773,7 +773,7 @@ async fn test_complete_session_flow_with_master_key() {
 async fn test_create_session_with_length_zero_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -793,7 +793,7 @@ async fn test_create_session_with_length_zero_fails() {
 async fn test_create_session_with_length_too_large_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -813,7 +813,7 @@ async fn test_create_session_with_length_too_large_fails() {
 async fn test_create_session_with_negative_length_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -832,7 +832,7 @@ async fn test_create_session_with_negative_length_fails() {
 async fn test_create_session_with_width_too_small_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -852,7 +852,7 @@ async fn test_create_session_with_width_too_small_fails() {
 async fn test_create_session_with_width_too_large_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -872,7 +872,7 @@ async fn test_create_session_with_width_too_large_fails() {
 async fn test_create_session_with_height_too_small_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -892,7 +892,7 @@ async fn test_create_session_with_height_too_small_fails() {
 async fn test_create_session_with_height_too_large_fails() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     let response = server
         .post("/api/v1/sessions")
@@ -912,7 +912,7 @@ async fn test_create_session_with_height_too_large_fails() {
 async fn test_create_session_with_valid_boundary_dimensions() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Test minimum boundaries
     let response = server
@@ -943,7 +943,7 @@ async fn test_create_session_with_valid_boundary_dimensions() {
 async fn test_create_session_with_valid_length_boundary() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Test length = 1 (minimum)
     let response = server
@@ -990,7 +990,7 @@ async fn test_create_session_with_valid_length_boundary() {
 async fn test_validate_session_solution_too_long() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create session
     let create_response = server
@@ -1032,7 +1032,7 @@ async fn test_validate_session_solution_too_long() {
 async fn test_create_session_width_at_boundary_minus_one() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // width=49 should be rejected (boundary-1)
     let response = server
@@ -1059,7 +1059,7 @@ async fn test_create_session_width_at_boundary_minus_one() {
 async fn test_create_session_height_at_boundary_minus_one() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // height=29 should be rejected (boundary-1)
     let response = server
@@ -1086,7 +1086,7 @@ async fn test_create_session_height_at_boundary_minus_one() {
 async fn test_create_session_with_compression_too_low() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // compression=0 is below the minimum of 1
     let response = server
@@ -1104,7 +1104,7 @@ async fn test_create_session_with_compression_too_low() {
 async fn test_create_session_with_compression_too_high() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // compression=101 is above the maximum of 100
     let response = server
@@ -1122,7 +1122,7 @@ async fn test_create_session_with_compression_too_high() {
 async fn test_create_session_with_valid_compression() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // compression=50 is within the valid 1-100 range
     let response = server

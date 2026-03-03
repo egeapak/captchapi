@@ -417,7 +417,7 @@ Track over time:
 - `.github/workflows/README.md` - Workflow overview
 - `.bruno/Tests/Scripts/README.md` - Test script documentation
 - `.bruno/Tests/README.md` - Test collection documentation
-- `.claude/docs/TESTING.md` - Complete testing guide
+- `.claude/CLAUDE.md` - Project documentation and testing guide
 
 ---
 

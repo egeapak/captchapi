@@ -9,7 +9,7 @@ use serde_json::json;
 async fn test_sessions_created_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create multiple sessions and verify metric updates don't panic
     for _ in 0..5 {
@@ -31,7 +31,7 @@ async fn test_sessions_created_metric() {
 async fn test_session_validation_attempts_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a session
     let response = server
@@ -68,7 +68,7 @@ async fn test_session_validation_attempts_metric() {
 async fn test_sessions_validated_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a session
     let response = server
@@ -109,7 +109,7 @@ async fn test_sessions_validated_metric() {
 async fn test_sessions_deleted_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create multiple sessions
     let mut session_ids = Vec::new();
@@ -147,7 +147,7 @@ async fn test_sessions_deleted_metric() {
 async fn test_api_keys_created_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create multiple API keys using master key
     for i in 0..3 {
@@ -168,7 +168,7 @@ async fn test_api_keys_created_metric() {
 async fn test_api_keys_deleted_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create API keys
     let mut key_hashes = Vec::new();
@@ -206,7 +206,7 @@ async fn test_api_keys_deleted_metric() {
 async fn test_api_key_authentications_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make multiple authenticated requests
     for _ in 0..10 {
@@ -227,7 +227,7 @@ async fn test_api_key_authentications_metric() {
 async fn test_api_key_authentications_metric_on_failed_auth() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make requests with invalid API key
     for _ in 0..5 {
@@ -248,7 +248,7 @@ async fn test_api_key_authentications_metric_on_failed_auth() {
 async fn test_metrics_in_complete_flow() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // 1. Create a session (sessions.created + api_key_authentications)
     let response = server
@@ -304,7 +304,7 @@ async fn test_metrics_in_complete_flow() {
 async fn test_sessions_expired_cleaned_metric() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create sessions with very short TTL (1 second)
     for _ in 0..3 {
@@ -333,7 +333,7 @@ async fn test_sessions_expired_cleaned_metric() {
 async fn test_metrics_with_multiple_api_keys() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create multiple API keys
     let mut api_keys = Vec::new();
@@ -375,7 +375,7 @@ async fn test_metrics_with_multiple_api_keys() {
 async fn test_metrics_edge_cases() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Test: Deleting non-existent session
     let response = server
@@ -478,7 +478,7 @@ async fn test_histogram_metrics_recording() {
 async fn test_metrics_no_double_count_after_validation() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Create a session
     let response = server

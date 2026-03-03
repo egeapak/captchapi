@@ -297,4 +297,4 @@ Scripts are already optimized:
 - **../ README.md** - Test collection overview
 - **../Documentation/TEST-SCENARIOS.md** - Detailed test scenarios
 - **.github/workflows/README.md** - CI/CD documentation
-- **.claude/docs/TESTING.md** - Complete testing guide
+- **.claude/CLAUDE.md** - Project documentation and testing guide

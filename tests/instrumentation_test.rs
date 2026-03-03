@@ -8,7 +8,7 @@ use serde_json::json;
 async fn test_health_check_tracks_metrics() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make multiple health check requests
     for _ in 0..3 {
@@ -24,7 +24,7 @@ async fn test_health_check_tracks_metrics() {
 async fn test_error_metrics_tracked_on_unauthorized() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make a request without auth (should trigger 401 error)
     let response = server
@@ -42,7 +42,7 @@ async fn test_error_metrics_tracked_on_unauthorized() {
 async fn test_error_metrics_tracked_on_not_found() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Try to get a non-existent session (should trigger 404 error)
     let response = server.get("/api/v1/sessions/nonexistent-session-id").await;
@@ -55,7 +55,7 @@ async fn test_error_metrics_tracked_on_not_found() {
 async fn test_error_metrics_tracked_on_bad_request() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make a request with invalid parameters
     let response = server
@@ -75,7 +75,7 @@ async fn test_error_metrics_tracked_on_bad_request() {
 async fn test_database_error_metrics_tracked() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Try to validate a non-existent session (triggers database lookup that fails)
     let response = server
@@ -94,7 +94,7 @@ async fn test_database_error_metrics_tracked() {
 async fn test_request_duration_tracked() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make various types of requests
     // Health check
@@ -127,7 +127,7 @@ async fn test_request_duration_tracked() {
 async fn test_multiple_errors_tracked() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Generate multiple errors
     for _ in 0..5 {
@@ -148,7 +148,7 @@ async fn test_multiple_errors_tracked() {
 async fn test_successful_requests_dont_increment_error_counters() {
     let test_app = TestApp::new().await;
     let app = test_app.build_app();
-    let server = TestServer::new(app).unwrap();
+    let server = TestServer::new(app);
 
     // Make successful requests
     let response = server.get("/health").await;
