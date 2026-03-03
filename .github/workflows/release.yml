@@ -171,6 +171,7 @@ jobs:
     needs: [validate-version, build-and-push]
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
