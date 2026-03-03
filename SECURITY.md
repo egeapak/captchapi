@@ -17,21 +17,6 @@ Please use [GitHub's private vulnerability reporting](https://github.com/egeapak
 - Potential impact
 - Suggested fix (if any)
 
-### Response Timeline
-
-- **Acknowledgment**: Within 48 hours
-- **Initial Assessment**: Within 1 week
-- **Fix Timeline**: Depends on severity, typically within 2 weeks for critical issues
-
-### Scope
-
-The following are in scope:
-- Authentication and authorization bypasses
-- SQL injection or other injection attacks
-- Information disclosure
-- Denial of service vulnerabilities
-- Cryptographic weaknesses
-
 ### Known Limitations
 
 - **API key hashing**: CaptchAPI currently uses SHA256 + salt for API key hashing. While adequate for API key verification, migration to Argon2 is planned for a future release. This is tracked as a known improvement area.

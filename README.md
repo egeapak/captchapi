@@ -1,5 +1,6 @@
 [![CI](https://github.com/egeapak/captchapi/actions/workflows/ci.yml/badge.svg)](https://github.com/egeapak/captchapi/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
 
 # CaptchAPI
 
@@ -11,73 +12,73 @@ CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/c
 |:---:|:---:|
 | ![Easy CAPTCHA](docs/images/captcha-easy.jpeg) | ![Hard CAPTCHA](docs/images/captcha-hard-dark.jpeg) |
 
-## Use Cases
+## Table of Contents
 
-**Web Application Protection**
-Protect sign-up forms, login pages, and contact forms from automated bot submissions while maintaining a smooth user experience.
-
-**API Rate Limiting Enhancement**
-Add human verification as an additional layer on top of rate limiting for sensitive endpoints like password resets or account creation.
-
-**Microservices Architecture**
-Deploy as a standalone CAPTCHA service that multiple applications can consume via REST API, centralizing CAPTCHA logic and reducing code duplication.
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Docker Deployment](#docker-deployment)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [API Reference](#api-reference)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
-**Security First**
-- API key authentication with SHA256 hashing
-- Nonroot Docker containers (UID 65532)
-- Distroless base image with minimal attack surface
-- Automatic session expiration and cleanup
-- Configurable validation attempt limits
+- **Security First**
+  - API key authentication with SHA256 hashing
+  - Nonroot Docker containers (UID 65532)
+  - Distroless base image with minimal attack surface
+  - Automatic session expiration and cleanup
+  - Configurable validation attempt limits
 
-**High Performance**
-- Async/await throughout (Tokio + Axum)
-- In-process SQLite (zero network overhead)
-- Connection pooling (max 5 concurrent)
-- Compact Docker image with distroless base
-- Low memory footprint
+- **High Performance**
+  - Async/await throughout (Tokio + Axum)
+  - In-process SQLite (zero network overhead)
+  - Connection pooling (max 5 concurrent)
+  - Low memory footprint
 
-**Developer Friendly**
-- Full REST API with JSON responses
-- Configurable CAPTCHA difficulty (1-10)
-- Dark mode support
-- Custom dimensions and compression
-- Comprehensive test coverage
-- Complete API documentation
+- **Developer Friendly**
+  - Full REST API with JSON responses
+  - Configurable CAPTCHA difficulty (1-10), dimensions, and compression
+  - Dark mode support
+  - Complete API documentation
 
-**Production Ready**
-- Three Docker deployment modes (transient, volume, bind mount)
-- Structured logging with tracing
-- Health check endpoint
-- Background cleanup tasks
-- Per-IP rate limiting
+- **Production Ready**
+  - Multi-platform Docker images (amd64 + arm64)
+  - Three deployment modes (transient, volume, bind mount)
+  - Structured logging with tracing
+  - OpenTelemetry integration (optional)
+  - Per-IP rate limiting (GCRA algorithm)
+  - Background session cleanup
 
 ## Quick Start
 
-**Prerequisites:**
-- Rust 1.80+ and Cargo
-- SQLite support (usually built-in)
+### Prerequisites
 
-**Development Setup:**
+- **Rust 1.85+** and Cargo
+- **SQLite** support (usually built-in)
+
+### Setup
 
 ```bash
-# 1. Clone the repository
+# Clone and enter the project
 git clone https://github.com/egeapak/captchapi
 cd captchapi
 
-# 2. Copy environment template
+# Copy environment template
 cp .env.example .env
 
-# 3. Generate secure keys (optional for development)
+# Generate secure keys (recommended)
 # API_KEY_SALT=$(openssl rand -base64 32)
 # MASTER_API_KEY=$(openssl rand -base64 32)
 # Update these values in .env
 
-# 4. Run the application
+# Run the application
 cargo run
 
-# 5. Verify it's running
+# Verify it's running
 curl http://localhost:3000/health
 ```
 
@@ -111,9 +112,7 @@ docker run -p 3000:3000 \
 
 ### Building from Source
 
-**Prerequisites:**
-- [cross](https://github.com/cross-rs/cross): `cargo install cross`
-- [just](https://github.com/casey/just): `cargo install just`
+**Prerequisites:** [cross](https://github.com/cross-rs/cross) and [just](https://github.com/casey/just)
 
 ```bash
 # Build optimized static image
@@ -126,114 +125,52 @@ just run
 just run-volume
 ```
 
-See `docker/README.md` for detailed Docker build documentation and bind mount instructions.
+See [`docker/README.md`](docker/README.md) for detailed build documentation and bind mount instructions.
 
-## Usage Guide
+## Usage
 
-### Complete Workflow
-
-**Step 1: Create an API Key** (one-time setup)
+### 1. Create an API Key (one-time setup)
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/api-keys \
   -H "Authorization: Bearer YOUR_MASTER_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "description": "Frontend Application"
-  }'
+  -d '{"description": "Frontend Application"}'
 ```
 
-Response:
-```json
-{
-  "api_key": "generated-api-key-value",
-  "key_hash": "hash-value",
-  "description": "Frontend Application",
-  "created_at": "2025-01-15T10:30:00Z"
-}
-```
+Save the returned `api_key` value — it's only shown once.
 
-Save the `api_key` value - it's only shown once.
-
----
-
-**Step 2: Create a CAPTCHA Session**
+### 2. Create a CAPTCHA Session
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/sessions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "length": 5,
-    "difficulty": 5,
-    "expires_in_seconds": 300,
-    "dark_mode": false
-  }'
+  -d '{"length": 5, "difficulty": 5, "expires_in_seconds": 300}'
 ```
 
-Response:
-```json
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "created_at": "2025-01-15T10:35:00Z",
-  "expires_at": "2025-01-15T10:40:00Z"
-}
-```
-
----
-
-**Step 3: Display the CAPTCHA Image**
-
-Use the session ID to display the CAPTCHA directly in HTML:
+### 3. Display the CAPTCHA Image
 
 ```html
-<img src="http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg" />
+<img src="http://localhost:3000/api/v1/sessions/{session_id}/image.jpeg" />
 ```
 
-Or download it:
-```bash
-curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg \
-  -o captcha.jpeg
-```
-
----
-
-**Step 4: Validate User's Solution**
+### 4. Validate User's Solution
 
 ```bash
-curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/validate \
+curl -X POST http://localhost:3000/api/v1/sessions/{session_id}/validate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{
-    "solution": "aBc5X"
-  }'
+  -d '{"solution": "aBc5X"}'
 ```
 
-Success response (session auto-deleted):
-```json
-{
-  "valid": true,
-  "session_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-Failure response (attempt count incremented):
-```json
-{
-  "valid": false,
-  "session_id": "550e8400-e29b-41d4-a716-446655440000"
-}
-```
-
-**Important Notes:**
-- Validation is **case-sensitive**: "aBc5X" ≠ "abc5x"
-- After 3 failed attempts, the session is automatically deleted
-
----
+- Validation is **case-sensitive**: `aBc5X` ≠ `abc5x`
+- Session is **auto-deleted** after successful validation
+- After **3 failed attempts**, the session is automatically deleted
 
 ### Error Handling
 
-All errors return JSON with standardized format:
+All errors return JSON with a standardized format:
 
 ```json
 {
@@ -242,21 +179,19 @@ All errors return JSON with standardized format:
 }
 ```
 
-Common error codes:
-- `unauthorized` (401) - Invalid or missing API key
-- `session_not_found` (404) - Session doesn't exist or expired
-- `invalid_parameters` (400) - Bad request parameters
-- `internal_error` (500) - Server error
-
----
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `unauthorized` | 401 | Invalid or missing API key |
+| `session_not_found` | 404 | Session doesn't exist or expired |
+| `invalid_parameters` | 400 | Bad request parameters |
+| `internal_error` | 500 | Server error |
 
 ### Admin Operations
 
 Admin endpoints require the master API key.
 
-**API Key Management:**
 ```bash
-# List all keys
+# List all API keys
 curl http://localhost:3000/api/v1/api-keys \
   -H "Authorization: Bearer YOUR_MASTER_API_KEY"
 
@@ -269,81 +204,141 @@ curl -X PUT http://localhost:3000/api/v1/api-keys/{key_hash} \
 # Delete a key
 curl -X DELETE http://localhost:3000/api/v1/api-keys/{key_hash} \
   -H "Authorization: Bearer YOUR_MASTER_API_KEY"
-```
 
-**Manual Cleanup:**
-```bash
+# Manual cleanup of expired sessions
 curl -X POST http://localhost:3000/api/v1/admin/cleanup \
   -H "Authorization: Bearer YOUR_MASTER_API_KEY"
 ```
 
-Cleanup also runs automatically in the background every 60 seconds.
+## Configuration
 
-For the complete API reference, see [`docs/API.md`](docs/API.md).
+All configuration is via environment variables. Create a `.env` file based on `.env.example`.
 
-## Testing & Development
+### Server
 
-### Running Tests
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `SERVER_HOST` | Bind address | `0.0.0.0` | No |
+| `SERVER_PORT` | Listen port | `3000` | No |
 
-**Rust Tests** (uses [cargo-nextest](https://nexte.st/) for process-per-test isolation)
+### Database
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DATABASE_URL` | SQLite connection string | `sqlite:./data/captchapi.db` | No |
+| `DATABASE_MAX_CONNECTIONS` | Connection pool size | `5` | No |
+
+### Security
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `API_KEY_SALT` | Salt for API key hashing (min 16 chars) | - | **Yes** |
+| `MASTER_API_KEY` | Admin API key (min 16 chars) | - | **Yes** |
+
+### CAPTCHA
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DEFAULT_SESSION_TTL_SECONDS` | Default session expiration | `300` | No |
+| `MAX_SESSION_TTL_SECONDS` | Maximum allowed TTL | `3600` | No |
+| `MAX_VALIDATION_ATTEMPTS` | Failed attempts before deletion | `3` | No |
+| `CAPTCHA_COMPRESSION` | JPEG quality (1-100) | `40` | No |
+
+### Rate Limiting
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `RATE_LIMIT_REQUESTS_PER_SECOND` | Sustained request rate per IP | `2` | No |
+| `RATE_LIMIT_BURST_SIZE` | Burst capacity per IP | `10` | No |
+| `RATE_LIMIT_REVERSE_PROXY` | Read client IP from proxy headers | `false` | No |
+
+> **Warning:** Only enable `RATE_LIMIT_REVERSE_PROXY` if you trust your proxy — clients can spoof headers otherwise.
+
+### Background Tasks
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `CLEANUP_INTERVAL_SECONDS` | Expired session cleanup interval | `60` | No |
+
+### OpenTelemetry (optional)
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | No |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint | `http://localhost:4318` | No |
+| `OTEL_SERVICE_NAME` | Service name for traces | `captchapi` | No |
+
+## API Reference
+
+For the complete API documentation including all endpoints, request/response formats, and usage examples, see [`docs/API.md`](docs/API.md).
+
+### Endpoints Overview
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/health` | None | Health check |
+| `POST` | `/api/v1/sessions` | API Key | Create CAPTCHA session |
+| `GET` | `/api/v1/sessions/{id}` | None | Get session details |
+| `GET` | `/api/v1/sessions/{id}/image.jpeg` | None | Get CAPTCHA image |
+| `POST` | `/api/v1/sessions/{id}/validate` | API Key | Validate solution |
+| `DELETE` | `/api/v1/sessions/{id}` | API Key | Delete session |
+| `POST` | `/api/v1/api-keys` | Master | Create API key |
+| `GET` | `/api/v1/api-keys` | Master | List API keys |
+| `PUT` | `/api/v1/api-keys/{hash}` | Master | Update API key |
+| `DELETE` | `/api/v1/api-keys/{hash}` | Master | Delete API key |
+| `POST` | `/api/v1/admin/cleanup` | Master | Manual cleanup |
+
+## Development
+
+### Building
+
+```bash
+cargo build           # Debug build
+cargo build --release # Release build
+```
+
+### Testing
+
+This project uses [cargo-nextest](https://nexte.st/) for process-per-test isolation.
 
 ```bash
 # Run all tests
 cargo nextest run
 
-# Run only unit tests
+# Unit tests only
 cargo nextest run --lib
 
-# Run only integration tests
+# Integration tests only
 cargo nextest run --test sessions_test
 ```
 
-**API Tests with Bruno**
-
-Requires the server to be running first.
+**API Tests** (requires running server):
 
 ```bash
-# Terminal 1: Start the server
+# Terminal 1
 cargo run
 
-# Terminal 2: Run API tests
+# Terminal 2
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
-### Development Workflow
+### Code Quality
 
 After every code change, run these commands **in order**:
 
 ```bash
-# 1. Format code
-cargo fmt
-
-# 2. Run linter
-cargo clippy
-
-# 3. Check compilation
-cargo check
-
-# 4. Run Rust tests
-cargo nextest run
-
-# 5. Run API tests (requires running server in another terminal)
-./.bruno/Tests/Scripts/test-bruno-full.sh
+cargo fmt          # Format code
+cargo clippy       # Run linter
+cargo check        # Check compilation
+cargo nextest run  # Run tests
 ```
 
-All five steps must pass before committing changes.
+All steps must pass before committing.
 
 ## Contributing
 
-We welcome contributions! Please follow these guidelines:
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and pull request guidelines.
 
-1. **Write tests first** - Add both Rust tests and Bruno API tests for new features
-2. **Run the complete quality checklist** - All 5 development workflow steps must pass
-3. **Update documentation** - If adding features, update relevant documentation
-4. **Follow existing patterns** - Study the codebase structure before adding new code
-5. **Keep commits focused** - One logical change per commit with clear messages
+## License
 
----
-
-**Rust Edition**: 2021
-**License**: Apache-2.0
+This project is licensed under the [Apache-2.0 License](LICENSE).
