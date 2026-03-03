@@ -137,7 +137,7 @@ CLEANUP_INTERVAL_SECONDS=60
 
 # OpenTelemetry (optional)
 OTEL_ENABLED=false
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=captchapi
 ```
 

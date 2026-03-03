@@ -5,6 +5,12 @@
 
 A secure, high-performance REST API for CAPTCHA generation and validation. Built with Rust, featuring async/await architecture, SQLite persistence, and distroless Docker containers.
 
+CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/captcha-rs) with configurable difficulty and dark mode support:
+
+| Easy (difficulty 2) | Hard + dark mode (difficulty 8) |
+|:---:|:---:|
+| ![Easy CAPTCHA](docs/images/captcha-easy.jpeg) | ![Hard CAPTCHA](docs/images/captcha-hard-dark.jpeg) |
+
 ## Use Cases
 
 **Web Application Protection**
@@ -36,7 +42,7 @@ Deploy as a standalone CAPTCHA service that multiple applications can consume vi
 - Full REST API with JSON responses
 - Configurable CAPTCHA difficulty (1-10)
 - Dark mode support
-- Custom dimensions
+- Custom dimensions and compression
 - Comprehensive test coverage
 - Complete API documentation
 
@@ -79,29 +85,6 @@ The server will start on `http://localhost:3000` with automatic database initial
 
 ## Docker Deployment
 
-**Optimized Static Image: 7.42 MB** 🚀
-
-CaptchAPI uses a highly optimized static musl binary with distroless base image, achieving one of the smallest Rust web service images possible.
-
-### Quick Build
-
-**Prerequisites:**
-- [cross](https://github.com/cross-rs/cross): `cargo install cross`
-- [just](https://github.com/casey/just): `cargo install just`
-
-**Build & Run:**
-
-```bash
-# Build optimized static image (7.42 MB)
-just
-
-# Run transient (testing)
-just run
-
-# Run with persistent volume (production)
-just run-volume
-```
-
 ### Pre-built Image
 
 Multi-platform images (amd64 + arm64) are published to GitHub Container Registry:
@@ -126,46 +109,26 @@ docker run -p 3000:3000 \
   ghcr.io/egeapak/captchapi:latest
 ```
 
-See `docker/README.md` for detailed Docker build documentation, bind mount instructions, and CI/CD setup.
+### Building from Source
 
-### Quick Docker Start
-
-```bash
-# 1. Navigate to docker directory
-cd docker
-
-# 2. Update environment variables in docker-compose.yml
-# Change API_KEY_SALT and MASTER_API_KEY to secure random values
-
-# 3. Start with volume mode (recommended)
-docker-compose up -d
-
-# 4. Check health
-curl http://localhost:3000/health
-```
-
-For detailed Docker documentation including Kubernetes deployment, troubleshooting, and backup strategies, see `docker/README.md` in the repository.
-
-## Node.js SDK
-
-Official Node.js packages are available for easy integration:
-
-- **`@captchapi/core`** - Framework-agnostic core client for CaptchAPI
-- **`captchapi`** - Full-featured Node.js SDK with additional helpers
-
-Install via npm:
+**Prerequisites:**
+- [cross](https://github.com/cross-rs/cross): `cargo install cross`
+- [just](https://github.com/casey/just): `cargo install just`
 
 ```bash
-npm install @captchapi/core
-# or
-npm install captchapi
+# Build optimized static image
+just
+
+# Run transient (testing)
+just run
+
+# Run with persistent volume (production)
+just run-volume
 ```
+
+See `docker/README.md` for detailed Docker build documentation and bind mount instructions.
 
 ## Usage Guide
-
-### Breaking Changes in v1.0.0
-
-The `text` field has been removed from the `CreateSessionResponse`. Previously, the session creation response included the CAPTCHA solution in plain text. This was a security risk and has been removed in v1.0.0. To display the CAPTCHA to users, retrieve the image via the image endpoints and have users read and submit the solution themselves.
 
 ### Complete Workflow
 
@@ -219,36 +182,18 @@ Response:
 
 ---
 
-**Step 3: Retrieve the CAPTCHA Image**
+**Step 3: Display the CAPTCHA Image**
 
-**Get session details (metadata only)**
-```bash
-curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000
+Use the session ID to display the CAPTCHA directly in HTML:
+
+```html
+<img src="http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg" />
 ```
 
-Response:
-```json
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "created_at": "2025-01-15T10:35:00Z",
-  "expires_at": "2025-01-15T10:40:00Z",
-  "attempt_count": 0,
-  "difficulty": 5,
-  "width": 220,
-  "height": 120,
-  "dark_mode": false
-}
-```
-
-**Get CAPTCHA image as binary JPEG**
+Or download it:
 ```bash
 curl http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg \
   -o captcha.jpeg
-```
-
-Use this URL directly in HTML:
-```html
-<img src="http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-446655440000/image.jpeg" />
 ```
 
 ---
@@ -307,24 +252,34 @@ Common error codes:
 
 ### Admin Operations
 
-**Manual Cleanup** (requires master API key)
+Admin endpoints require the master API key.
 
-Manually trigger cleanup of expired sessions:
+**API Key Management:**
+```bash
+# List all keys
+curl http://localhost:3000/api/v1/api-keys \
+  -H "Authorization: Bearer YOUR_MASTER_API_KEY"
 
+# Deactivate a key
+curl -X PUT http://localhost:3000/api/v1/api-keys/{key_hash} \
+  -H "Authorization: Bearer YOUR_MASTER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active": false}'
+
+# Delete a key
+curl -X DELETE http://localhost:3000/api/v1/api-keys/{key_hash} \
+  -H "Authorization: Bearer YOUR_MASTER_API_KEY"
+```
+
+**Manual Cleanup:**
 ```bash
 curl -X POST http://localhost:3000/api/v1/admin/cleanup \
   -H "Authorization: Bearer YOUR_MASTER_API_KEY"
 ```
 
-Response:
-```json
-{
-  "sessions_deleted": 5,
-  "message": "Successfully cleaned up 5 expired session(s)"
-}
-```
+Cleanup also runs automatically in the background every 60 seconds.
 
-Note: Cleanup runs automatically in the background every 60 seconds by default. This endpoint is useful for immediate cleanup or testing.
+For the complete API reference, see [`docs/API.md`](docs/API.md).
 
 ## Testing & Development
 
@@ -378,19 +333,9 @@ cargo nextest run
 
 All five steps must pass before committing changes.
 
-### Code Quality Standards
-
-- Consistent formatting via `cargo fmt`
-- No clippy warnings (`cargo clippy`)
-- All tests passing (both Rust and API tests)
-- Meaningful commit messages
-- Documentation updates for new features
-
 ## Contributing
 
 We welcome contributions! Please follow these guidelines:
-
-### Before Submitting a PR
 
 1. **Write tests first** - Add both Rust tests and Bruno API tests for new features
 2. **Run the complete quality checklist** - All 5 development workflow steps must pass
@@ -398,25 +343,7 @@ We welcome contributions! Please follow these guidelines:
 4. **Follow existing patterns** - Study the codebase structure before adding new code
 5. **Keep commits focused** - One logical change per commit with clear messages
 
-### PR Requirements
-
-- All tests passing (Rust + API tests)
-- No clippy warnings
-- Code formatted with `cargo fmt`
-- Documentation updated (if applicable)
-- Clear description of changes and motivation
-- Reference any related issues
-
-### Testing Requirements
-
-Every new endpoint must include:
-- Rust integration tests (success and failure cases)
-- Bruno test scenarios in `.bruno/Tests/`
-- Bruno core endpoint in `.bruno/` root directory
-- Documentation updates for new endpoints
-
 ---
 
-**Version**: 1.0.0
 **Rust Edition**: 2021
 **License**: Apache-2.0
