@@ -80,8 +80,8 @@ async fn test_list_api_keys() {
     let body: serde_json::Value = response.json();
     let keys = body.as_array().unwrap();
 
-    // Should have at least 3 keys (1 from setup + 2 created)
-    assert!(keys.len() >= 3);
+    // Should have exactly 3 keys (1 from setup + 2 created)
+    assert_eq!(keys.len(), 3);
 
     // Check structure of first key
     let first_key = &keys[0];
@@ -193,13 +193,15 @@ async fn test_deactivated_api_key_cannot_access_sessions() {
     session_response.assert_status(axum::http::StatusCode::CREATED);
 
     // Deactivate the key
-    server
+    let deactivate_response = server
         .put(&format!("/api/v1/api-keys/{}", key_hash))
         .add_header("Authorization", format!("Bearer {}", test_app.master_key))
         .json(&json!({
             "is_active": false
         }))
         .await;
+
+    deactivate_response.assert_status_ok();
 
     // Try to use the deactivated key
     let session_response2 = server
@@ -366,6 +368,8 @@ async fn test_create_api_key_with_whitespace_only_description_fails() {
         .await;
 
     response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
 }
 
 #[tokio::test]
@@ -392,6 +396,8 @@ async fn test_update_api_key_with_whitespace_only_description_fails() {
         .await;
 
     response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
 }
 
 #[tokio::test]
@@ -407,4 +413,91 @@ async fn test_create_api_key_with_control_chars_description_fails() {
         .await;
 
     response.assert_status_bad_request();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_api_key_parameters");
+}
+
+#[tokio::test]
+async fn test_reactivate_api_key() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app).unwrap();
+
+    // Step 1: Create a fresh API key.
+    let create_response = server
+        .post("/api/v1/api-keys")
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "description": "Reactivation Test Key"
+        }))
+        .await;
+
+    create_response.assert_status(axum::http::StatusCode::CREATED);
+    let create_body: serde_json::Value = create_response.json();
+    let api_key = create_body["api_key"].as_str().unwrap().to_string();
+    let key_hash = create_body["key_hash"].as_str().unwrap().to_string();
+
+    // Step 2: Verify the key works — creating a session returns 201.
+    let session_response_before = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({}))
+        .await;
+
+    session_response_before.assert_status(axum::http::StatusCode::CREATED);
+
+    // Step 3: Deactivate the key via PUT with is_active: false.
+    let deactivate_response = server
+        .put(&format!("/api/v1/api-keys/{}", key_hash))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "is_active": false
+        }))
+        .await;
+
+    deactivate_response.assert_status_ok();
+    let deactivate_body: serde_json::Value = deactivate_response.json();
+    assert_eq!(
+        deactivate_body["is_active"], false,
+        "Key should report is_active: false after deactivation"
+    );
+
+    // Step 4: Verify the deactivated key is rejected with 401 when creating a session.
+    let session_response_deactivated = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({}))
+        .await;
+
+    session_response_deactivated.assert_status_unauthorized();
+
+    // Step 5: Reactivate the key via PUT with is_active: true.
+    let reactivate_response = server
+        .put(&format!("/api/v1/api-keys/{}", key_hash))
+        .add_header("Authorization", format!("Bearer {}", test_app.master_key))
+        .json(&json!({
+            "is_active": true
+        }))
+        .await;
+
+    reactivate_response.assert_status_ok();
+    let reactivate_body: serde_json::Value = reactivate_response.json();
+    assert_eq!(
+        reactivate_body["is_active"], true,
+        "Key should report is_active: true after reactivation"
+    );
+
+    // Step 6: Verify the reactivated key works again — creating a session returns 201.
+    let session_response_after = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", api_key))
+        .json(&json!({}))
+        .await;
+
+    session_response_after.assert_status(axum::http::StatusCode::CREATED);
+    let session_body: serde_json::Value = session_response_after.json();
+    assert!(
+        session_body.get("session_id").is_some(),
+        "Reactivated key should be able to create sessions"
+    );
 }

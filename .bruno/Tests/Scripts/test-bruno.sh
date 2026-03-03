@@ -22,7 +22,6 @@ bru run \
   "API Keys/Create API Key.bru" \
   "API Keys/List API Keys.bru" \
   "Sessions/Create Session.bru" \
-  "Sessions/Get Image (JSON).bru" \
   "Sessions/Get Image (Binary).bru" \
   --env "$ENVIRONMENT"
 

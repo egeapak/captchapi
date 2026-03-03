@@ -197,7 +197,7 @@ cargo check
 
 #### Step 4: Run Rust Tests
 ```bash
-cargo test
+cargo nextest run
 ```
 
 #### Step 5: Run API Tests
@@ -228,9 +228,9 @@ For comprehensive testing documentation, see `docs/TESTING.md`
 
 **Quick Start:**
 ```bash
-cargo test                    # Run all 40 tests
-cargo test --lib              # Unit tests only
-cargo test --test sessions_test   # Integration tests
+cargo nextest run                         # Run all tests
+cargo nextest run --lib                   # Unit tests only
+cargo nextest run --test sessions_test    # Integration tests
 ```
 
 **Test Coverage:**
@@ -273,7 +273,7 @@ cargo run
 cargo run
 
 # Terminal 2: Run all tests
-cargo test
+cargo nextest run
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
@@ -448,7 +448,7 @@ When making changes, follow this workflow:
 - ✅ Step 1: Run `cargo fmt` to format code
 - ✅ Step 2: Run `cargo clippy` to check for issues
 - ✅ Step 3: Run `cargo check` to verify compilation
-- ✅ Step 4: Run `cargo test` to verify Rust tests pass
+- ✅ Step 4: Run `cargo nextest run` to verify Rust tests pass
 - ✅ Step 5: Run `./.bruno/Tests/Scripts/test-bruno-full.sh` to verify API tests (requires running server)
 
 ### 4. Finalize

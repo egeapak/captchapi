@@ -1,0 +1,24 @@
+meta {
+  name: Delete Session - Not Found
+  type: http
+  seq: 10
+}
+
+delete {
+  url: {{base_url}}/api/v1/sessions/nonexistent-session-id
+}
+
+headers {
+  Authorization: Bearer {{api_key}}
+}
+
+tests {
+  test("should return 404 Not Found", function() {
+    expect(res.status).to.equal(404);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("session_not_found");
+    expect(res.body.message).to.be.a("string");
+  });
+}

@@ -1,0 +1,30 @@
+meta {
+  name: Validate Session - Unauthorized
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{base_url}}/api/v1/sessions/{{session_id}}/validate
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body {
+  {
+    "solution": "some-answer"
+  }
+}
+
+tests {
+  test("should return 401 Unauthorized", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return error message", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

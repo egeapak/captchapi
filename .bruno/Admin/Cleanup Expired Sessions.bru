@@ -13,6 +13,22 @@ headers {
   Authorization: Bearer {{master_key}}
 }
 
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should return sessions_deleted count", function() {
+    expect(res.body.sessions_deleted).to.be.a("number");
+    expect(res.body.sessions_deleted).to.be.at.least(0);
+  });
+
+  test("should return message", function() {
+    expect(res.body.message).to.be.a("string");
+    expect(res.body.message).to.not.be.empty;
+  });
+}
+
 docs {
   # Cleanup Expired Sessions
 

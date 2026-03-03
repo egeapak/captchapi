@@ -180,6 +180,17 @@ mod tests {
     }
 
     #[test]
+    fn test_default_creates_service() {
+        let service = CaptchaService;
+        // Verify the default instance works just like one created with new()
+        let result = service.generate(5, 5, 220, 120, false, 40);
+        assert!(result.is_ok());
+        let (text, image_bytes) = result.unwrap();
+        assert_eq!(text.len(), 5);
+        assert!(!image_bytes.is_empty());
+    }
+
+    #[test]
     fn test_image_to_jpeg_bytes() {
         // Create a simple test image
         use image::{ImageBuffer, Rgb};
