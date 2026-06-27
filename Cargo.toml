@@ -56,16 +56,16 @@ dotenvy = "0.15"
 # Logging and Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.28"
-opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["http-proto", "reqwest-client"] }
-opentelemetry-semantic-conventions = "0.27"
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-client"] }
+opentelemetry-semantic-conventions = "0.32"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
 axum-test = "19"
 tokio-test = "0.4"
 tempfile = "3"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "testing"] }
+opentelemetry_sdk = { version = "0.32", features = ["testing"] }
 futures-util = "0.3"
