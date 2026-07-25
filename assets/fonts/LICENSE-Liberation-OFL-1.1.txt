@@ -1,6 +1,7 @@
-Liberation Sans Bold (assets/fonts/LiberationSans-Bold.ttf)
+CaptchAPI Glyphs Bold (assets/fonts/CaptchAPIGlyphs-Bold.ttf)
 
-Version 2.1.5
+A Modified Version of Liberation Sans Bold, Version 2.1.5.
+
 Copyright (c) 2010 Google Corporation with Reserved Font Name Arimo,
 Tinos and Cousine.
 Copyright (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation.
@@ -8,9 +9,20 @@ Copyright (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation.
 Licensed under the SIL Open Font License, Version 1.1.
 Upstream: https://github.com/liberationfonts
 
-The font file is embedded verbatim into the CaptchAPI binary at compile
-time via include_bytes!. It is unmodified; no Reserved Font Name is used
-by CaptchAPI.
+Modifications made by the CaptchAPI project (see scripts/subset-font.py):
+
+  - Subset to the 54 characters CaptchAPI renders, reducing the face from
+    414,568 to 7,360 bytes.
+  - Renamed from "Liberation Sans" to "CaptchAPI Glyphs", because clause 3
+    of this license forbids a Modified Version from using a Reserved Font
+    Name. No Reserved Font Name appears in the font's naming records.
+  - Hinting and unused layout/metadata tables removed.
+  - The original copyright, license and license-URL records are preserved
+    verbatim inside the font.
+
+The font is embedded into the CaptchAPI binary at compile time via
+include_bytes!. CaptchAPI is not affiliated with or endorsed by the
+Liberation Fonts project or its copyright holders.
 
 --------------------------------------------------------------------------
 

@@ -6,8 +6,8 @@
 //! Vendored so that CaptchAPI controls the `image`/`imageproc` feature set.
 //! Upstream pulls in `image/default`, which drags every codec (AVIF, EXR,
 //! TIFF, PNG, WebP, ...) into the build even though only JPEG is used.
-//! Upstream also embeds a proprietary Monotype Arial; this port uses
-//! Liberation Sans Bold (SIL OFL 1.1), which is metric-compatible.
+//! Upstream also embeds a proprietary Monotype Arial; this port uses a subset
+//! of Liberation Sans Bold (SIL OFL 1.1), which is metric-compatible.
 
 use ab_glyph::FontArc;
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -54,15 +54,20 @@ const SCALE_LG: f32 = 50.0;
 const INTERFERENCE_LINES: usize = 2;
 const INTERFERENCE_ELLIPSES: usize = 2;
 
-/// Liberation Sans Bold, SIL OFL 1.1 — see assets/fonts/.
-static FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/LiberationSans-Bold.ttf");
+/// Liberation Sans Bold subset to exactly [`BASIC_CHAR`], SIL OFL 1.1 — see
+/// assets/fonts/ and scripts/subset-font.py.
+///
+/// The subset carries only the glyphs below. Extending `BASIC_CHAR` without
+/// rerunning the script renders the new characters as .notdef;
+/// `test_every_basic_char_has_a_glyph` catches that.
+static FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/CaptchAPIGlyphs-Bold.ttf");
 
-/// Parsed once per process; upstream re-parsed the 400 KB face for every
+/// Parsed once per process; upstream re-parsed the whole face for every
 /// character of every CAPTCHA.
 fn font() -> &'static FontArc {
     static FONT: OnceLock<FontArc> = OnceLock::new();
     FONT.get_or_init(|| {
-        FontArc::try_from_slice(FONT_BYTES).expect("bundled Liberation Sans Bold is a valid TTF")
+        FontArc::try_from_slice(FONT_BYTES).expect("bundled glyph subset is a valid TTF")
     })
 }
 
@@ -230,6 +235,39 @@ mod tests {
         let a = font();
         let b = font();
         assert!(std::ptr::eq(a, b), "font should be parsed once");
+    }
+
+    /// The bundled font is subset to exactly BASIC_CHAR. If a character is
+    /// added to the set without rerunning scripts/subset-font.py it maps to
+    /// .notdef (glyph 0) and renders as a blank or a box.
+    #[test]
+    fn test_every_basic_char_has_a_glyph() {
+        use ab_glyph::Font;
+
+        let font = font();
+        let missing: Vec<char> = BASIC_CHAR
+            .iter()
+            .copied()
+            .filter(|c| font.glyph_id(*c).0 == 0)
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "characters missing from the font subset: {missing:?} — \
+             rerun scripts/subset-font.py"
+        );
+
+        // Prove the check above can actually fail: '1' and 'O' are excluded
+        // from BASIC_CHAR as look-alikes, so they are absent from the subset
+        // and must resolve to .notdef.
+        for excluded in ['1', 'O', '@'] {
+            assert!(!BASIC_CHAR.contains(&excluded));
+            assert_eq!(
+                font.glyph_id(excluded).0,
+                0,
+                "{excluded:?} should not be in the subset; \
+                 if it is, this guard cannot detect a stale font"
+            );
+        }
     }
 
     #[test]

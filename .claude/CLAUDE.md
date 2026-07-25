@@ -338,10 +338,28 @@ rather than used as a dependency, for two reasons:
    is the only way to hold the feature set down.
 2. Upstream embeds Monotype Arial, whose license forbids redistribution. The
    renderer uses Liberation Sans Bold (SIL OFL 1.1, metric-compatible with
-   Arial) from `assets/fonts/` instead.
+   Arial) instead.
 
 Attribution for both lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep them
 in sync when touching the renderer or the bundled font.
+
+### Embedded Font
+
+`assets/fonts/CaptchAPIGlyphs-Bold.ttf` is Liberation Sans Bold subset to the
+54 characters in `BASIC_CHAR` — 7,360 bytes instead of 414,568.
+
+**The subset locks the character set.** Adding a character to `BASIC_CHAR`
+without regenerating the font makes it render as `.notdef`. The
+`test_every_basic_char_has_a_glyph` unit test fails when the two drift, so
+follow it up with:
+
+```bash
+pip install fonttools
+python3 scripts/subset-font.py path/to/LiberationSans-Bold.ttf
+```
+
+The subset is a Modified Version under the OFL and is renamed accordingly;
+`scripts/subset-font.py` handles that. Do not rename it back to "Liberation".
 
 ## Background Tasks
 
