@@ -17,6 +17,12 @@ docker/bin/
 .env.local
 .env.*.local
 
+# Local config file (commit captchapi.toml.example instead)
+captchapi.toml
+
+# PID file
+*.pid
+
 # IDE
 .vscode/
 .idea/
@@ -48,6 +54,7 @@ npm/
 
 # Coverage and runtime artifacts
 lcov.info
+*.profraw
 server.pid
 dist/
 artifacts/

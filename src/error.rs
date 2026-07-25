@@ -32,6 +32,12 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Configuration field is not reloadable: {0}")]
+    ConfigNotReloadable(String),
+
+    #[error("Invalid configuration: {0}")]
+    InvalidConfig(String),
+
     #[error("Internal server error")]
     Internal(#[from] anyhow::Error),
 }
@@ -72,6 +78,14 @@ impl IntoResponse for AppError {
             ),
             AppError::Unauthorized(ref msg) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
+            }
+            AppError::ConfigNotReloadable(ref msg) => (
+                StatusCode::BAD_REQUEST,
+                "config_not_reloadable",
+                msg.clone(),
+            ),
+            AppError::InvalidConfig(ref msg) => {
+                (StatusCode::BAD_REQUEST, "invalid_config", msg.clone())
             }
             AppError::Internal(ref e) => {
                 tracing::error!("Internal error: {:?}", e);

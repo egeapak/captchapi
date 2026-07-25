@@ -51,7 +51,11 @@ captchapi/
     ├── main.rs                  # Application entry point (thin wrapper)
     ├── lib.rs                   # Library crate exports
     ├── app.rs                   # App builder (router, services, middleware)
-    ├── config.rs                # Environment configuration
+    ├── config/                  # Layered, reloadable configuration
+    │   ├── mod.rs               # Config struct, resolution, redacting Debug
+    │   ├── params.rs            # PARAMS: the single source of truth for every setting
+    │   ├── sources.rs           # CLI / env / env-file / TOML layers and provenance
+    │   └── handle.rs            # ConfigHandle: watch channel, reload, runtime overrides
     ├── error.rs                 # Error types and handling
     ├── metrics.rs               # Prometheus-style metrics
     ├── telemetry.rs             # OpenTelemetry tracing setup
@@ -103,6 +107,39 @@ The API documentation includes:
 - Migration guides
 
 ## Configuration
+
+Configuration can come from the command line, the environment, an env file or a TOML file.
+Precedence, highest first:
+
+```
+command line > environment > env file (.env) > config file > built-in default
+```
+
+**Adding a new setting is two edits:** one row in `PARAMS` (`src/config/params.rs`) and one
+field on `Config` (`src/config/mod.rs`). The flag, help text, TOML key, provenance reporting
+and the reloadable/boot-only split are all derived from the table. Tests enforce that the two
+stay in sync, including that every declared default matches what the code actually produces.
+
+**Reloadable vs boot-only.** Only values read per request or per tick can change at runtime:
+session TTLs, the attempt limit, JPEG compression and the cleanup interval. Everything else is
+captured at startup by the listener, the connection pool, the middleware or the rate limiter.
+A reload reports drift on those rather than pretending to apply it.
+
+Reload is triggered by SIGHUP, `captchapi reload`, or `POST /api/v1/admin/config/reload`.
+
+**Secrets** are file-only on the CLI (`--api-key-salt-file`, `--master-api-key-file`) and cannot
+be set in the TOML file at all. `Config` and `Cli` both have hand-written `Debug` impls that
+redact them — keep it that way when adding fields.
+
+### CLI
+
+```bash
+captchapi                        # run the server (default verb)
+captchapi config show            # effective config with provenance, secrets redacted
+captchapi config check           # validate and exit (0 ok, 2 bad) — useful in CI
+captchapi reload                 # signal a running server to re-read its config
+captchapi --help
+```
 
 ### Environment Variables
 
@@ -217,8 +254,11 @@ cargo clippy
 
 #### Step 3: Check Compilation
 ```bash
-cargo check
+cargo check --all-targets --workspace
 ```
+
+**Use `--workspace`.** `bindings/nodejs` matches on `AppError` exhaustively with no wildcard
+arm, so adding a variant breaks that crate — and a bare `cargo check` will not tell you.
 
 #### Step 4: Run Rust Tests
 ```bash

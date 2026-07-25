@@ -1,0 +1,33 @@
+meta {
+  name: Get Config - Success
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should mark reloadable and boot-only fields", function() {
+    expect(res.body.config.captcha_compression.reloadable).to.equal(true);
+    expect(res.body.config.server_port.reloadable).to.equal(false);
+  });
+
+  test("should redact secrets", function() {
+    expect(res.body.config.api_key_salt.value).to.contain("redacted");
+    expect(res.body.config.master_api_key.value).to.contain("redacted");
+  });
+
+  test("should not leak the master key anywhere in the body", function() {
+    expect(JSON.stringify(res.body)).to.not.contain(bru.getEnvVar("master_key"));
+  });
+}

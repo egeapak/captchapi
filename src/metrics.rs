@@ -42,6 +42,10 @@ pub struct ErrorMetrics {
 /// Health and system metrics
 #[derive(Clone)]
 pub struct SystemMetrics {
+    /// Successful configuration reloads, from SIGHUP or the admin API.
+    pub config_reloads: Counter<u64>,
+    /// Reloads rejected because the resolved configuration was invalid.
+    pub config_reload_failures: Counter<u64>,
     pub health_checks: Counter<u64>,
 }
 
@@ -177,6 +181,14 @@ impl SystemMetrics {
             health_checks: meter
                 .u64_counter("system.health_checks")
                 .with_description("Total number of health check requests")
+                .build(),
+            config_reloads: meter
+                .u64_counter("system.config_reloads")
+                .with_description("Total number of successful configuration reloads")
+                .build(),
+            config_reload_failures: meter
+                .u64_counter("system.config_reload_failures")
+                .with_description("Total number of configuration reloads rejected as invalid")
                 .build(),
         }
     }

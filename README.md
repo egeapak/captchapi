@@ -212,61 +212,139 @@ curl -X POST http://localhost:3000/api/v1/admin/cleanup \
 
 ## Configuration
 
-All configuration is via environment variables. Create a `.env` file based on `.env.example`.
+Settings can come from the command line, the environment, an env file, or a TOML config file.
+Later sources lose to earlier ones:
+
+```
+command line  >  environment  >  env file (.env)  >  config file  >  built-in default
+```
+
+An environment-only deployment keeps working exactly as before — every variable below is
+unchanged. Create a `.env` file based on `.env.example`, or a config file based on
+`captchapi.toml.example`.
+
+To see what the server will actually do, and where each value came from:
+
+```bash
+captchapi config show
+# server_port             = 8080                  [cli]
+# database_url            = sqlite:./data/x.db    [env]
+# captcha_compression     = 75                    [file: captchapi.toml]
+# max_validation_attempts = 3                     [default]
+# api_key_salt            = <redacted, 32 bytes>  [env]
+```
+
+### Command line
+
+```
+captchapi [OPTIONS]                    Start the server
+captchapi config show [OPTIONS]        Print the effective configuration
+captchapi config check [OPTIONS]       Validate the configuration and exit
+captchapi reload [--pid N]             Tell a running server to reload
+captchapi --help                       Full flag list
+```
+
+Every setting has a flag named after its variable — `--port`, `--captcha-compression`,
+`--rate-limit-rps` — plus `-c/--config`, `--env-file` and `--no-env-file`. Exit codes are `0`
+for success, `1` for a runtime error and `2` for a usage or configuration error, so
+`config check` works in a deployment pipeline.
+
+### Secrets
+
+The two secrets are never accepted as flag *values* — that would put them in `ps`, shell
+history and `docker inspect`. Pass a file instead, which is also what Docker and Kubernetes
+secrets provide:
+
+```bash
+captchapi --api-key-salt-file   /run/secrets/salt \
+          --master-api-key-file /run/secrets/master_key
+```
+
+They also cannot be set in the TOML config file at all, so a config file is safe to commit.
+
+### Reloading
+
+Session TTLs, the attempt limit, the JPEG quality and the cleanup interval can be changed
+without a restart:
+
+```bash
+$EDITOR captchapi.toml
+captchapi reload                     # or: kill -HUP $(cat data/captchapi.pid)
+docker kill -s HUP <container>       # same thing inside the image
+```
+
+Everything else — the bind address, the database, the API key salt, the master key and the rate
+limits — is captured at startup by the listener, the connection pool, the middleware and the
+rate limiter. A reload reports any of those that changed and tells you a restart is needed,
+rather than silently ignoring them. A reload that fails to resolve is logged and discarded; the
+running server keeps its current configuration.
+
+The same operations are available over HTTP — see [Admin endpoints](docs/API.md#admin-endpoints).
 
 ### Server
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `SERVER_HOST` | Bind address | `0.0.0.0` | No |
-| `SERVER_PORT` | Listen port | `3000` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `SERVER_HOST` | `-H`, `--host` | Bind address | `0.0.0.0` | No |
+| `SERVER_PORT` | `-p`, `--port` | Listen port | `3000` | No |
+| `PID_FILE` | `--pid-file` | Where to write the process ID for `captchapi reload` | `./data/captchapi.pid` | No |
 
 ### Database
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DATABASE_URL` | SQLite connection string | `sqlite:./data/captchapi.db` | No |
-| `DATABASE_MAX_CONNECTIONS` | Connection pool size | `5` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `DATABASE_URL` | `-d`, `--database-url` | SQLite connection string | `sqlite:./data/captchapi.db` | No |
+| `DATABASE_MAX_CONNECTIONS` | `--database-max-connections` | Connection pool size | `5` | No |
 
 ### Security
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `API_KEY_SALT` | Salt for API key hashing (min 16 chars) | - | **Yes** |
-| `MASTER_API_KEY` | Admin API key (min 16 chars) | - | **Yes** |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `API_KEY_SALT` | `--api-key-salt-file` | Salt for API key hashing (min 16 chars) | - | **Yes** |
+| `MASTER_API_KEY` | `--master-api-key-file` | Admin API key (min 16 chars) | - | **Yes** |
+
+The flags take a *path*, not the secret itself. Neither can be set in the TOML config file.
 
 ### CAPTCHA
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DEFAULT_SESSION_TTL_SECONDS` | Default session expiration | `300` | No |
-| `MAX_SESSION_TTL_SECONDS` | Maximum allowed TTL | `3600` | No |
-| `MAX_VALIDATION_ATTEMPTS` | Failed attempts before deletion | `3` | No |
-| `CAPTCHA_COMPRESSION` | JPEG quality (1-100) | `40` | No |
+All four are reloadable — a reload applies them without a restart.
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `DEFAULT_SESSION_TTL_SECONDS` | `--default-session-ttl` | Default session expiration | `300` | No |
+| `MAX_SESSION_TTL_SECONDS` | `--max-session-ttl` | Maximum allowed TTL | `3600` | No |
+| `MAX_VALIDATION_ATTEMPTS` | `--max-validation-attempts` | Failed attempts before deletion | `3` | No |
+| `CAPTCHA_COMPRESSION` | `--captcha-compression` | JPEG quality (1-100) | `40` | No |
 
 ### Rate Limiting
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `RATE_LIMIT_REQUESTS_PER_SECOND` | Sustained request rate per IP | `2` | No |
-| `RATE_LIMIT_BURST_SIZE` | Burst capacity per IP | `10` | No |
-| `RATE_LIMIT_REVERSE_PROXY` | Read client IP from proxy headers | `false` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `RATE_LIMIT_REQUESTS_PER_SECOND` | `--rate-limit-rps` | Sustained request rate per IP | `2` | No |
+| `RATE_LIMIT_BURST_SIZE` | `--rate-limit-burst` | Burst capacity per IP | `10` | No |
+| `RATE_LIMIT_REVERSE_PROXY` | `--rate-limit-reverse-proxy` | Read client IP from proxy headers | `false` | No |
 
 > **Warning:** Only enable `RATE_LIMIT_REVERSE_PROXY` if you trust your proxy — clients can spoof headers otherwise.
 
 ### Background Tasks
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `CLEANUP_INTERVAL_SECONDS` | Expired session cleanup interval | `60` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `CLEANUP_INTERVAL_SECONDS` | `--cleanup-interval` | Expired session cleanup interval (reloadable) | `60` | No |
 
 ### OpenTelemetry (optional)
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | No |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint | `http://localhost:4318` | No |
-| `OTEL_SERVICE_NAME` | Service name for traces | `captchapi` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `OTEL_ENABLED` | `--otel` | Enable OpenTelemetry tracing | `false` | No |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` | OTLP HTTP endpoint | `http://localhost:4318` | No |
+| `OTEL_SERVICE_NAME` | `--otel-service-name` | Service name for traces | `captchapi` | No |
+
+### Logging
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `RUST_LOG` | `--log-level` | Tracing filter directives | `captchapi=debug,tower_http=debug` | No |
 
 ## API Reference
 

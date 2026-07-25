@@ -29,6 +29,17 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
+    /// Build a `TelemetryConfig` from the resolved application configuration.
+    ///
+    /// This is the path used at startup, so telemetry honours `--otel-endpoint` and the TOML
+    /// config file rather than only reading the process environment.
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            otlp_endpoint: config.otel_endpoint.clone(),
+            service_name: config.otel_service_name.clone(),
+        }
+    }
+
     /// Build a TelemetryConfig from environment variables, using defaults where absent
     pub fn from_env() -> Self {
         let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -87,19 +98,9 @@ where
 /// Returns true if OTEL_ENABLED is set to "true", "1", "yes", or "on" (case-insensitive)
 pub fn is_telemetry_enabled() -> bool {
     std::env::var("OTEL_ENABLED")
-        .unwrap_or_else(|_| "false".to_string())
-        .to_lowercase()
-        .parse::<bool>()
-        .unwrap_or_else(|_| {
-            // If parse fails, check for other common truthy values
-            matches!(
-                std::env::var("OTEL_ENABLED")
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .as_str(),
-                "yes" | "on" | "1"
-            )
-        })
+        .ok()
+        .and_then(|value| crate::config::parse_bool_lenient(&value))
+        .unwrap_or(false)
 }
 
 /// Initialize OpenTelemetry with OTLP exporter
@@ -114,8 +115,8 @@ pub fn is_telemetry_enabled() -> bool {
 /// - RUST_LOG: Log level filter
 ///
 /// Returns a Tracer that can be used with tracing-opentelemetry
-pub fn init_telemetry() -> anyhow::Result<Tracer> {
-    let config = TelemetryConfig::from_env();
+pub fn init_telemetry(config: &crate::config::Config) -> anyhow::Result<Tracer> {
+    let config = TelemetryConfig::from_config(config);
 
     tracing::info!(
         "Initializing OpenTelemetry with endpoint: {}",

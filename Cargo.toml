@@ -52,6 +52,9 @@ rand = "0.10"
 
 # Configuration
 dotenvy = "0.15"
+# `eq-separator` is not a default feature, but `--port=8080` is a form users expect.
+pico-args = { version = "0.5", features = ["eq-separator"] }
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 
 # Logging and Observability
 tracing = "0.1"
@@ -61,6 +64,10 @@ opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-client"] }
 opentelemetry-semantic-conventions = "0.32"
+
+# Signal delivery for `captchapi reload` (SIGHUP). Already in the tree via tokio.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 axum-test = "20"

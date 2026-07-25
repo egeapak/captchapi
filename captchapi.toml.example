@@ -1,0 +1,54 @@
+# CaptchAPI configuration file
+#
+# Pass with `captchapi --config captchapi.toml`, or check it without starting the
+# server: `captchapi config check --config captchapi.toml`.
+#
+# Precedence, highest first:
+#   command line > environment variable > env file (.env) > this file > built-in default
+#
+# Run `captchapi config show` to see the effective value of every setting and which
+# layer supplied it.
+#
+# Secrets (API_KEY_SALT and MASTER_API_KEY) deliberately cannot be set here. Supply
+# them through the environment, or point at a file:
+#   captchapi --api-key-salt-file /run/secrets/salt \
+#             --master-api-key-file /run/secrets/master_key
+# That keeps this file safe to commit.
+
+[server]
+host = "0.0.0.0"
+port = 3000
+# Written at startup so `captchapi reload` can find the process. Must be somewhere
+# the server can write — in the container image that means the /data volume.
+pid_file = "./data/captchapi.pid"
+
+[database]
+url = "sqlite:./data/captchapi.db"
+max_connections = 5
+
+[captcha]
+# Applied at runtime: a reload changes these without restarting.
+default_ttl_seconds = 300
+max_ttl_seconds = 3600
+max_validation_attempts = 3
+# JPEG quality, 1-100. Higher means a larger, cleaner image.
+compression = 40
+
+[rate_limit]
+requests_per_second = 2
+burst_size = 10
+# Read the client IP from X-Forwarded-For / X-Real-IP / Forwarded.
+# WARNING: only enable behind a proxy you trust — clients can otherwise spoof these.
+reverse_proxy = false
+
+[tasks]
+# How often expired sessions are removed. Applied at runtime.
+cleanup_interval_seconds = 60
+
+[logging]
+level = "captchapi=debug,tower_http=debug"
+
+[telemetry]
+enabled = false
+endpoint = "http://localhost:4318"
+service_name = "captchapi"

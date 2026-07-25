@@ -1,0 +1,44 @@
+meta {
+  name: Get Config
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should report every value with its reloadability", function() {
+    expect(res.body.config.captcha_compression.value).to.be.a("string");
+    expect(res.body.config.captcha_compression.reloadable).to.equal(true);
+    expect(res.body.config.server_port.reloadable).to.equal(false);
+  });
+
+  test("should never disclose secrets", function() {
+    expect(res.body.config.api_key_salt.secret).to.equal(true);
+    expect(res.body.config.api_key_salt.value).to.contain("redacted");
+    expect(res.body.config.master_api_key.value).to.contain("redacted");
+  });
+}
+
+docs {
+  # Get Configuration
+
+  Returns the effective configuration, with the source-of-truth values for every
+  parameter, whether each one can be changed at runtime, and which fields are
+  currently overridden through the admin API.
+
+  Secrets are always redacted, even for the master key holder.
+
+  ## Authentication
+  Requires the master API key: `Authorization: Bearer <master_key>`.
+}

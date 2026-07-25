@@ -1,0 +1,30 @@
+meta {
+  name: Reload Config - Success
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/config/reload
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should report the outcome", function() {
+    expect(res.body.message).to.contain("reloaded");
+    expect(res.body.ignored).to.be.an("array");
+  });
+
+  test("should discard the override set by the previous test", function() {
+    expect(res.body.overrides).to.be.an("array").that.is.empty;
+    expect(res.body.config.captcha_compression.value).to.not.equal("75");
+  });
+}

@@ -1,0 +1,44 @@
+meta {
+  name: Reload Config
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/config/reload
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should report the outcome", function() {
+    expect(res.body.message).to.be.a("string");
+    expect(res.body.ignored).to.be.an("array");
+  });
+
+  test("should clear runtime overrides", function() {
+    expect(res.body.overrides).to.be.an("array").that.is.empty;
+  });
+}
+
+docs {
+  # Reload Configuration
+
+  Re-reads the command line, environment, env file and TOML config file, then
+  publishes the result. Equivalent to sending SIGHUP, or running
+  `captchapi reload`.
+
+  Boot-only fields are never changed by a reload; any that now differ are listed
+  in `ignored` and require a restart. Runtime overrides set through
+  `PATCH /api/v1/admin/config` are discarded.
+
+  ## Authentication
+  Requires the master API key: `Authorization: Bearer <master_key>`.
+}

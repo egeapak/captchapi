@@ -43,6 +43,10 @@ Authorization: Bearer <master_key>
 - `GET /api/v1/api-keys` - List all API keys
 - `PUT /api/v1/api-keys/{key_hash}` - Update API key (activate/deactivate)
 - `DELETE /api/v1/api-keys/{key_hash}` - Delete API key
+- `POST /api/v1/admin/cleanup` - Delete expired sessions now
+- `GET /api/v1/admin/config` - Show the effective configuration
+- `PATCH /api/v1/admin/config` - Change reloadable settings at runtime
+- `POST /api/v1/admin/config/reload` - Re-read every configuration source
 
 ---
 
@@ -421,6 +425,137 @@ curl -X DELETE http://localhost:3000/api/v1/api-keys/fcc484955c95e3ed5d8a0f9991a
 
 ---
 
+## Admin Endpoints
+
+All admin endpoints require the master key.
+
+### Trigger Cleanup
+
+Immediately delete expired sessions and their stored JPEG blobs, rather than waiting for the
+background task.
+
+```http
+POST /api/v1/admin/cleanup
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK**
+```json
+{
+  "sessions_deleted": 3,
+  "message": "Successfully cleaned up 3 expired session(s)"
+}
+```
+
+---
+
+### Get Configuration
+
+Return the effective configuration: every parameter's value, whether it can be changed at
+runtime, and which fields are currently overridden through this API.
+
+```http
+GET /api/v1/admin/config
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK**
+```json
+{
+  "config": {
+    "server_port":         { "value": "3000", "reloadable": false, "secret": false },
+    "captcha_compression": { "value": "40",   "reloadable": true,  "secret": false },
+    "api_key_salt":        { "value": "<redacted, 32 bytes>", "reloadable": false, "secret": true }
+  },
+  "overrides": []
+}
+```
+
+Secrets are always redacted, including for the master key holder — this endpoint explains the
+server's behaviour, it does not read credentials back out of it.
+
+`reloadable` is `false` for anything captured at startup: the bind address, the database
+settings, the API key salt, the master key, the rate limits and the telemetry settings. Those
+are owned by the listener, the connection pool, the middleware and the rate limiter, and can
+only change with a restart.
+
+---
+
+### Update Configuration
+
+Change reloadable fields at runtime.
+
+```http
+PATCH /api/v1/admin/config
+Authorization: Bearer <master_key>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "default_session_ttl_seconds": 600,
+  "captcha_compression": 75
+}
+```
+
+Values may be given as numbers, booleans or strings; `600` and `"600"` are equivalent. Every
+accepted change is validated exactly as it would be at startup, and logged with its old and new
+value.
+
+**Response: 200 OK** — the same shape as `GET /config`, with the changed fields listed in
+`overrides`.
+
+**Changes are in-memory only.** They are never written back to a config file, and the next
+reload — SIGHUP, `POST /config/reload`, or a restart — discards them.
+
+**Example:**
+```bash
+curl -X PATCH http://localhost:3000/api/v1/admin/config \
+  -H "Authorization: Bearer YOUR_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"captcha_compression": 75}'
+```
+
+**Error Responses:**
+- `400 config_not_reloadable` - The field is applied at startup and needs a restart
+- `400 invalid_config` - Unknown field, unusable value, or empty body
+- `401 Unauthorized` - Invalid or missing master key
+
+---
+
+### Reload Configuration
+
+Re-read the command line, environment, env file and TOML config file, then publish the result.
+Equivalent to sending `SIGHUP` or running `captchapi reload`.
+
+```http
+POST /api/v1/admin/config/reload
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK**
+```json
+{
+  "config": { "...": "as returned by GET /config" },
+  "overrides": [],
+  "ignored": ["server_port"],
+  "message": "Configuration reloaded; 1 field(s) require a restart and were not applied"
+}
+```
+
+`ignored` names boot-only fields whose configured value now differs from the running one. They
+are reported, never applied — so editing the port and reloading tells you plainly why nothing
+happened instead of leaving you guessing.
+
+Any override previously set through `PATCH /config` is discarded, since a reload means
+re-reading the sources of truth.
+
+If the new configuration fails to resolve, the running server keeps its current configuration
+and the endpoint returns `400 invalid_config`.
+
+---
+
 ## Error Responses
 
 All errors return JSON responses with this format:
@@ -439,6 +574,8 @@ All errors return JSON responses with this format:
 | `session_not_found` | 404 | Session doesn't exist or expired |
 | `unauthorized` | 401 | Invalid or missing API/master key |
 | `invalid_parameters` | 400 | Bad request parameters |
+| `config_not_reloadable` | 400 | Configuration field is applied at startup and needs a restart |
+| `invalid_config` | 400 | Unknown configuration field or unusable value |
 | `database_error` | 500 | Internal database error |
 | `internal_error` | 500 | Other internal errors |
 
