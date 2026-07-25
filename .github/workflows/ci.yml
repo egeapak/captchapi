@@ -97,6 +97,22 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      # Fails the build on RustSec vulnerabilities and yanked crates.
+      # Informational advisories (unmaintained/unsound) are reported as
+      # warnings and do not fail the build.
+      - name: Audit dependencies
+        run: cargo audit
+
   test:
     name: Test Suite
     runs-on: ubuntu-latest
@@ -233,7 +249,7 @@ jobs:
             ${{ runner.os }}-npm-global-
 
       - name: Install Bruno CLI
-        run: npm install -g @usebruno/cli
+        run: npm install -g @usebruno/cli@4.0.0
 
       - name: Run API tests
         env:
