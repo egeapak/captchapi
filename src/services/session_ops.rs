@@ -3,9 +3,25 @@
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::models::Session;
-use crate::services::{CaptchaService, StorageService};
+use crate::services::{CaptchaService, SolutionHasher, StorageService};
 use crate::validation::ValidatedSessionParams;
 use std::sync::Arc;
+use uuid::Uuid;
+
+/// A freshly created CAPTCHA session.
+pub struct CreatedSession {
+    /// The persisted session. Its `solution_hash` field holds the keyed hash,
+    /// not the answer.
+    pub session: Session,
+    /// The plaintext CAPTCHA text, returned to the caller for out-of-band use
+    /// (e.g. the NAPI bindings hand it back to the embedding application).
+    /// It is never written to the database.
+    #[allow(dead_code)] // Used by the NAPI bindings layer
+    pub solution: String,
+    /// The rendered JPEG image.
+    #[allow(dead_code)] // Used by the NAPI bindings layer
+    pub image_bytes: Vec<u8>,
+}
 
 /// Outcome of a validate-session operation.
 #[derive(Debug)]
@@ -23,13 +39,14 @@ pub enum ValidationOutcome {
     MaxAttemptsExceeded,
 }
 
-/// Create a CAPTCHA session: generate image → build model → persist → record metrics.
+/// Create a CAPTCHA session: generate image → hash solution → persist → record metrics.
 pub async fn create_session_orchestrated(
     storage: &StorageService,
     captcha: &CaptchaService,
+    solution_hasher: &SolutionHasher,
     metrics: &Arc<Metrics>,
     params: ValidatedSessionParams,
-) -> Result<(Session, Vec<u8>)> {
+) -> Result<CreatedSession> {
     let start = std::time::Instant::now();
     let (text, image_bytes) = captcha.generate(
         params.length,
@@ -45,8 +62,11 @@ pub async fn create_session_orchestrated(
         .captcha_generation_duration
         .record(generation_duration, &[]);
 
+    // The hash is salted with the session ID, so the ID is generated up front.
+    let session_id = Uuid::new_v4().to_string();
     let session = Session::new(
-        text,
+        session_id.clone(),
+        solution_hasher.hash(&session_id, &text),
         image_bytes.clone(),
         params.expires_in,
         params.difficulty,
@@ -58,13 +78,18 @@ pub async fn create_session_orchestrated(
     storage.create_session(&session).await?;
     metrics.sessions.created.add(1, &[]);
 
-    Ok((session, image_bytes))
+    Ok(CreatedSession {
+        session,
+        solution: text,
+        image_bytes,
+    })
 }
 
 /// Validate a CAPTCHA session solution.
 /// Handles expiry check, attempt counting, and deletion on success/max-attempts.
 pub async fn validate_session_orchestrated(
     storage: &StorageService,
+    solution_hasher: &SolutionHasher,
     metrics: &Arc<Metrics>,
     session_id: &str,
     solution: &str,
@@ -89,8 +114,8 @@ pub async fn validate_session_orchestrated(
         return Ok(ValidationOutcome::MaxAttemptsExceeded);
     }
 
-    // Check solution (case-sensitive)
-    let is_valid = session.solution == solution;
+    // Check solution against the stored hash (case-sensitive, constant-time)
+    let is_valid = solution_hasher.verify(&session.id, solution, &session.solution_hash);
     metrics.sessions.validation_attempts.add(1, &[]);
 
     if is_valid {
@@ -110,7 +135,7 @@ mod tests {
     use super::*;
     use crate::metrics::Metrics;
     use crate::models::Session;
-    use crate::services::{CaptchaService, StorageService};
+    use crate::services::{CaptchaService, SolutionHasher, StorageService};
     use crate::validation::ValidatedSessionParams;
     use chrono::Utc;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -144,15 +169,23 @@ mod tests {
         Arc::new(Metrics::new())
     }
 
-    /// Insert a session directly into storage, bypassing `Session::new` so that
-    /// `attempt_count` can be set to an arbitrary value.
+    fn make_hasher() -> SolutionHasher {
+        SolutionHasher::new("test-solution-secret-1234")
+    }
+
+    /// Insert a session directly into storage so that `attempt_count` can be set
+    /// to an arbitrary value. The solution is hashed exactly as it would be by
+    /// `create_session_orchestrated`.
     async fn insert_session_with_attempt_count(
         storage: &StorageService,
+        hasher: &SolutionHasher,
         solution: &str,
         attempt_count: i64,
     ) -> Session {
+        let id = Uuid::new_v4().to_string();
         let mut session = Session::new(
-            solution.to_string(),
+            id.clone(),
+            hasher.hash(&id, solution),
             vec![0xFF, 0xD8, 0xFF],
             3600,
             5,
@@ -173,14 +206,22 @@ mod tests {
     async fn test_wrong_solution_returns_correct_attempts_remaining() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
+        let hasher = make_hasher();
         // attempt_count starts at 0, max_validation_attempts = 3
         // After one wrong attempt: attempts_remaining = 3 - 0 - 1 = 2
-        let session = insert_session_with_attempt_count(&storage, "CorrectAnswer", 0).await;
+        let session =
+            insert_session_with_attempt_count(&storage, &hasher, "CorrectAnswer", 0).await;
 
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "WrongAnswer", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "WrongAnswer",
+            3,
+        )
+        .await
+        .unwrap();
 
         match outcome {
             ValidationOutcome::Wrong { attempts_remaining } => {
@@ -202,13 +243,21 @@ mod tests {
     async fn test_wrong_solution_attempts_remaining_decrements_with_existing_attempts() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
+        let hasher = make_hasher();
         // attempt_count starts at 1, max = 3 → after this wrong attempt: 3 - 1 - 1 = 1
-        let session = insert_session_with_attempt_count(&storage, "CorrectAnswer", 1).await;
+        let session =
+            insert_session_with_attempt_count(&storage, &hasher, "CorrectAnswer", 1).await;
 
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "WrongAnswer", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "WrongAnswer",
+            3,
+        )
+        .await
+        .unwrap();
 
         match outcome {
             ValidationOutcome::Wrong { attempts_remaining } => {
@@ -229,13 +278,21 @@ mod tests {
     async fn test_wrong_solution_last_attempt_attempts_remaining_is_zero() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
+        let hasher = make_hasher();
         // attempt_count starts at 2, max = 3 → this is the last allowed attempt: 3 - 2 - 1 = 0
-        let session = insert_session_with_attempt_count(&storage, "CorrectAnswer", 2).await;
+        let session =
+            insert_session_with_attempt_count(&storage, &hasher, "CorrectAnswer", 2).await;
 
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "WrongAnswer", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "WrongAnswer",
+            3,
+        )
+        .await
+        .unwrap();
 
         match outcome {
             ValidationOutcome::Wrong { attempts_remaining } => {
@@ -257,11 +314,13 @@ mod tests {
     async fn test_max_attempts_exceeded_returns_correct_outcome_and_deletes_session() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
+        let hasher = make_hasher();
         // attempt_count is already at max (3); the session must be treated as exhausted
-        let session = insert_session_with_attempt_count(&storage, "CorrectAnswer", 3).await;
+        let session =
+            insert_session_with_attempt_count(&storage, &hasher, "CorrectAnswer", 3).await;
 
         let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "AnyAnswer", 3)
+            validate_session_orchestrated(&storage, &hasher, &metrics, &session.id, "AnyAnswer", 3)
                 .await
                 .unwrap();
 
@@ -282,13 +341,20 @@ mod tests {
     async fn test_max_attempts_exceeded_even_with_correct_solution() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
+        let hasher = make_hasher();
         // Even providing the exact correct solution must not validate when attempts are maxed
-        let session = insert_session_with_attempt_count(&storage, "ExactAnswer", 3).await;
+        let session = insert_session_with_attempt_count(&storage, &hasher, "ExactAnswer", 3).await;
 
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "ExactAnswer", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "ExactAnswer",
+            3,
+        )
+        .await
+        .unwrap();
 
         assert!(
             matches!(outcome, ValidationOutcome::MaxAttemptsExceeded),
@@ -307,12 +373,19 @@ mod tests {
     async fn test_correct_solution_returns_correct_outcome_and_deletes_session() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
-        let session = insert_session_with_attempt_count(&storage, "RightAnswer", 0).await;
+        let hasher = make_hasher();
+        let session = insert_session_with_attempt_count(&storage, &hasher, "RightAnswer", 0).await;
 
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "RightAnswer", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "RightAnswer",
+            3,
+        )
+        .await
+        .unwrap();
 
         assert!(
             matches!(outcome, ValidationOutcome::Correct),
@@ -331,13 +404,21 @@ mod tests {
     async fn test_correct_solution_is_case_sensitive() {
         let storage = setup_test_storage().await;
         let metrics = make_metrics();
-        let session = insert_session_with_attempt_count(&storage, "CaseSensitive", 0).await;
+        let hasher = make_hasher();
+        let session =
+            insert_session_with_attempt_count(&storage, &hasher, "CaseSensitive", 0).await;
 
         // Lowercase version of the solution must not match
-        let outcome =
-            validate_session_orchestrated(&storage, &metrics, &session.id, "casesensitive", 3)
-                .await
-                .unwrap();
+        let outcome = validate_session_orchestrated(
+            &storage,
+            &hasher,
+            &metrics,
+            &session.id,
+            "casesensitive",
+            3,
+        )
+        .await
+        .unwrap();
 
         assert!(
             matches!(outcome, ValidationOutcome::Wrong { .. }),
@@ -363,6 +444,7 @@ mod tests {
 
         let result = validate_session_orchestrated(
             &storage,
+            &make_hasher(),
             &metrics,
             "00000000-0000-0000-0000-000000000000",
             "AnyAnswer",
@@ -403,20 +485,34 @@ mod tests {
         let params = make_default_validated_params();
 
         let before = Utc::now().timestamp();
-        let result = create_session_orchestrated(&storage, &captcha, &metrics, params).await;
+        let result =
+            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params).await;
         let after = Utc::now().timestamp();
 
         assert!(result.is_ok(), "create_session_orchestrated should succeed");
-        let (session, image_bytes) = result.unwrap();
+        let CreatedSession {
+            session,
+            solution,
+            image_bytes,
+        } = result.unwrap();
 
         // ID must be a non-empty UUID-like string
         assert!(!session.id.is_empty(), "Session ID should not be empty");
 
-        // Solution must not be empty and must match the requested length
+        // The plaintext solution is returned to the caller but never stored
         assert_eq!(
-            session.solution.chars().count(),
+            solution.chars().count(),
             5,
             "Solution length should match the requested length of 5"
+        );
+        assert_ne!(
+            session.solution_hash, solution,
+            "The stored value must be a hash, not the plaintext solution"
+        );
+        assert_eq!(
+            session.solution_hash.len(),
+            64,
+            "Stored solution hash should be a 64-character HMAC-SHA256 digest"
         );
 
         // Timestamps must be within the test window
@@ -452,9 +548,11 @@ mod tests {
         let metrics = make_metrics();
         let params = make_default_validated_params();
 
-        let (session, _) = create_session_orchestrated(&storage, &captcha, &metrics, params)
-            .await
-            .unwrap();
+        let created =
+            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params)
+                .await
+                .unwrap();
+        let session = created.session;
 
         // Must be retrievable from storage immediately after creation
         let fetched = storage.get_active_session(&session.id).await.unwrap();
@@ -482,12 +580,14 @@ mod tests {
         };
 
         let before = Utc::now().timestamp();
-        let (session, _) = create_session_orchestrated(&storage, &captcha, &metrics, params)
-            .await
-            .unwrap();
+        let created =
+            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params)
+                .await
+                .unwrap();
         let after = Utc::now().timestamp();
+        let session = created.session;
 
-        assert_eq!(session.solution.chars().count(), 8);
+        assert_eq!(created.solution.chars().count(), 8);
         assert_eq!(session.difficulty, 3);
         assert_eq!(session.width, 300);
         assert_eq!(session.height, 150);

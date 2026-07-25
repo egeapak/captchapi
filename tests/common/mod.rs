@@ -8,7 +8,10 @@ use captchapi::{
         admin::AdminState, admin_routes, api_keys::ApiKeysState, api_keys_routes, health_check,
         sessions::SessionsState, sessions_routes,
     },
-    services::{AuthService, CaptchaService, StorageService},
+    services::{
+        create_session_orchestrated, AuthService, CaptchaService, SolutionHasher, StorageService,
+    },
+    validation::ValidatedSessionParams,
 };
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
@@ -17,6 +20,7 @@ use tower_http::trace::TraceLayer;
 pub struct TestApp {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
+    pub solution_hasher: Arc<SolutionHasher>,
     #[allow(dead_code)] // Used in test files, but clippy doesn't see cross-module usage
     pub api_key: String,
     pub master_key: String,
@@ -47,6 +51,7 @@ impl TestApp {
 
         let storage = StorageService::new(pool);
         let auth_service = Arc::new(AuthService::new("test-salt-minimum-16chars".to_string()));
+        let solution_hasher = Arc::new(SolutionHasher::new("test-solution-secret-1234"));
 
         // Create a test API key
         let api_key = "test-api-key-123";
@@ -60,6 +65,7 @@ impl TestApp {
         Self {
             storage,
             auth_service,
+            solution_hasher,
             api_key: api_key.to_string(),
             master_key: "test-master-key-minimum-16chars".to_string(),
         }
@@ -74,6 +80,7 @@ impl TestApp {
             database_url: "sqlite::memory:".to_string(),
             database_max_connections: 5,
             api_key_salt: "test-salt-minimum-16chars".to_string(),
+            solution_hash_secret: "test-solution-secret-1234".to_string(),
             master_api_key: self.master_key.clone(),
             default_session_ttl_seconds: 300,
             max_session_ttl_seconds: 3600,
@@ -97,6 +104,7 @@ impl TestApp {
         let sessions_state = SessionsState {
             storage: self.storage.clone(),
             captcha,
+            solution_hasher: self.solution_hasher.clone(),
             config: config.clone(),
             metrics: metrics.clone(),
         };
@@ -128,5 +136,37 @@ impl TestApp {
                 admin_routes(admin_state, master_middleware_admin),
             )
             .layer(TraceLayer::new_for_http())
+    }
+
+    /// Create a session through the service layer and return `(session_id, solution)`.
+    ///
+    /// Storage only holds a keyed hash of the answer and the HTTP API never
+    /// returns it, so tests that need the correct solution have to capture it at
+    /// creation time.
+    #[allow(dead_code)] // Used in test files, but clippy doesn't see cross-module usage
+    pub async fn create_session_with_solution(&self, length: i64) -> (String, String) {
+        let captcha = CaptchaService::new();
+        let metrics = Arc::new(Metrics::new());
+        let params = ValidatedSessionParams {
+            length,
+            difficulty: 5,
+            width: 220,
+            height: 120,
+            dark_mode: false,
+            compression: 40,
+            expires_in: 300,
+        };
+
+        let created = create_session_orchestrated(
+            &self.storage,
+            &captcha,
+            &self.solution_hasher,
+            &metrics,
+            params,
+        )
+        .await
+        .expect("Failed to create test session");
+
+        (created.session.id, created.solution)
     }
 }

@@ -7,8 +7,8 @@ use crate::models::{
     ValidateSessionResponse,
 };
 use crate::services::{
-    create_session_orchestrated, validate_session_orchestrated, CaptchaService, StorageService,
-    ValidationOutcome,
+    create_session_orchestrated, validate_session_orchestrated, CaptchaService, CreatedSession,
+    SolutionHasher, StorageService, ValidationOutcome,
 };
 use crate::validation;
 use axum::{
@@ -26,6 +26,7 @@ use std::sync::Arc;
 pub struct SessionsState {
     pub storage: StorageService,
     pub captcha: Arc<CaptchaService>,
+    pub solution_hasher: Arc<SolutionHasher>,
     pub config: Arc<Config>,
     pub metrics: Arc<Metrics>,
 }
@@ -78,9 +79,17 @@ async fn create_session(
     )
     .map_err(AppError::InvalidSessionParams)?;
 
-    // Use orchestration function for generate + store + metrics
-    let (session, _image_bytes) =
-        create_session_orchestrated(&state.storage, &state.captcha, &state.metrics, params).await?;
+    // Use orchestration function for generate + hash + store + metrics
+    // The plaintext solution is deliberately dropped here: it is never returned
+    // by the API and never persisted.
+    let CreatedSession { session, .. } = create_session_orchestrated(
+        &state.storage,
+        &state.captcha,
+        &state.solution_hasher,
+        &state.metrics,
+        params,
+    )
+    .await?;
 
     // Record session_id in the span
     tracing::Span::current().record("session_id", session.id.as_str());
@@ -184,6 +193,7 @@ async fn validate_session(
     // Use orchestration function for full validation flow
     let outcome = validate_session_orchestrated(
         &state.storage,
+        &state.solution_hasher,
         &state.metrics,
         &session_id,
         &req.solution,

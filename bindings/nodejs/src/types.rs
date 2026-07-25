@@ -16,6 +16,11 @@ pub struct CaptchaConfig {
     /// Salt used for hashing API keys
     pub api_key_salt: String,
 
+    /// Server-side key used to hash CAPTCHA solutions before storing them.
+    /// Defaults to `apiKeySalt`. Keep it out of the database — a stolen
+    /// database is useless without it.
+    pub solution_hash_secret: Option<String>,
+
     /// Default session TTL in seconds (default: 300)
     pub default_session_ttl_seconds: Option<u32>,
 
@@ -37,6 +42,7 @@ impl Default for CaptchaConfig {
         Self {
             database_url: "sqlite:./captcha.db".to_string(),
             api_key_salt: String::new(),
+            solution_hash_secret: None,
             default_session_ttl_seconds: Some(300),
             max_session_ttl_seconds: Some(3600),
             max_validation_attempts: Some(3),

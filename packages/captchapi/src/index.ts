@@ -271,6 +271,19 @@ export class CaptchaApiBuilder {
   }
 
   /**
+   * Set the secret used to hash CAPTCHA solutions before storing them
+   *
+   * Defaults to the API key salt. Solutions are never stored in plaintext, and
+   * this key never reaches the database — keep it out of backups of the DB file.
+   *
+   * @param secret Secret key for hashing CAPTCHA solutions
+   */
+  solutionHashSecret(secret: string): this {
+    this.config.solutionHashSecret = secret;
+    return this;
+  }
+
+  /**
    * Set the default session TTL
    * @param seconds TTL in seconds
    */

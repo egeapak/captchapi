@@ -9,7 +9,7 @@ use captchapi::metrics::Metrics;
 use captchapi::models::SessionConfig;
 use captchapi::services::{
     create_api_key_orchestrated, create_session_orchestrated, validate_session_orchestrated,
-    AuthService, CaptchaService, StorageService, ValidationOutcome,
+    AuthService, CaptchaService, SolutionHasher, StorageService, ValidationOutcome,
 };
 use captchapi::validation;
 use napi::bindgen_prelude::*;
@@ -40,6 +40,7 @@ pub struct CaptchaApi {
     storage: StorageService,
     captcha: CaptchaService,
     auth: AuthService,
+    solution_hasher: SolutionHasher,
     config: Arc<SessionConfig>,
     metrics: Arc<Metrics>,
 }
@@ -84,6 +85,14 @@ impl CaptchaApi {
         let storage = StorageService::new(pool.clone());
         let captcha = CaptchaService::new();
         let auth = AuthService::new(config.api_key_salt.clone());
+        // Solutions are stored as a keyed hash; the key defaults to the API key
+        // salt when no dedicated secret is configured.
+        let solution_hasher = SolutionHasher::new(
+            config
+                .solution_hash_secret
+                .as_deref()
+                .unwrap_or(&config.api_key_salt),
+        );
         let metrics = Arc::new(Metrics::new());
 
         let session_config = Arc::new(SessionConfig {
@@ -98,6 +107,7 @@ impl CaptchaApi {
             storage,
             captcha,
             auth,
+            solution_hasher,
             config: session_config,
             metrics,
         })
@@ -137,18 +147,25 @@ impl CaptchaApi {
         )
         .map_err(napi::Error::from_reason)?;
 
-        // Use orchestration function for generate + store + metrics
-        let (session, image_bytes) =
-            create_session_orchestrated(&self.storage, &self.captcha, &self.metrics, params)
-                .await
-                .into_napi()?;
+        // Use orchestration function for generate + hash + store + metrics
+        let created = create_session_orchestrated(
+            &self.storage,
+            &self.captcha,
+            &self.solution_hasher,
+            &self.metrics,
+            params,
+        )
+        .await
+        .into_napi()?;
 
         Ok(SessionResult {
-            session_id: session.id,
-            text: session.solution,
-            created_at: session.created_at * 1000, // Convert to milliseconds
-            expires_at: session.expires_at * 1000,
-            image: Buffer::from(image_bytes),
+            session_id: created.session.id,
+            // The plaintext text comes from the generator, not from storage,
+            // which only holds its hash.
+            text: created.solution,
+            created_at: created.session.created_at * 1000, // Convert to milliseconds
+            expires_at: created.session.expires_at * 1000,
+            image: Buffer::from(created.image_bytes),
         })
     }
 
@@ -169,6 +186,7 @@ impl CaptchaApi {
         // Use orchestration function for full validation flow
         let outcome = validate_session_orchestrated(
             &self.storage,
+            &self.solution_hasher,
             &self.metrics,
             &session_id,
             &solution,

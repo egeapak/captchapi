@@ -28,7 +28,8 @@ This file provides project overview, architecture, and development workflow. For
 - ✅ Public image retrieval (requires session ID)
 - ✅ Automatic session expiration and cleanup
 - ✅ Validation attempt limiting (max 3 attempts)
-- ✅ Case-sensitive solution matching (secure validation)
+- ✅ Case-sensitive solution matching (constant-time, against a stored keyed hash)
+- ✅ CAPTCHA solutions stored as HMAC-SHA256, never in plaintext
 - ✅ CAPTCHA solution not returned in API response (removed in v1.0.0 for security)
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
@@ -67,6 +68,7 @@ captchapi/
     │   ├── auth.rs              # API key hashing
     │   ├── storage.rs           # Database operations
     │   ├── session_ops.rs       # Session orchestration
+    │   ├── solution_hash.rs     # Keyed hashing of CAPTCHA solutions
     │   ├── api_key_ops.rs       # API key orchestration
     │   └── rate_limiter.rs      # Rate limiter configuration
     ├── routes/                  # HTTP endpoints
@@ -120,6 +122,8 @@ DATABASE_MAX_CONNECTIONS=5
 # Security
 API_KEY_SALT=CHANGE-THIS-TO-A-RANDOM-SALT-IN-PRODUCTION
 MASTER_API_KEY=CHANGE-THIS-TO-A-SECURE-MASTER-KEY-IN-PRODUCTION
+# Optional: dedicated key for hashing CAPTCHA solutions (defaults to API_KEY_SALT)
+SOLUTION_HASH_SECRET=CHANGE-THIS-TO-A-RANDOM-SECRET-IN-PRODUCTION
 
 # CAPTCHA Defaults
 DEFAULT_SESSION_TTL_SECONDS=300
@@ -144,6 +148,7 @@ OTEL_SERVICE_NAME=captchapi
 **Important**:
 - Always change `API_KEY_SALT` to a random string in production!
 - Always change `MASTER_API_KEY` to a strong, random key in production!
+- Rotating `SOLUTION_HASH_SECRET` (or `API_KEY_SALT`, when no dedicated secret is set) invalidates sessions issued before the restart
 - The master key has full administrative access - protect it carefully!
 - Only enable `RATE_LIMIT_REVERSE_PROXY` if you trust your proxy — clients can spoof headers otherwise
 
@@ -155,7 +160,7 @@ Stores active CAPTCHA sessions with metadata and solutions.
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
-    solution TEXT NOT NULL,           -- Correct answer (lowercase)
+    solution_hash TEXT NOT NULL,      -- HMAC-SHA256(secret, id || solution)
     image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
@@ -292,6 +297,10 @@ cargo nextest run
 2. **Attempt Limiting**: Max 3 validation attempts per session
 3. **Auto-Deletion**: Sessions deleted after successful validation
 4. **Cleanup**: Background task removes expired sessions every 60s
+5. **Solution Hashing**: Only `HMAC-SHA256(secret, session_id || solution)` is stored. The key comes
+   from `SOLUTION_HASH_SECRET` (default: `API_KEY_SALT`) and never lives in the database, so reading
+   the database does not reveal answers. A plain digest would be useless here — short alphanumeric
+   solutions are brute-forced instantly. Note the stored `image_bytes` can still be OCR'd.
 
 ### Best Practices
 

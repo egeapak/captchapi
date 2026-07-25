@@ -96,7 +96,7 @@ HTTP Request
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
-    solution TEXT NOT NULL,           -- Correct answer
+    solution_hash TEXT NOT NULL,      -- HMAC-SHA256 of the answer (see Security Model)
     image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
@@ -133,8 +133,15 @@ CREATE TABLE api_keys (
 - Sessions auto-expire based on configurable TTL
 - Maximum 3 validation attempts per session (configurable)
 - Sessions are deleted after successful validation
-- Case-sensitive solution matching
+- Case-sensitive solution matching, compared in constant time
 - CAPTCHA solution is never returned in API responses
+- Solutions are stored as `HMAC-SHA256(server_secret, session_id || solution)`, never in plaintext.
+  The key is derived from `SOLUTION_HASH_SECRET` (falling back to `API_KEY_SALT`) and never lives
+  in the database, so a leaked database file does not reveal answers — a bare digest would not
+  help, since a 5-character alphanumeric keyspace is brute-forced in milliseconds. The session ID
+  acts as a per-session salt so identical answers do not produce identical hashes.
+  Note that `image_bytes` still holds the rendered challenge, which can be OCR'd; hashing removes
+  the trivial `SELECT solution FROM sessions` path, it does not make a database leak harmless.
 
 ### Rate Limiting
 

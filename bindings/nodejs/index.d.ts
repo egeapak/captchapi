@@ -9,6 +9,12 @@ export interface CaptchaConfig {
   databaseUrl: string
   /** Salt used for hashing API keys */
   apiKeySalt: string
+  /**
+   * Server-side key used to hash CAPTCHA solutions before storing them.
+   * Defaults to `apiKeySalt`. Keep it out of the database — a stolen
+   * database is useless without it.
+   */
+  solutionHashSecret?: string
   /** Default session TTL in seconds (default: 300) */
   defaultSessionTtlSeconds?: number
   /** Maximum allowed session TTL in seconds (default: 3600) */

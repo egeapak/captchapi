@@ -18,12 +18,12 @@ impl StorageService {
     pub async fn create_session(&self, session: &Session) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, solution, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
+            INSERT INTO sessions (id, solution_hash, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&session.id)
-        .bind(&session.solution)
+        .bind(&session.solution_hash)
         .bind(&session.image_bytes)
         .bind(session.created_at)
         .bind(session.expires_at)
@@ -65,7 +65,7 @@ impl StorageService {
             r#"
             SELECT
                 id as "id!",
-                solution as "solution!",
+                solution_hash as "solution_hash!",
                 image_bytes as "image_bytes!",
                 created_at as "created_at!",
                 expires_at as "expires_at!",
@@ -359,7 +359,8 @@ mod tests {
 
     fn make_valid_session() -> Session {
         Session::new(
-            "ANSWER".to_string(),
+            Uuid::new_v4().to_string(),
+            "hashed-ANSWER".to_string(),
             vec![1, 2, 3],
             3600,
             5,
@@ -370,7 +371,16 @@ mod tests {
     }
 
     fn make_expired_session() -> Session {
-        let mut session = Session::new("EXPIRED".to_string(), vec![4, 5, 6], 0, 5, 220, 120, false);
+        let mut session = Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-EXPIRED".to_string(),
+            vec![4, 5, 6],
+            0,
+            5,
+            220,
+            120,
+            false,
+        );
         // Place expires_at 10 seconds in the past
         session.expires_at = Utc::now().timestamp() - 10;
         session
@@ -399,7 +409,7 @@ mod tests {
             .expect("session should exist");
 
         assert_eq!(fetched.id, session.id);
-        assert_eq!(fetched.solution, session.solution);
+        assert_eq!(fetched.solution_hash, session.solution_hash);
         assert_eq!(fetched.image_bytes, session.image_bytes);
         assert_eq!(fetched.difficulty, session.difficulty);
         assert_eq!(fetched.width, session.width);
