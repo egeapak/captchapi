@@ -17,7 +17,8 @@
 //! given the derived key, and deliberately so: it keeps the binding intact if the
 //! key derivation is ever simplified back to a single key.
 //!
-//! Stored layout: `[version: 1][nonce: 12][ciphertext || Poly1305 tag: 16]`.
+//! Stored layout, in bytes:
+//! `[scheme version: 1][nonce: 12][ciphertext || Poly1305 tag: 16]`.
 
 use crate::error::{AppError, Result};
 use crate::services::hmac::hmac_sha256;
