@@ -481,4 +481,126 @@ mod tests {
         // Just ensure shutdown doesn't panic when called
         shutdown_telemetry();
     }
+
+    // ── log_filter ────────────────────────────────────────────────────────────
+    //
+    // Not gated on `otel`: `log_filter` is how every build decides what to log.
+
+    /// Would a `target` event at `level` pass the filter?
+    fn passes(filter: &Targets, target: &str, level: Level) -> bool {
+        filter.would_enable(target, &level)
+    }
+
+    /// The compiled-in fallback and the default declared in `PARAMS` must agree.
+    ///
+    /// They are written out separately — one as `Targets` in `log_filter`, one as
+    /// a string in the parameter table — so nothing but this test stops them from
+    /// drifting apart. If they drift, the fallback silently starts logging
+    /// differently from a default boot.
+    #[test]
+    fn test_log_filter_fallback_matches_the_declared_default() {
+        let declared = crate::config::params::PARAMS
+            .iter()
+            .find(|p| p.field == "log_level")
+            .and_then(|p| p.default)
+            .expect("log_level should declare a default");
+
+        let from_default = log_filter(declared);
+        // A bad *level* is the one form that actually fails to parse, so it is
+        // what reaches the fallback. A bare unknown word does not: see
+        // `test_log_filter_bare_word_is_a_target_not_an_error`.
+        let from_fallback = log_filter("captchapi=notalevel");
+
+        for target in ["captchapi", "tower_http", "some_noisy_crate"] {
+            for level in [Level::TRACE, Level::DEBUG, Level::INFO, Level::WARN] {
+                assert_eq!(
+                    passes(&from_default, target, level),
+                    passes(&from_fallback, target, level),
+                    "declared default {declared:?} and the code fallback disagree \
+                     on {target} at {level}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_log_filter_default_enables_captchapi_debug() {
+        let filter = log_filter("captchapi=debug,tower_http=debug");
+        assert!(passes(&filter, "captchapi", Level::DEBUG));
+        assert!(passes(&filter, "captchapi", Level::INFO));
+        assert!(passes(&filter, "tower_http", Level::DEBUG));
+        assert!(!passes(&filter, "captchapi", Level::TRACE));
+        assert!(!passes(&filter, "some_noisy_crate", Level::INFO));
+    }
+
+    #[test]
+    fn test_log_filter_accepts_target_level_pairs() {
+        let filter = log_filter("captchapi=warn");
+        assert!(passes(&filter, "captchapi", Level::WARN));
+        assert!(!passes(&filter, "captchapi", Level::INFO));
+    }
+
+    #[test]
+    fn test_log_filter_accepts_comma_separated_directives() {
+        let filter = log_filter("captchapi=info,tower_http=warn");
+        assert!(passes(&filter, "captchapi", Level::INFO));
+        assert!(!passes(&filter, "captchapi", Level::DEBUG));
+        assert!(passes(&filter, "tower_http", Level::WARN));
+        assert!(!passes(&filter, "tower_http", Level::INFO));
+    }
+
+    /// `RUST_LOG=debug` is the most common form; it must stay a global level
+    /// rather than being read as a target named "debug".
+    #[test]
+    fn test_log_filter_accepts_a_bare_level_as_global() {
+        for (directive, level) in [
+            ("trace", Level::TRACE),
+            ("debug", Level::DEBUG),
+            ("info", Level::INFO),
+            ("warn", Level::WARN),
+            ("error", Level::ERROR),
+        ] {
+            let filter = log_filter(directive);
+            assert!(
+                passes(&filter, "any_crate_at_all", level),
+                "{directive:?} should enable {level} globally"
+            );
+        }
+        assert!(!passes(&log_filter("off"), "captchapi", Level::ERROR));
+    }
+
+    #[test]
+    fn test_log_filter_falls_back_when_the_level_is_invalid() {
+        let filter = log_filter("captchapi=notalevel");
+        // Fell back to the default, which enables captchapi at DEBUG.
+        assert!(passes(&filter, "captchapi", Level::DEBUG));
+        assert!(!passes(&filter, "some_noisy_crate", Level::INFO));
+    }
+
+    /// A bare word is a *target* directive, not a malformed level.
+    ///
+    /// This is standard `RUST_LOG` syntax and matches what `EnvFilter` did
+    /// before `Targets` replaced it, so it is pinned rather than fixed. The
+    /// consequence is worth knowing: `RUST_LOG=debg` parses cleanly as "the
+    /// target `debg` at TRACE" and takes the whole service silent, without
+    /// reaching the fallback. A typo'd level is quiet, not loud.
+    #[test]
+    fn test_log_filter_bare_word_is_a_target_not_an_error() {
+        // A real target name enables that target at TRACE.
+        let filter = log_filter("captchapi");
+        assert!(passes(&filter, "captchapi", Level::TRACE));
+        assert!(passes(&filter, "captchapi", Level::ERROR));
+
+        // A misspelt level is read the same way — as a target nothing logs to.
+        let typo = log_filter("debg");
+        assert!(!passes(&typo, "captchapi", Level::ERROR));
+    }
+
+    /// An empty filter still lets errors through, as `EnvFilter` did.
+    #[test]
+    fn test_log_filter_empty_keeps_errors_globally() {
+        let filter = log_filter("");
+        assert!(passes(&filter, "any_crate_at_all", Level::ERROR));
+        assert!(!passes(&filter, "captchapi", Level::DEBUG));
+    }
 }
