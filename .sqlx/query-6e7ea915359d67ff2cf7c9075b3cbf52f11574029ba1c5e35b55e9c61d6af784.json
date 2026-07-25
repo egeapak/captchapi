@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "\n            SELECT\n                id as \"id!\",\n                solution_hash as \"solution_hash!\",\n                image_bytes as \"image_bytes!\",\n                created_at as \"created_at!\",\n                expires_at as \"expires_at!\",\n                attempt_count as \"attempt_count!\",\n                difficulty as \"difficulty!\",\n                width as \"width!\",\n                height as \"height!\",\n                dark_mode as \"dark_mode!\"\n            FROM sessions\n            WHERE id = ?\n            ",
+  "query": "\n            SELECT\n                id as \"id!\",\n                solution_hash as \"solution_hash!\",\n                image_encrypted as \"image_encrypted!\",\n                created_at as \"created_at!\",\n                expires_at as \"expires_at!\",\n                attempt_count as \"attempt_count!\",\n                difficulty as \"difficulty!\",\n                width as \"width!\",\n                height as \"height!\",\n                dark_mode as \"dark_mode!\"\n            FROM sessions\n            WHERE id = ?\n            ",
   "describe": {
     "columns": [
       {
@@ -26,13 +26,13 @@
         }
       },
       {
-        "name": "image_bytes!",
+        "name": "image_encrypted!",
         "ordinal": 2,
         "type_info": "Blob",
         "origin": {
           "Table": {
             "table": "sessions",
-            "name": "image_bytes"
+            "name": "image_encrypted"
           }
         }
       },
@@ -130,5 +130,5 @@
       true
     ]
   },
-  "hash": "ddd209557fc627a7c37daac72244b9276aa378ce3e6a81346ff298e781aedc53"
+  "hash": "6e7ea915359d67ff2cf7c9075b3cbf52f11574029ba1c5e35b55e9c61d6af784"
 }

@@ -21,6 +21,10 @@ pub struct CaptchaConfig {
     /// database is useless without it.
     pub solution_hash_secret: Option<String>,
 
+    /// Server-side key used to encrypt stored CAPTCHA images.
+    /// Defaults to `apiKeySalt`. Keep it out of the database.
+    pub image_encryption_secret: Option<String>,
+
     /// Default session TTL in seconds (default: 300)
     pub default_session_ttl_seconds: Option<u32>,
 
@@ -43,6 +47,7 @@ impl Default for CaptchaConfig {
             database_url: "sqlite:./captcha.db".to_string(),
             api_key_salt: String::new(),
             solution_hash_secret: None,
+            image_encryption_secret: None,
             default_session_ttl_seconds: Some(300),
             max_session_ttl_seconds: Some(3600),
             max_validation_attempts: Some(3),
@@ -79,16 +84,15 @@ pub struct CreateSessionOptions {
 }
 
 /// Result of creating a CAPTCHA session
+///
+/// The solution is deliberately absent: a stored session's answer never leaves
+/// the process, in any form, through any API. Use `generate()` if you need the
+/// text yourself — it produces a CAPTCHA without storing a session.
 #[napi(object)]
 #[derive(Clone)]
 pub struct SessionResult {
     /// Unique session identifier (UUID)
     pub session_id: String,
-
-    /// The generated CAPTCHA text (solution).
-    /// Available in the library API for server-side use.
-    /// Note: The HTTP REST API does NOT expose this field to clients.
-    pub text: String,
 
     /// Session creation timestamp (Unix milliseconds)
     pub created_at: i64,

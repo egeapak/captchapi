@@ -1100,3 +1100,152 @@ async fn test_submitting_the_stored_hash_does_not_validate() {
     let body: serde_json::Value = response.json();
     assert_eq!(body["valid"], false);
 }
+
+#[tokio::test]
+async fn test_image_is_not_stored_in_plaintext() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // The endpoint still serves a real JPEG
+    let image_response = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+    image_response.assert_status_ok();
+    let served = image_response.as_bytes().to_vec();
+    assert!(
+        served.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "Served bytes should be a JPEG"
+    );
+
+    // ...but the stored blob is ciphertext
+    let stored = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+    assert!(
+        !stored.image_encrypted.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "Stored image must not be a raw JPEG"
+    );
+    assert_ne!(stored.image_encrypted, served);
+    assert!(
+        !stored
+            .image_encrypted
+            .windows(32)
+            .any(|w| w == &served[..32]),
+        "No plaintext image data should appear in the stored blob"
+    );
+    assert_eq!(
+        stored.image_encrypted.len(),
+        served.len() + 29,
+        "Overhead should be version byte (1) + nonce (12) + Poly1305 tag (16)"
+    );
+}
+
+#[tokio::test]
+async fn test_image_endpoint_is_repeatable() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Decryption must be deterministic across requests
+    let first = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+    let second = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+
+    first.assert_status_ok();
+    second.assert_status_ok();
+    assert_eq!(first.as_bytes(), second.as_bytes());
+}
+
+#[tokio::test]
+async fn test_image_endpoint_rejects_tampered_stored_image() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Simulate someone editing the database: flip one bit of the stored blob
+    let mut session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+    let mid = session.image_encrypted.len() / 2;
+    session.image_encrypted[mid] ^= 0b0000_0001;
+    test_app.storage.delete_session(session_id).await.unwrap();
+    test_app.storage.create_session(&session).await.unwrap();
+
+    let image_response = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+
+    image_response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let body: serde_json::Value = image_response.json();
+    assert_eq!(body["error"], "internal_error");
+}
+
+#[tokio::test]
+async fn test_create_response_never_contains_the_solution() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let (session_id, solution) = test_app.create_session_with_solution(6).await;
+
+    // Neither the create response fields nor the public details endpoint may
+    // carry the answer in any form.
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    assert!(create_body.get("text").is_none());
+    assert!(create_body.get("solution").is_none());
+    assert_eq!(
+        create_body.as_object().unwrap().len(),
+        3,
+        "Create response should only expose session_id, created_at and expires_at"
+    );
+
+    let details = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
+        .await;
+    let details_text = details.text();
+    assert!(
+        !details_text.contains(&solution),
+        "Session details must not leak the solution"
+    );
+    assert!(details_text.find("solution").is_none());
+}

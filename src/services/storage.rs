@@ -18,13 +18,13 @@ impl StorageService {
     pub async fn create_session(&self, session: &Session) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO sessions (id, solution_hash, image_bytes, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
+            INSERT INTO sessions (id, solution_hash, image_encrypted, created_at, expires_at, attempt_count, difficulty, width, height, dark_mode)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&session.id)
         .bind(&session.solution_hash)
-        .bind(&session.image_bytes)
+        .bind(&session.image_encrypted)
         .bind(session.created_at)
         .bind(session.expires_at)
         .bind(session.attempt_count)
@@ -66,7 +66,7 @@ impl StorageService {
             SELECT
                 id as "id!",
                 solution_hash as "solution_hash!",
-                image_bytes as "image_bytes!",
+                image_encrypted as "image_encrypted!",
                 created_at as "created_at!",
                 expires_at as "expires_at!",
                 attempt_count as "attempt_count!",
@@ -410,7 +410,7 @@ mod tests {
 
         assert_eq!(fetched.id, session.id);
         assert_eq!(fetched.solution_hash, session.solution_hash);
-        assert_eq!(fetched.image_bytes, session.image_bytes);
+        assert_eq!(fetched.image_encrypted, session.image_encrypted);
         assert_eq!(fetched.difficulty, session.difficulty);
         assert_eq!(fetched.width, session.width);
         assert_eq!(fetched.height, session.height);

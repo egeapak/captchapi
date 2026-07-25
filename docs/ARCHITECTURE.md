@@ -97,7 +97,7 @@ HTTP Request
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
     solution_hash TEXT NOT NULL,      -- HMAC-SHA256 of the answer (see Security Model)
-    image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
+    image_encrypted BLOB NOT NULL,    -- ChaCha20-Poly1305 ciphertext of the JPEG
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
     attempt_count INTEGER DEFAULT 0,  -- Failed attempts
@@ -140,8 +140,13 @@ CREATE TABLE api_keys (
   in the database, so a leaked database file does not reveal answers — a bare digest would not
   help, since a 5-character alphanumeric keyspace is brute-forced in milliseconds. The session ID
   acts as a per-session salt so identical answers do not produce identical hashes.
-  Note that `image_bytes` still holds the rendered challenge, which can be OCR'd; hashing removes
-  the trivial `SELECT solution FROM sessions` path, it does not make a database leak harmless.
+- Images are encrypted at rest with ChaCha20-Poly1305 (`IMAGE_ENCRYPTION_SECRET`, falling back to
+  `API_KEY_SALT`), decrypted only when served. The rendered challenge is the answer in visual form,
+  so leaving it in plaintext would have undone the solution hashing. The session ID is authenticated
+  as associated data, so a ciphertext cannot be moved between rows, and tampered bytes fail the
+  Poly1305 tag rather than being served. Stored layout: `[version][12-byte nonce][ciphertext+tag]`.
+- Net effect: a leaked database file contains no answer and no readable image — only ciphertext,
+  timestamps, and challenge dimensions.
 
 ### Rate Limiting
 

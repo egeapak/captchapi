@@ -7,8 +7,8 @@ use crate::models::{
     ValidateSessionResponse,
 };
 use crate::services::{
-    create_session_orchestrated, validate_session_orchestrated, CaptchaService, CreatedSession,
-    SolutionHasher, StorageService, ValidationOutcome,
+    create_session_orchestrated, get_session_image_orchestrated, validate_session_orchestrated,
+    CaptchaService, CreatedSession, ImageCipher, SolutionHasher, StorageService, ValidationOutcome,
 };
 use crate::validation;
 use axum::{
@@ -27,6 +27,7 @@ pub struct SessionsState {
     pub storage: StorageService,
     pub captcha: Arc<CaptchaService>,
     pub solution_hasher: Arc<SolutionHasher>,
+    pub image_cipher: Arc<ImageCipher>,
     pub config: Arc<Config>,
     pub metrics: Arc<Metrics>,
 }
@@ -86,6 +87,7 @@ async fn create_session(
         &state.storage,
         &state.captcha,
         &state.solution_hasher,
+        &state.image_cipher,
         &state.metrics,
         params,
     )
@@ -138,15 +140,12 @@ async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    // get_active_session handles expiry check and eager deletion
-    let session = state
-        .storage
-        .get_active_session(&session_id)
-        .await?
-        .ok_or(AppError::SessionNotFound)?;
+    // Handles expiry check, eager deletion, and decryption of the stored image
+    let (session, image_bytes) =
+        get_session_image_orchestrated(&state.storage, &state.image_cipher, &session_id).await?;
 
     tracing::Span::current().record("is_expired", false);
-    tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
+    tracing::Span::current().record("image_size_bytes", image_bytes.len());
 
     // Calculate cache duration (time until expiration)
     let now = Utc::now().timestamp();
@@ -172,7 +171,7 @@ async fn get_image_binary(
     );
 
     // Return raw JPEG bytes directly (no base64 encoding/decoding needed!)
-    Ok((headers, session.image_bytes))
+    Ok((headers, image_bytes))
 }
 
 #[tracing::instrument(skip(state, req), fields(

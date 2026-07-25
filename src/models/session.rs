@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct SessionRow {
     pub id: String,
     pub solution_hash: String,
-    pub image_bytes: Vec<u8>,
+    pub image_encrypted: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
     pub attempt_count: i64, // SQLite INTEGER -> i64
@@ -24,7 +24,9 @@ pub struct Session {
     /// Keyed hash of the correct answer — see [`crate::services::SolutionHasher`].
     /// The plaintext solution is never stored.
     pub solution_hash: String,
-    pub image_bytes: Vec<u8>,
+    /// Encrypted CAPTCHA image — see [`crate::services::ImageCipher`].
+    /// The raw JPEG is never stored.
+    pub image_encrypted: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
     pub attempt_count: i64,
@@ -39,7 +41,7 @@ impl From<SessionRow> for Session {
         Self {
             id: row.id,
             solution_hash: row.solution_hash,
-            image_bytes: row.image_bytes,
+            image_encrypted: row.image_encrypted,
             created_at: row.created_at,
             expires_at: row.expires_at,
             attempt_count: row.attempt_count,
@@ -54,14 +56,16 @@ impl From<SessionRow> for Session {
 impl Session {
     /// Build a session from a caller-supplied ID and an already-hashed solution.
     ///
-    /// The hash is salted with the session ID (see [`crate::services::SolutionHasher`]),
-    /// so callers need the ID before the session exists: they generate it, hash
-    /// the solution with it, then build here. The plaintext answer is never stored.
+    /// The hash is salted with the session ID (see [`crate::services::SolutionHasher`])
+    /// and the image is encrypted with it as associated data (see
+    /// [`crate::services::ImageCipher`]), so callers need the ID before the session
+    /// exists: they generate it, hash and encrypt with it, then build here.
+    /// Neither the plaintext answer nor the raw image is ever stored.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: String,
         solution_hash: String,
-        image_bytes: Vec<u8>,
+        image_encrypted: Vec<u8>,
         expires_in_seconds: u64,
         difficulty: i64,
         width: i64,
@@ -72,7 +76,7 @@ impl Session {
         Self {
             id,
             solution_hash,
-            image_bytes,
+            image_encrypted,
             created_at: now,
             expires_at: now + expires_in_seconds as i64,
             attempt_count: 0,
@@ -145,7 +149,7 @@ mod tests {
         SessionRow {
             id: "test-id".to_string(),
             solution_hash: "hashed-abcd".to_string(),
-            image_bytes: vec![0xFF, 0xD8],
+            image_encrypted: vec![0x01, 0x02],
             created_at,
             expires_at,
             attempt_count: 2,
@@ -173,7 +177,7 @@ mod tests {
 
         assert_eq!(session.id, "test-id");
         assert_eq!(session.solution_hash, "hashed-solution123");
-        assert_eq!(session.image_bytes, vec![1, 2, 3]);
+        assert_eq!(session.image_encrypted, vec![1, 2, 3]);
         assert_eq!(session.attempt_count, 0);
         assert_eq!(session.difficulty, 7);
         assert_eq!(session.width, 320);
@@ -204,7 +208,7 @@ mod tests {
         let session = Session {
             id: "id".to_string(),
             solution_hash: "hashed-sol".to_string(),
-            image_bytes: vec![],
+            image_encrypted: vec![],
             created_at: now - 10,
             expires_at: now + 1000,
             attempt_count: 0,
@@ -225,7 +229,7 @@ mod tests {
         let session = Session {
             id: "id".to_string(),
             solution_hash: "hashed-sol".to_string(),
-            image_bytes: vec![],
+            image_encrypted: vec![],
             created_at: now - 200,
             expires_at: now - 100,
             attempt_count: 0,
@@ -247,7 +251,7 @@ mod tests {
         let session = Session {
             id: "id".to_string(),
             solution_hash: "hashed-sol".to_string(),
-            image_bytes: vec![],
+            image_encrypted: vec![],
             created_at: now - 10,
             expires_at: now - 1,
             attempt_count: 0,
@@ -268,7 +272,7 @@ mod tests {
         let session = Session {
             id: "id".to_string(),
             solution_hash: "hashed-sol".to_string(),
-            image_bytes: vec![],
+            image_encrypted: vec![],
             created_at: 0,
             expires_at: 1_700_000_000,
             attempt_count: 0,
@@ -286,7 +290,7 @@ mod tests {
         let session = Session {
             id: "id".to_string(),
             solution_hash: "hashed-sol".to_string(),
-            image_bytes: vec![],
+            image_encrypted: vec![],
             created_at: 1_700_000_000,
             expires_at: 1_700_001_000,
             attempt_count: 0,
@@ -321,7 +325,7 @@ mod tests {
         let row = SessionRow {
             id: "abc-123".to_string(),
             solution_hash: "hashed-XyZw".to_string(),
-            image_bytes: vec![0xFF, 0xD8, 0xFF],
+            image_encrypted: vec![0x01, 0x02, 0x03],
             created_at: 1_700_000_000,
             expires_at: 1_700_001_000,
             attempt_count: 3,
@@ -333,7 +337,7 @@ mod tests {
         let session: Session = row.into();
         assert_eq!(session.id, "abc-123");
         assert_eq!(session.solution_hash, "hashed-XyZw");
-        assert_eq!(session.image_bytes, vec![0xFF, 0xD8, 0xFF]);
+        assert_eq!(session.image_encrypted, vec![0x01, 0x02, 0x03]);
         assert_eq!(session.created_at, 1_700_000_000);
         assert_eq!(session.expires_at, 1_700_001_000);
         assert_eq!(session.attempt_count, 3);

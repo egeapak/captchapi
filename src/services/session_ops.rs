@@ -3,7 +3,7 @@
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::models::Session;
-use crate::services::{CaptchaService, SolutionHasher, StorageService};
+use crate::services::{CaptchaService, ImageCipher, SolutionHasher, StorageService};
 use crate::validation::ValidatedSessionParams;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -13,12 +13,14 @@ pub struct CreatedSession {
     /// The persisted session. Its `solution_hash` field holds the keyed hash,
     /// not the answer.
     pub session: Session,
-    /// The plaintext CAPTCHA text, returned to the caller for out-of-band use
-    /// (e.g. the NAPI bindings hand it back to the embedding application).
-    /// It is never written to the database.
-    #[allow(dead_code)] // Used by the NAPI bindings layer
+    /// The plaintext CAPTCHA text. Held in memory only for callers that need it
+    /// at creation time (currently just the test suite, which cannot learn the
+    /// answer any other way); it is never persisted and never leaves the process
+    /// through the HTTP API or the NAPI bindings.
+    #[allow(dead_code)] // Used by the test suite
     pub solution: String,
-    /// The rendered JPEG image.
+    /// The rendered JPEG image, decrypted. Returned so callers can serve it
+    /// without a second decrypt; storage holds only the encrypted form.
     #[allow(dead_code)] // Used by the NAPI bindings layer
     pub image_bytes: Vec<u8>,
 }
@@ -39,11 +41,13 @@ pub enum ValidationOutcome {
     MaxAttemptsExceeded,
 }
 
-/// Create a CAPTCHA session: generate image → hash solution → persist → record metrics.
+/// Create a CAPTCHA session: generate image → hash solution → encrypt image →
+/// persist → record metrics.
 pub async fn create_session_orchestrated(
     storage: &StorageService,
     captcha: &CaptchaService,
     solution_hasher: &SolutionHasher,
+    image_cipher: &ImageCipher,
     metrics: &Arc<Metrics>,
     params: ValidatedSessionParams,
 ) -> Result<CreatedSession> {
@@ -62,12 +66,13 @@ pub async fn create_session_orchestrated(
         .captcha_generation_duration
         .record(generation_duration, &[]);
 
-    // The hash is salted with the session ID, so the ID is generated up front.
+    // Both the solution hash and the image ciphertext are bound to the session
+    // ID, so the ID is generated up front.
     let session_id = Uuid::new_v4().to_string();
     let session = Session::new(
         session_id.clone(),
         solution_hasher.hash(&session_id, &text),
-        image_bytes.clone(),
+        image_cipher.encrypt(&session_id, &image_bytes)?,
         params.expires_in,
         params.difficulty,
         params.width,
@@ -83,6 +88,26 @@ pub async fn create_session_orchestrated(
         solution: text,
         image_bytes,
     })
+}
+
+/// Fetch a session's CAPTCHA image, decrypted and ready to serve.
+///
+/// Returns the session (for expiry/cache metadata) alongside the plaintext JPEG.
+/// A decryption failure means the row was written with a different key or has
+/// been tampered with, which is an internal error rather than a missing session.
+pub async fn get_session_image_orchestrated(
+    storage: &StorageService,
+    image_cipher: &ImageCipher,
+    session_id: &str,
+) -> Result<(Session, Vec<u8>)> {
+    let session = storage
+        .get_active_session(session_id)
+        .await?
+        .ok_or(AppError::SessionNotFound)?;
+
+    let image_bytes = image_cipher.decrypt(&session.id, &session.image_encrypted)?;
+
+    Ok((session, image_bytes))
 }
 
 /// Validate a CAPTCHA session solution.
@@ -135,7 +160,7 @@ mod tests {
     use super::*;
     use crate::metrics::Metrics;
     use crate::models::Session;
-    use crate::services::{CaptchaService, SolutionHasher, StorageService};
+    use crate::services::{CaptchaService, ImageCipher, SolutionHasher, StorageService};
     use crate::validation::ValidatedSessionParams;
     use chrono::Utc;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -171,6 +196,10 @@ mod tests {
 
     fn make_hasher() -> SolutionHasher {
         SolutionHasher::new("test-solution-secret-1234")
+    }
+
+    fn make_cipher() -> ImageCipher {
+        ImageCipher::new("test-image-secret-1234")
     }
 
     /// Insert a session directly into storage so that `attempt_count` can be set
@@ -485,8 +514,15 @@ mod tests {
         let params = make_default_validated_params();
 
         let before = Utc::now().timestamp();
-        let result =
-            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params).await;
+        let result = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &make_cipher(),
+            &metrics,
+            params,
+        )
+        .await;
         let after = Utc::now().timestamp();
 
         assert!(result.is_ok(), "create_session_orchestrated should succeed");
@@ -548,10 +584,16 @@ mod tests {
         let metrics = make_metrics();
         let params = make_default_validated_params();
 
-        let created =
-            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params)
-                .await
-                .unwrap();
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &make_cipher(),
+            &metrics,
+            params,
+        )
+        .await
+        .unwrap();
         let session = created.session;
 
         // Must be retrievable from storage immediately after creation
@@ -580,10 +622,16 @@ mod tests {
         };
 
         let before = Utc::now().timestamp();
-        let created =
-            create_session_orchestrated(&storage, &captcha, &make_hasher(), &metrics, params)
-                .await
-                .unwrap();
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &make_cipher(),
+            &metrics,
+            params,
+        )
+        .await
+        .unwrap();
         let after = Utc::now().timestamp();
         let session = created.session;
 
@@ -596,5 +644,222 @@ mod tests {
             session.expires_at >= before + 600 && session.expires_at <= after + 600,
             "expires_at should reflect the custom TTL of 600 seconds"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Image encryption at rest
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_create_session_stores_image_encrypted() {
+        let storage = setup_test_storage().await;
+        let captcha = CaptchaService::new();
+        let metrics = make_metrics();
+
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &make_cipher(),
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+
+        let jpeg_signature: [u8; 3] = [0xFF, 0xD8, 0xFF];
+
+        // The caller gets a usable JPEG...
+        assert!(created.image_bytes.starts_with(&jpeg_signature));
+
+        // ...while the row holds ciphertext that is not a JPEG at all
+        let stored = storage
+            .get_session(&created.session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !stored.image_encrypted.starts_with(&jpeg_signature),
+            "Stored image must not be a raw JPEG"
+        );
+        assert_ne!(stored.image_encrypted, created.image_bytes);
+        assert!(
+            !stored
+                .image_encrypted
+                .windows(32)
+                .any(|w| w == &created.image_bytes[..32]),
+            "No plaintext image data should appear in the stored blob"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_returns_the_original_image() {
+        let storage = setup_test_storage().await;
+        let captcha = CaptchaService::new();
+        let metrics = make_metrics();
+        let cipher = make_cipher();
+
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &cipher,
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+
+        let (session, image_bytes) =
+            get_session_image_orchestrated(&storage, &cipher, &created.session.id)
+                .await
+                .unwrap();
+
+        assert_eq!(session.id, created.session.id);
+        assert_eq!(
+            image_bytes, created.image_bytes,
+            "Decrypted image must match what was generated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_fails_with_a_different_key() {
+        let storage = setup_test_storage().await;
+        let captcha = CaptchaService::new();
+        let metrics = make_metrics();
+
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &make_cipher(),
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+
+        let other_cipher = ImageCipher::new("a-completely-different-secret");
+        let result =
+            get_session_image_orchestrated(&storage, &other_cipher, &created.session.id).await;
+
+        assert!(
+            matches!(result, Err(AppError::Internal(_))),
+            "Reading an image with the wrong key must fail, got {:?}",
+            result.map(|(s, _)| s.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_fails_for_tampered_ciphertext() {
+        let storage = setup_test_storage().await;
+        let captcha = CaptchaService::new();
+        let metrics = make_metrics();
+        let cipher = make_cipher();
+
+        let created = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &cipher,
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+
+        // Re-insert the session with a single flipped bit in the stored blob
+        let mut tampered = created.session.clone();
+        let mid = tampered.image_encrypted.len() / 2;
+        tampered.image_encrypted[mid] ^= 0b0000_0001;
+        storage.delete_session(&tampered.id).await.unwrap();
+        storage.create_session(&tampered).await.unwrap();
+
+        let result = get_session_image_orchestrated(&storage, &cipher, &tampered.id).await;
+
+        assert!(
+            matches!(result, Err(AppError::Internal(_))),
+            "Tampered image data must be rejected by the authentication tag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_rejects_blob_from_another_session() {
+        let storage = setup_test_storage().await;
+        let captcha = CaptchaService::new();
+        let metrics = make_metrics();
+        let cipher = make_cipher();
+
+        let first = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &cipher,
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+        let second = create_session_orchestrated(
+            &storage,
+            &captcha,
+            &make_hasher(),
+            &cipher,
+            &metrics,
+            make_default_validated_params(),
+        )
+        .await
+        .unwrap();
+
+        // Copy the first session's ciphertext into the second session's row
+        let mut swapped = second.session.clone();
+        swapped.image_encrypted = first.session.image_encrypted.clone();
+        storage.delete_session(&swapped.id).await.unwrap();
+        storage.create_session(&swapped).await.unwrap();
+
+        let result = get_session_image_orchestrated(&storage, &cipher, &swapped.id).await;
+
+        assert!(
+            matches!(result, Err(AppError::Internal(_))),
+            "The session ID is authenticated, so blobs cannot be swapped between rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_returns_not_found_for_unknown_session() {
+        let storage = setup_test_storage().await;
+
+        let result = get_session_image_orchestrated(
+            &storage,
+            &make_cipher(),
+            "00000000-0000-0000-0000-000000000000",
+        )
+        .await;
+
+        assert!(matches!(result, Err(AppError::SessionNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_get_session_image_returns_not_found_for_expired_session() {
+        let storage = setup_test_storage().await;
+        let cipher = make_cipher();
+
+        let id = Uuid::new_v4().to_string();
+        let mut session = Session::new(
+            id.clone(),
+            make_hasher().hash(&id, "ANSWER"),
+            cipher.encrypt(&id, &[0xFF, 0xD8, 0xFF]).unwrap(),
+            0,
+            5,
+            220,
+            120,
+            false,
+        );
+        session.expires_at = Utc::now().timestamp() - 10;
+        storage.create_session(&session).await.unwrap();
+
+        let result = get_session_image_orchestrated(&storage, &cipher, &id).await;
+
+        assert!(matches!(result, Err(AppError::SessionNotFound)));
     }
 }

@@ -8,8 +8,9 @@ use crate::types::*;
 use captchapi::metrics::Metrics;
 use captchapi::models::SessionConfig;
 use captchapi::services::{
-    create_api_key_orchestrated, create_session_orchestrated, validate_session_orchestrated,
-    AuthService, CaptchaService, SolutionHasher, StorageService, ValidationOutcome,
+    create_api_key_orchestrated, create_session_orchestrated, get_session_image_orchestrated,
+    validate_session_orchestrated, AuthService, CaptchaService, ImageCipher, SolutionHasher,
+    StorageService, ValidationOutcome,
 };
 use captchapi::validation;
 use napi::bindgen_prelude::*;
@@ -41,6 +42,7 @@ pub struct CaptchaApi {
     captcha: CaptchaService,
     auth: AuthService,
     solution_hasher: SolutionHasher,
+    image_cipher: ImageCipher,
     config: Arc<SessionConfig>,
     metrics: Arc<Metrics>,
 }
@@ -93,6 +95,13 @@ impl CaptchaApi {
                 .as_deref()
                 .unwrap_or(&config.api_key_salt),
         );
+        // Stored images are encrypted with the same fallback rule.
+        let image_cipher = ImageCipher::new(
+            config
+                .image_encryption_secret
+                .as_deref()
+                .unwrap_or(&config.api_key_salt),
+        );
         let metrics = Arc::new(Metrics::new());
 
         let session_config = Arc::new(SessionConfig {
@@ -108,6 +117,7 @@ impl CaptchaApi {
             captcha,
             auth,
             solution_hasher,
+            image_cipher,
             config: session_config,
             metrics,
         })
@@ -147,22 +157,22 @@ impl CaptchaApi {
         )
         .map_err(napi::Error::from_reason)?;
 
-        // Use orchestration function for generate + hash + store + metrics
+        // Use orchestration function for generate + hash + encrypt + store + metrics
         let created = create_session_orchestrated(
             &self.storage,
             &self.captcha,
             &self.solution_hasher,
+            &self.image_cipher,
             &self.metrics,
             params,
         )
         .await
         .into_napi()?;
 
+        // `created.solution` is deliberately dropped here: the answer to a stored
+        // session is never handed out. Callers verify through `validate()`.
         Ok(SessionResult {
             session_id: created.session.id,
-            // The plaintext text comes from the generator, not from storage,
-            // which only holds its hash.
-            text: created.solution,
             created_at: created.session.created_at * 1000, // Convert to milliseconds
             expires_at: created.session.expires_at * 1000,
             image: Buffer::from(created.image_bytes),
@@ -220,14 +230,12 @@ impl CaptchaApi {
     /// @returns The JPEG image as a Buffer
     #[napi]
     pub async fn get_image(&self, session_id: String) -> Result<Buffer> {
-        let session = self
-            .storage
-            .get_active_session(&session_id)
-            .await
-            .into_napi()?
-            .ok_or_else(|| napi::Error::from_reason("Session not found or expired"))?;
+        let (_session, image_bytes) =
+            get_session_image_orchestrated(&self.storage, &self.image_cipher, &session_id)
+                .await
+                .into_napi()?;
 
-        Ok(Buffer::from(session.image_bytes))
+        Ok(Buffer::from(image_bytes))
     }
 
     /// Get session information (without the image)

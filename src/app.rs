@@ -8,7 +8,7 @@ use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
 use crate::services::{
-    AuthService, CaptchaService, RateLimiterConfig, SolutionHasher, StorageService,
+    AuthService, CaptchaService, ImageCipher, RateLimiterConfig, SolutionHasher, StorageService,
 };
 use axum::{middleware as axum_middleware, routing::get, Router};
 use governor::DefaultKeyedRateLimiter;
@@ -37,6 +37,7 @@ pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
     let solution_hasher = Arc::new(SolutionHasher::new(&config.solution_hash_secret));
+    let image_cipher = Arc::new(ImageCipher::new(&config.image_encryption_secret));
 
     // Configure rate limiter
     let rate_limiter_config = if config.rate_limit_reverse_proxy {
@@ -67,6 +68,7 @@ pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -
         storage: storage.clone(),
         captcha,
         solution_hasher,
+        image_cipher,
         config: config.clone(),
         metrics: metrics.clone(),
     };
@@ -198,6 +200,7 @@ mod tests {
             database_max_connections: 5,
             api_key_salt: "test-salt-minimum-16chars".to_string(),
             solution_hash_secret: "test-solution-secret-1234".to_string(),
+            image_encryption_secret: "test-image-secret-1234".to_string(),
             master_api_key: "test-master-key-minimum-16chars".to_string(),
             default_session_ttl_seconds: 300,
             max_session_ttl_seconds: 3600,

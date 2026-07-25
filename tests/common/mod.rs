@@ -9,7 +9,8 @@ use captchapi::{
         sessions::SessionsState, sessions_routes,
     },
     services::{
-        create_session_orchestrated, AuthService, CaptchaService, SolutionHasher, StorageService,
+        create_session_orchestrated, AuthService, CaptchaService, ImageCipher, SolutionHasher,
+        StorageService,
     },
     validation::ValidatedSessionParams,
 };
@@ -21,6 +22,7 @@ pub struct TestApp {
     pub storage: StorageService,
     pub auth_service: Arc<AuthService>,
     pub solution_hasher: Arc<SolutionHasher>,
+    pub image_cipher: Arc<ImageCipher>,
     #[allow(dead_code)] // Used in test files, but clippy doesn't see cross-module usage
     pub api_key: String,
     pub master_key: String,
@@ -52,6 +54,7 @@ impl TestApp {
         let storage = StorageService::new(pool);
         let auth_service = Arc::new(AuthService::new("test-salt-minimum-16chars".to_string()));
         let solution_hasher = Arc::new(SolutionHasher::new("test-solution-secret-1234"));
+        let image_cipher = Arc::new(ImageCipher::new("test-image-secret-1234"));
 
         // Create a test API key
         let api_key = "test-api-key-123";
@@ -66,6 +69,7 @@ impl TestApp {
             storage,
             auth_service,
             solution_hasher,
+            image_cipher,
             api_key: api_key.to_string(),
             master_key: "test-master-key-minimum-16chars".to_string(),
         }
@@ -81,6 +85,7 @@ impl TestApp {
             database_max_connections: 5,
             api_key_salt: "test-salt-minimum-16chars".to_string(),
             solution_hash_secret: "test-solution-secret-1234".to_string(),
+            image_encryption_secret: "test-image-secret-1234".to_string(),
             master_api_key: self.master_key.clone(),
             default_session_ttl_seconds: 300,
             max_session_ttl_seconds: 3600,
@@ -105,6 +110,7 @@ impl TestApp {
             storage: self.storage.clone(),
             captcha,
             solution_hasher: self.solution_hasher.clone(),
+            image_cipher: self.image_cipher.clone(),
             config: config.clone(),
             metrics: metrics.clone(),
         };
@@ -161,6 +167,7 @@ impl TestApp {
             &self.storage,
             &captcha,
             &self.solution_hasher,
+            &self.image_cipher,
             &metrics,
             params,
         )

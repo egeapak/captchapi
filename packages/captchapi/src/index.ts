@@ -284,6 +284,19 @@ export class CaptchaApiBuilder {
   }
 
   /**
+   * Set the secret used to encrypt stored CAPTCHA images
+   *
+   * Defaults to the API key salt. Images are encrypted at rest with
+   * ChaCha20-Poly1305 and decrypted on read; this key never reaches the database.
+   *
+   * @param secret Secret key for encrypting CAPTCHA images
+   */
+  imageEncryptionSecret(secret: string): this {
+    this.config.imageEncryptionSecret = secret;
+    return this;
+  }
+
+  /**
    * Set the default session TTL
    * @param seconds TTL in seconds
    */

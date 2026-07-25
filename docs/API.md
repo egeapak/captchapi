@@ -236,6 +236,7 @@ curl -X POST http://localhost:3000/api/v1/sessions/550e8400-e29b-41d4-a716-44665
 **Behavior:**
 - Solutions are compared **case-sensitively** (exact match required)
 - The answer is stored as a keyed hash, never in plaintext; comparison is constant-time
+- The CAPTCHA image is stored encrypted and decrypted only when served
 - Session is **automatically deleted** after successful validation
 - Failed attempts are tracked
 - Session is **deleted after 3 failed attempts**
