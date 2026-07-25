@@ -102,7 +102,7 @@ Validates HTTP API interface.
 **Fails if**:
 - Server won't start
 - Server doesn't become ready within 60s
-- Any of the 38 API tests fail
+- Any of the 95 API tests fail
 
 ---
 

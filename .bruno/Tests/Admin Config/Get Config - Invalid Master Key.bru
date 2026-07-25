@@ -1,0 +1,23 @@
+meta {
+  name: Get Config - Invalid Master Key
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Authorization: Bearer invalid-key
+}
+
+tests {
+  test("should return 401", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return unauthorized error", function() {
+    expect(res.body.error).to.equal("unauthorized");
+  });
+}

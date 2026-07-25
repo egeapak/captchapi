@@ -1,0 +1,48 @@
+meta {
+  name: Patch Config
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "captcha_compression": 75
+  }
+}
+
+tests {
+  test("should return 200 OK", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should apply the new value", function() {
+    expect(res.body.config.captcha_compression.value).to.equal("75");
+  });
+
+  test("should record the override", function() {
+    expect(res.body.overrides).to.include("captcha_compression");
+  });
+}
+
+docs {
+  # Patch Configuration
+
+  Changes reloadable configuration fields at runtime. Only fields reported as
+  `reloadable` by `GET /api/v1/admin/config` are accepted; boot-only fields such
+  as the port or the database URL return `400 config_not_reloadable`.
+
+  Values live in memory only. They are never written back to a config file, and
+  the next reload (SIGHUP or `POST /config/reload`) discards them.
+
+  ## Authentication
+  Requires the master API key: `Authorization: Bearer <master_key>`.
+}

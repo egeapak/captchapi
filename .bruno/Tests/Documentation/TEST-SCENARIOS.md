@@ -42,7 +42,6 @@ This document describes all test scenarios covered in the Bruno collection.
 | Create Session - Unauthorized | 401 | Missing API key | Status, error message |
 | Create Session - Invalid Parameters | 400 | difficulty=99 (out of range) | Status, error mentions difficulty |
 | Create Session | 201 | Valid creation | Status, session_id, expires_at |
-| Get Image (JSON) | 200 | Retrieve base64 image | Status, image format, expires_at |
 | Get Image (Binary) | 200 | Retrieve raw JPEG | Status, content-type, cache headers, ETag |
 | Get Image - Not Found | 404 | Non-existent session | Status, error message |
 | Validate Session - Wrong Answer | 200 | Incorrect solution (attempt 1) | Status, valid=false, session_id |
@@ -163,14 +162,37 @@ bru run "API Keys/Create API Key for Testing.bru" \
 
 ## Expected Results
 
-All 18 requests should complete with their expected status codes, and all 38 tests should pass:
+All 41 requests should complete with their expected status codes, and all 95 tests should pass:
 
 ```
 📊 Execution Summary
 ┌───────────────┬────────────────┐
 │ Status        │     ✓ PASS     │
-│ Requests      │ 18 (18 Passed) │
-│ Tests         │     38/38      │
+│ Requests      │ 41 (41 Passed) │
+│ Tests         │     95/95      │
 │ Duration (ms) │      ~150      │
 └───────────────┴────────────────┘
 ```
+
+## Admin Configuration (9 requests, 21 tests)
+
+| Scenario | Expected | Purpose | Assertions |
+|----------|----------|---------|------------|
+| Get Config - Unauthorized | 401 | No auth header | error == "unauthorized" |
+| Get Config - Invalid Master Key | 401 | Wrong master key | error == "unauthorized" |
+| Get Config - Success | 200 | Effective configuration | reloadable flags, secrets redacted, master key absent |
+| Patch Config - Unauthorized | 401 | No auth header | error == "unauthorized" |
+| Patch Config - Not Reloadable | 400 | Boot-only field | error == "config_not_reloadable" |
+| Patch Config - Invalid Value | 400 | Unparseable value | error == "invalid_config" |
+| Patch Config - Success | 200 | Apply a runtime override | value applied, listed in `overrides` |
+| Reload Config - Unauthorized | 401 | No auth header | error == "unauthorized" |
+| Reload Config - Success | 200 | Re-read every source | overrides cleared, previous patch discarded |
+
+**Ordering matters.** This block runs **last** in `test-bruno-full.sh`, because `Patch Config`
+mutates server-wide settings and the session tests above depend on `MAX_VALIDATION_ATTEMPTS`
+being unchanged. The block ends with `Reload Config - Success`, which clears every runtime
+override — so the suite leaves the server as it found it.
+
+`ADMIN_CONFIG_WRITE=false` (which makes `PATCH` return 403) is covered by the Rust integration
+tests in `tests/admin_config_test.rs` rather than here, since it needs a differently-configured
+server instance.

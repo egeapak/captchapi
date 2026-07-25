@@ -37,7 +37,7 @@ import type {
 // =============================================================================
 
 /** Current wrapper package version */
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 
 /** Minimum compatible @captchapi/core version */
 export const MIN_CORE_VERSION = "1.0.0";
@@ -267,6 +267,32 @@ export class CaptchaApiBuilder {
    */
   salt(salt: string): this {
     this.config.apiKeySalt = salt;
+    return this;
+  }
+
+  /**
+   * Set the secret used to hash CAPTCHA solutions before storing them
+   *
+   * Defaults to the API key salt. Solutions are never stored in plaintext, and
+   * this key never reaches the database — keep it out of backups of the DB file.
+   *
+   * @param secret Secret key for hashing CAPTCHA solutions
+   */
+  solutionHashSecret(secret: string): this {
+    this.config.solutionHashSecret = secret;
+    return this;
+  }
+
+  /**
+   * Set the secret used to encrypt stored CAPTCHA images
+   *
+   * Defaults to the API key salt. Images are encrypted at rest with
+   * ChaCha20-Poly1305 and decrypted on read; this key never reaches the database.
+   *
+   * @param secret Secret key for encrypting CAPTCHA images
+   */
+  imageEncryptionSecret(secret: string): this {
+    this.config.imageEncryptionSecret = secret;
     return this;
   }
 

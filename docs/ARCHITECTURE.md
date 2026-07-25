@@ -18,10 +18,15 @@
 
 ```
 src/
-├── main.rs                  # Entry point (thin wrapper)
+├── main.rs                  # Entry point (thin wrapper over the library crate)
 ├── lib.rs                   # Library crate exports
 ├── app.rs                   # App builder (router, services, middleware)
-├── config.rs                # Environment configuration
+├── cli.rs                   # Command-line surface, `config show`/`check`, reload client
+├── config/                  # Layered, reloadable configuration
+│   ├── mod.rs               # Config struct, resolution, redacting Debug
+│   ├── params.rs            # PARAMS table: one row per setting, drives everything
+│   ├── sources.rs           # CLI / env / env-file / TOML layers, provenance
+│   └── handle.rs            # ConfigHandle: watch channel, reload, runtime overrides
 ├── error.rs                 # Error types and handling
 ├── metrics.rs               # Prometheus-style metrics
 ├── telemetry.rs             # OpenTelemetry tracing setup
@@ -29,7 +34,7 @@ src/
 ├── models/                  # Data structures
 │   ├── mod.rs
 │   ├── session.rs           # Session models
-│   ├── session_config.rs    # Session configuration
+│   ├── session_config.rs    # The reloadable subset, snapshotted per request
 │   └── api_key.rs           # API key models
 ├── services/                # Business logic layer
 │   ├── mod.rs
@@ -89,7 +94,52 @@ HTTP Request
 - **`app.rs` builder pattern**: All router assembly, service instantiation, and middleware wiring lives in `build_app()`, making it testable and reusable across main and integration tests.
 - **Centralized validation**: All input validation lives in `validation.rs`, shared between the HTTP server and NAPI bindings.
 - **In-process SQLite**: Zero network overhead, no external database dependency. The database file is created automatically on startup.
-- **Background cleanup**: A Tokio task runs periodically to delete expired sessions without blocking request handling.
+- **Background cleanup**: A Tokio task runs periodically to delete expired sessions without blocking request handling. It watches the config handle, so a reload changes its interval without a restart.
+
+## Configuration
+
+Settings resolve through four layers, highest precedence first: the command line, the process
+environment, an env file, then a TOML config file, falling back to built-in defaults.
+
+The key design decision is that **the command line is not a second configuration system**.
+Every layer resolves the same canonical keys — the environment variable names — so the CLI
+plugs in as just another `EnvProvider`, the trait that already existed for testing. All parsing,
+validation and error messages continue to come from `Config::from_env_provider`, in one place.
+
+`PARAMS` (`config/params.rs`) is the single source of truth: one row per setting, carrying its
+environment key, flag, TOML path, type, default, help text and whether it is reloadable. Help
+output, TOML validation, provenance reporting and the reload partition are all derived from it,
+so adding a setting is one row plus one struct field.
+
+### Reload
+
+```
+SIGHUP ─┐
+CLI ────┼─→ ConfigHandle::reload() ─→ re-resolve ─→ watch::Sender ─┬─→ request handlers
+API ────┘                                                          └─→ cleanup task
+```
+
+The running `Config` lives behind a `tokio::sync::watch` channel. Readers take a cheap snapshot;
+the cleanup task gets change notification, which it needs to adopt a new interval. Resolution
+and publication happen under a single lock, so a SIGHUP and an admin request cannot interleave
+into a lost update.
+
+Only values read per request or per tick can change: session TTLs, the attempt limit, JPEG
+compression and the cleanup interval — exactly the fields of `SessionConfig`. Everything else is
+captured at startup into the listener, the connection pool, the middleware or the rate limiter,
+and a reload reports drift on those rather than pretending to apply it. A reload that fails to
+resolve is logged and discarded; the running server is never taken down by a bad config edit.
+
+Handlers take **one** snapshot per request, so a reload landing mid-request cannot make a traced
+value disagree with the value used for validation.
+
+### Secret handling
+
+Secrets are accepted as file paths on the command line, never as flag values, keeping them out
+of `ps`, shell history and `docker inspect`. They have no TOML key at all, so a config file is
+safe to commit. `Config` and `Cli` carry hand-written `Debug` impls that redact them, and
+`config show` and the admin API redact them too — the admin endpoint exists to explain the
+server's behaviour, not to read credentials back out of it.
 
 ## Database Schema
 
@@ -98,8 +148,8 @@ HTTP Request
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
-    solution TEXT NOT NULL,           -- Correct answer
-    image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
+    solution_hash TEXT NOT NULL,      -- HMAC-SHA256 of the answer (see Security Model)
+    image_encrypted BLOB NOT NULL,    -- ChaCha20-Poly1305 ciphertext of the JPEG
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
     attempt_count INTEGER DEFAULT 0,  -- Failed attempts
@@ -135,8 +185,25 @@ CREATE TABLE api_keys (
 - Sessions auto-expire based on configurable TTL
 - Maximum 3 validation attempts per session (configurable)
 - Sessions are deleted after successful validation
-- Case-sensitive solution matching
+- Case-sensitive solution matching, compared in constant time
 - CAPTCHA solution is never returned in API responses
+- Solutions are stored as `HMAC-SHA256(server_secret, session_id || solution)`, never in plaintext.
+  The key is derived from `SOLUTION_HASH_SECRET` (falling back to `API_KEY_SALT`) and never lives
+  in the database, so a leaked database file does not reveal answers — a bare digest would not
+  help, since a 5-character alphanumeric keyspace is brute-forced in milliseconds. The session ID
+  acts as a per-session salt so identical answers do not produce identical hashes.
+- Images are encrypted at rest with ChaCha20-Poly1305, decrypted only when served. The rendered
+  challenge is the answer in visual form, so leaving it in plaintext would have undone the solution
+  hashing. Each session encrypts under its own key, derived as
+  `HMAC-SHA256(master_key, info || session_id)` where the master key comes from
+  `IMAGE_ENCRYPTION_SECRET` (falling back to `API_KEY_SALT`). Per-session keys bind a ciphertext to
+  its row through the key itself — another row's blob cannot be decrypted at all — and mean each key
+  ever encrypts exactly one message, so nonce reuse cannot occur. The session ID is additionally
+  authenticated as associated data, redundantly, so the binding survives if derivation is ever
+  simplified. Tampered bytes fail the Poly1305 tag rather than being served.
+  Stored layout: `[scheme version][12-byte nonce][ciphertext+tag]`.
+- Net effect: a leaked database file contains no answer and no readable image — only ciphertext,
+  timestamps, and challenge dimensions.
 
 ### Rate Limiting
 

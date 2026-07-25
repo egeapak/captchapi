@@ -1,9 +1,80 @@
 //! Tracing setup and, behind the `otel` feature, OpenTelemetry OTLP export.
 //!
-//! `OTEL_ENABLED` gates export at runtime. The `otel` cargo feature gates it
-//! at compile time: without it the OTLP exporter and its HTTP client are not
-//! built at all. A binary built without the feature warns if `OTEL_ENABLED`
-//! asks for telemetry it cannot provide, rather than ignoring it silently.
+//! `config.otel_enabled` gates export at runtime. The `otel` cargo feature
+//! gates it at compile time: without it the OTLP exporter and its HTTP client
+//! are not built at all. A binary built without the feature warns if the
+//! configuration asks for telemetry it cannot provide, rather than ignoring
+//! the request silently.
+
+use crate::config::Config;
+use tracing::Level;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+/// Build the log filter from `RUST_LOG`-style directives.
+///
+/// Uses `Targets` rather than `EnvFilter`: `EnvFilter` pulls in the `regex`
+/// engine (~177 KiB of the binary) to support per-span field matching, which
+/// this service never uses. `Targets` understands the same directive forms
+/// that matter here — a bare level (`debug`), a `target=level` pair, and
+/// comma-separated lists of them — with no regex.
+///
+/// The directives come from `config.log_level`, so `--log-level` and the TOML
+/// file are honoured, not just `RUST_LOG`.
+pub fn log_filter(directives: &str) -> Targets {
+    let default = || {
+        Targets::new()
+            .with_target("captchapi", Level::DEBUG)
+            .with_target("tower_http", Level::DEBUG)
+    };
+
+    directives.parse().unwrap_or_else(|e| {
+        // The subscriber is not up yet, so this cannot go through tracing.
+        eprintln!("warning: ignoring unparseable log filter ({directives:?}): {e}");
+        default()
+    })
+}
+
+/// Install the fmt subscriber with no OpenTelemetry layer.
+fn init_plain_tracing(config: &Config) {
+    tracing_subscriber::registry()
+        .with(log_filter(&config.log_level))
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
+/// Install the tracing subscriber, adding the OTLP export layer when the
+/// `otel` feature is compiled in and the configuration asks for it.
+#[cfg(feature = "otel")]
+pub fn init_tracing(config: &Config, otel_enabled: bool) -> anyhow::Result<()> {
+    if otel_enabled {
+        let tracer = init_telemetry(config)?;
+        let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
+        tracing_subscriber::registry()
+            .with(log_filter(&config.log_level))
+            .with(tracing_subscriber::fmt::layer())
+            .with(telemetry_layer)
+            .init();
+
+        tracing::info!("OpenTelemetry enabled");
+    } else {
+        init_plain_tracing(config);
+        tracing::info!("OpenTelemetry disabled");
+    }
+    Ok(())
+}
+
+/// Without the `otel` feature there is no exporter to install.
+///
+/// `is_telemetry_enabled` has already warned on stderr if the configuration
+/// asked for telemetry, so this only records the build configuration.
+#[cfg(not(feature = "otel"))]
+pub fn init_tracing(config: &Config, _otel_enabled: bool) -> anyhow::Result<()> {
+    init_plain_tracing(config);
+    tracing::info!("OpenTelemetry not compiled in (rebuild with --features otel)");
+    Ok(())
+}
 
 #[cfg(feature = "otel")]
 use opentelemetry::trace::TracerProvider as _;
@@ -47,15 +118,14 @@ pub struct TelemetryConfig {
 
 #[cfg(feature = "otel")]
 impl TelemetryConfig {
-    /// Build a TelemetryConfig from environment variables, using defaults where absent
-    pub fn from_env() -> Self {
-        let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-            .unwrap_or_else(|_| "http://localhost:4318".to_string());
-        let service_name =
-            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "captchapi".to_string());
+    /// Build a `TelemetryConfig` from the resolved application configuration.
+    ///
+    /// This is the path used at startup, so telemetry honours `--otel-endpoint` and the TOML
+    /// config file rather than only reading the process environment.
+    pub fn from_config(config: &Config) -> Self {
         Self {
-            otlp_endpoint,
-            service_name,
+            otlp_endpoint: config.otel_endpoint.clone(),
+            service_name: config.otel_service_name.clone(),
         }
     }
 }
@@ -102,36 +172,13 @@ where
         .build()
 }
 
-/// Does `OTEL_ENABLED` ask for telemetry?
-///
-/// Returns true if OTEL_ENABLED is set to "true", "1", "yes", or "on"
-/// (case-insensitive). This reflects the environment only; whether the
-/// exporter was compiled in is a separate question — see
-/// [`is_telemetry_enabled`].
-pub fn otel_requested() -> bool {
-    std::env::var("OTEL_ENABLED")
-        .unwrap_or_else(|_| "false".to_string())
-        .to_lowercase()
-        .parse::<bool>()
-        .unwrap_or_else(|_| {
-            // If parse fails, check for other common truthy values
-            matches!(
-                std::env::var("OTEL_ENABLED")
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .as_str(),
-                "yes" | "on" | "1"
-            )
-        })
-}
-
 /// Should telemetry actually be initialised?
 ///
-/// Requires both that `OTEL_ENABLED` asks for it and that the exporter was
-/// compiled in via the `otel` feature.
+/// `config.otel_enabled` says whether the operator asked for it; this adds the
+/// compile-time question of whether the exporter was built in at all.
 #[cfg(feature = "otel")]
-pub fn is_telemetry_enabled() -> bool {
-    otel_requested()
+pub fn is_telemetry_enabled(config: &Config) -> bool {
+    config.otel_enabled
 }
 
 /// Always false: this binary was built without the `otel` feature.
@@ -139,13 +186,13 @@ pub fn is_telemetry_enabled() -> bool {
 /// Warns rather than ignoring the request silently, so a deployment that
 /// expects traces finds out at startup instead of wondering where they went.
 #[cfg(not(feature = "otel"))]
-pub fn is_telemetry_enabled() -> bool {
-    if otel_requested() {
+pub fn is_telemetry_enabled(config: &Config) -> bool {
+    if config.otel_enabled {
         // Called before the subscriber is installed, so this cannot use tracing.
         eprintln!(
-            "warning: OTEL_ENABLED is set, but this binary was built without the \
-             `otel` feature; no traces will be exported. Rebuild with \
-             `cargo build --features otel` to enable OpenTelemetry."
+            "warning: OpenTelemetry is enabled in the configuration, but this \
+             binary was built without the `otel` feature; no traces will be \
+             exported. Rebuild with `cargo build --features otel` to enable it."
         );
     }
     false
@@ -156,16 +203,13 @@ pub fn is_telemetry_enabled() -> bool {
 /// This sets up both tracing and metrics exporters that send data to an OTLP-compatible backend
 /// (e.g., Jaeger, Grafana Tempo, OpenTelemetry Collector)
 ///
-/// Configuration via environment variables:
-/// - OTEL_ENABLED: Enable OpenTelemetry (default: false). Set to "true", "1", "yes", or "on"
-/// - OTEL_EXPORTER_OTLP_ENDPOINT: The OTLP endpoint (default: http://localhost:4318)
-/// - OTEL_SERVICE_NAME: Service name for traces (default: captchapi)
-/// - RUST_LOG: Log level filter
+/// Endpoint and service name come from the resolved [`Config`](crate::config::Config), so they
+/// honour the command line and the config file, not just the process environment.
 ///
 /// Returns a Tracer that can be used with tracing-opentelemetry
 #[cfg(feature = "otel")]
-pub fn init_telemetry() -> anyhow::Result<Tracer> {
-    let config = TelemetryConfig::from_env();
+pub fn init_telemetry(config: &Config) -> anyhow::Result<Tracer> {
+    let config = TelemetryConfig::from_config(config);
 
     tracing::info!(
         "Initializing OpenTelemetry with endpoint: {}",
@@ -216,8 +260,8 @@ pub fn shutdown_telemetry() {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
-    use std::sync::Mutex;
 
     #[cfg(feature = "otel")]
     use opentelemetry::trace::Tracer;
@@ -263,179 +307,31 @@ mod tests {
         }
     }
 
-    // ── environment isolation ─────────────────────────────────────────────────
-
-    /// Serialises tests that mutate environment variables, and restores what
-    /// they found on the way out.
-    ///
-    /// Environment variables are process-global, so these tests race whenever
-    /// the harness runs them as threads in one process — which is what plain
-    /// `cargo test` does. `cargo nextest` gives every test its own process and
-    /// hides the problem, so CI stays green while `cargo test` fails
-    /// intermittently.
-    ///
-    /// Restoring on drop matters as much as the lock: without it, a test that
-    /// panics between setting and clearing a variable leaks it into whichever
-    /// test acquires the lock next.
-    struct EnvGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-        saved: Vec<(&'static str, Option<String>)>,
-    }
-
-    impl EnvGuard {
-        /// Take the lock, snapshot `keys`, and clear them for a known start state.
-        fn new(keys: &[&'static str]) -> Self {
-            static LOCK: Mutex<()> = Mutex::new(());
-
-            // A panicking test poisons the mutex. Recover from it so one
-            // failure stays local instead of cascading into every other test.
-            let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-
-            let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
-            for key in keys {
-                std::env::remove_var(key);
-            }
-            Self { _lock: lock, saved }
-        }
-
-        fn set(&self, key: &str, value: &str) {
-            std::env::set_var(key, value);
-        }
-
-        fn remove(&self, key: &str) {
-            std::env::remove_var(key);
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, value) in &self.saved {
-                match value {
-                    Some(value) => std::env::set_var(key, value),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_env_guard_restores_previous_value() {
-        std::env::set_var("CAPTCHAPI_ENV_GUARD_PROBE", "original");
-        {
-            let env = EnvGuard::new(&["CAPTCHAPI_ENV_GUARD_PROBE"]);
-            assert!(std::env::var("CAPTCHAPI_ENV_GUARD_PROBE").is_err());
-            env.set("CAPTCHAPI_ENV_GUARD_PROBE", "changed");
-        }
-        assert_eq!(
-            std::env::var("CAPTCHAPI_ENV_GUARD_PROBE").as_deref(),
-            Ok("original")
-        );
-        std::env::remove_var("CAPTCHAPI_ENV_GUARD_PROBE");
-    }
-
-    #[test]
-    fn test_env_guard_clears_variable_that_was_unset() {
-        std::env::remove_var("CAPTCHAPI_ENV_GUARD_UNSET");
-        {
-            let env = EnvGuard::new(&["CAPTCHAPI_ENV_GUARD_UNSET"]);
-            env.set("CAPTCHAPI_ENV_GUARD_UNSET", "temporary");
-        }
-        assert!(std::env::var("CAPTCHAPI_ENV_GUARD_UNSET").is_err());
-    }
-
-    // ── otel_requested ──────────────────────────────────────────────────
-
-    #[test]
-    fn test_otel_requested_with_true() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "true");
-        assert!(otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_one() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "1");
-        assert!(otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_yes() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "yes");
-        assert!(otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_on() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "on");
-        assert!(otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_case_insensitive() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-
-        env.set("OTEL_ENABLED", "TRUE");
-        assert!(otel_requested());
-
-        env.set("OTEL_ENABLED", "Yes");
-        assert!(otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_false() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "false");
-        assert!(!otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_zero() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "0");
-        assert!(!otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_with_invalid_value() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.set("OTEL_ENABLED", "invalid");
-        assert!(!otel_requested());
-    }
-
-    #[test]
-    fn test_otel_requested_default_false() {
-        let env = EnvGuard::new(&["OTEL_ENABLED"]);
-        env.remove("OTEL_ENABLED");
-        assert!(!otel_requested());
-    }
-
-    // ── TelemetryConfig::from_env ─────────────────────────────────────────────
+    // ── TelemetryConfig::from_config ──────────────────────────────────────────
 
     #[cfg(feature = "otel")]
     #[test]
-    fn test_telemetry_config_from_env_defaults() {
-        let _env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
+    fn test_from_config_uses_the_resolved_configuration() {
+        // Telemetry settings come from the layered config, so `--otel-endpoint` and the TOML
+        // file work — not just the process environment, which the removed `from_env` read.
+        let config = crate::config::Config {
+            otel_endpoint: "http://collector:4318".to_string(),
+            otel_service_name: "my-service".to_string(),
+            ..crate::config::Config::for_test()
+        };
 
-        let config = TelemetryConfig::from_env();
+        let telemetry = TelemetryConfig::from_config(&config);
 
-        assert_eq!(config.otlp_endpoint, "http://localhost:4318");
-        assert_eq!(config.service_name, "captchapi");
+        assert_eq!(telemetry.otlp_endpoint, "http://collector:4318");
+        assert_eq!(telemetry.service_name, "my-service");
     }
 
     #[cfg(feature = "otel")]
     #[test]
-    fn test_telemetry_config_from_env_custom() {
-        let env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
-        env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318");
-        env.set("OTEL_SERVICE_NAME", "my-service");
-
-        let config = TelemetryConfig::from_env();
-
-        assert_eq!(config.otlp_endpoint, "http://otel-collector:4318");
-        assert_eq!(config.service_name, "my-service");
+    fn test_from_config_carries_the_defaults() {
+        let telemetry = TelemetryConfig::from_config(&crate::config::Config::for_test());
+        assert_eq!(telemetry.otlp_endpoint, "http://localhost:4318");
+        assert_eq!(telemetry.service_name, "captchapi");
     }
 
     // ── build_tracer_provider ─────────────────────────────────────────────────

@@ -44,6 +44,13 @@ CAPTCHA images are rendered in-process with configurable difficulty and dark mod
   - Configurable CAPTCHA difficulty (1-10), dimensions, and compression
   - Dark mode support
   - Complete API documentation
+  - Command-line interface with `config show` / `config check` for deployment pipelines
+
+- **Operable**
+  - Layered configuration: command line, environment, env file, TOML file
+  - Runtime reload of session TTLs, attempt limits and image quality — via SIGHUP,
+    `captchapi reload`, or the admin API — with no restart and no dropped sessions
+  - Secrets read from files, never from flags, and never echoed back by the API
 
 - **Production Ready**
   - Multi-platform Docker images (amd64 + arm64)
@@ -57,7 +64,7 @@ CAPTCHA images are rendered in-process with configurable difficulty and dark mod
 
 ### Prerequisites
 
-- **Rust 1.85+** and Cargo
+- **Rust 1.94+** and Cargo (see `rust-version` in `Cargo.toml`)
 - **SQLite** support (usually built-in)
 
 ### Setup
@@ -97,16 +104,16 @@ docker pull ghcr.io/egeapak/captchapi:latest
 ```bash
 # Transient (no volume)
 docker run -p 3000:3000 \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   ghcr.io/egeapak/captchapi:latest
 
 # Production (with volume)
 docker volume create captchapi-data
 docker run -p 3000:3000 \
   -v captchapi-data:/data \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   ghcr.io/egeapak/captchapi:latest
 ```
 
@@ -212,53 +219,136 @@ curl -X POST http://localhost:3000/api/v1/admin/cleanup \
 
 ## Configuration
 
-All configuration is via environment variables. Create a `.env` file based on `.env.example`.
+Settings can come from the command line, the environment, an env file, or a TOML config file.
+Later sources lose to earlier ones:
+
+```
+command line  >  environment  >  env file (.env)  >  config file  >  built-in default
+```
+
+An environment-only deployment keeps working exactly as before — every variable below is
+unchanged. Create a `.env` file based on `.env.example`, or a config file based on
+`captchapi.toml.example`.
+
+To see what the server will actually do, and where each value came from:
+
+```bash
+captchapi config show
+# server_port             = 8080                  [cli]
+# database_url            = sqlite:./data/x.db    [env]
+# captcha_compression     = 75                    [file: captchapi.toml]
+# max_validation_attempts = 3                     [default]
+# api_key_salt            = <redacted, 32 bytes>  [env]
+```
+
+### Command line
+
+```
+captchapi [OPTIONS]                    Start the server
+captchapi config show [OPTIONS]        Print the effective configuration
+captchapi config check [OPTIONS]       Validate the configuration and exit
+captchapi reload [--pid N]             Tell a running server to reload
+captchapi --help                       Full flag list
+```
+
+Every setting has a flag named after its variable — `--port`, `--captcha-compression`,
+`--rate-limit-rps` — plus `-c/--config`, `--env-file` and `--no-env-file`. Exit codes are `0`
+for success, `1` for a runtime error and `2` for a usage or configuration error, so
+`config check` works in a deployment pipeline.
+
+### Secrets
+
+The two secrets are never accepted as flag *values* — that would put them in `ps`, shell
+history and `docker inspect`. Pass a file instead, which is also what Docker and Kubernetes
+secrets provide:
+
+```bash
+captchapi --api-key-salt-file   /run/secrets/salt \
+          --master-api-key-file /run/secrets/master_key
+```
+
+They also cannot be set in the TOML config file at all, so a config file is safe to commit.
+
+### Reloading
+
+Session TTLs, the attempt limit, the JPEG quality and the cleanup interval can be changed
+without a restart:
+
+```bash
+$EDITOR captchapi.toml
+captchapi reload                     # or: kill -HUP $(cat data/captchapi.pid)
+docker kill -s HUP <container>       # same thing inside the image
+```
+
+A value set through `PATCH /api/v1/admin/config` outranks every other layer, including the
+command line, until the next reload clears it.
+
+Everything else — the bind address, the database, the API key salt, the master key and the rate
+limits — is captured at startup by the listener, the connection pool, the middleware and the
+rate limiter. A reload reports any of those that changed and tells you a restart is needed,
+rather than silently ignoring them. A reload that fails to resolve is logged and discarded; the
+running server keeps its current configuration.
+
+The same operations are available over HTTP — see [Admin endpoints](docs/API.md#admin-endpoints).
 
 ### Server
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `SERVER_HOST` | Bind address | `0.0.0.0` | No |
-| `SERVER_PORT` | Listen port | `3000` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `SERVER_HOST` | `-H`, `--host` | Bind address | `0.0.0.0` | No |
+| `SERVER_PORT` | `-p`, `--port` | Listen port | `3000` | No |
+| `PID_FILE` | `--pid-file` | Where to write the process ID for `captchapi reload` | `./data/captchapi.pid` | No |
 
 ### Database
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DATABASE_URL` | SQLite connection string | `sqlite:./data/captchapi.db` | No |
-| `DATABASE_MAX_CONNECTIONS` | Connection pool size | `5` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `DATABASE_URL` | `-d`, `--database-url` | SQLite connection string | `sqlite:./data/captchapi.db` | No |
+| `DATABASE_MAX_CONNECTIONS` | `--database-max-connections` | Connection pool size | `5` | No |
 
 ### Security
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `API_KEY_SALT` | Salt for API key hashing (min 16 chars) | - | **Yes** |
-| `MASTER_API_KEY` | Admin API key (min 16 chars) | - | **Yes** |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `API_KEY_SALT` | `--api-key-salt-file` | Salt for API key hashing (min 16 chars) | - | **Yes** |
+| `MASTER_API_KEY` | `--master-api-key-file` | Admin API key (min 16 chars) | - | **Yes** |
+| `SOLUTION_HASH_SECRET` | `--solution-hash-secret-file` | Key for hashing CAPTCHA solutions (min 16 chars) | `API_KEY_SALT` | No |
+| `IMAGE_ENCRYPTION_SECRET` | `--image-encryption-secret-file` | Key for encrypting stored CAPTCHA images (min 16 chars) | `API_KEY_SALT` | No |
+
+The flags take a *path*, not the secret itself. None of these can be set in the TOML config
+file, and all four are redacted by `config show` and the admin API.
+
+> **Rotating `SOLUTION_HASH_SECRET` or `IMAGE_ENCRYPTION_SECRET` invalidates every stored
+> session** — existing solution hashes stop matching and stored images stop decrypting. Like
+> `API_KEY_SALT`, they are applied at startup only; a reload reports a change rather than
+> applying it.
 
 ### CAPTCHA
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DEFAULT_SESSION_TTL_SECONDS` | Default session expiration | `300` | No |
-| `MAX_SESSION_TTL_SECONDS` | Maximum allowed TTL | `3600` | No |
-| `MAX_VALIDATION_ATTEMPTS` | Failed attempts before deletion | `3` | No |
-| `CAPTCHA_COMPRESSION` | JPEG quality (1-100) | `40` | No |
+All four are reloadable — a reload applies them without a restart.
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `DEFAULT_SESSION_TTL_SECONDS` | `--default-session-ttl` | Default session expiration | `300` | No |
+| `MAX_SESSION_TTL_SECONDS` | `--max-session-ttl` | Maximum allowed TTL | `3600` | No |
+| `MAX_VALIDATION_ATTEMPTS` | `--max-validation-attempts` | Failed attempts before deletion | `3` | No |
+| `CAPTCHA_COMPRESSION` | `--captcha-compression` | JPEG quality (1-100) | `40` | No |
 
 ### Rate Limiting
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `RATE_LIMIT_REQUESTS_PER_SECOND` | Sustained request rate per IP | `2` | No |
-| `RATE_LIMIT_BURST_SIZE` | Burst capacity per IP | `10` | No |
-| `RATE_LIMIT_REVERSE_PROXY` | Read client IP from proxy headers | `false` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `RATE_LIMIT_REQUESTS_PER_SECOND` | `--rate-limit-rps` | Sustained request rate per IP | `2` | No |
+| `RATE_LIMIT_BURST_SIZE` | `--rate-limit-burst` | Burst capacity per IP | `10` | No |
+| `RATE_LIMIT_REVERSE_PROXY` | `--rate-limit-reverse-proxy` | Read client IP from proxy headers | `false` | No |
 
 > **Warning:** Only enable `RATE_LIMIT_REVERSE_PROXY` if you trust your proxy — clients can spoof headers otherwise.
 
 ### Background Tasks
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `CLEANUP_INTERVAL_SECONDS` | Expired session cleanup interval | `60` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `CLEANUP_INTERVAL_SECONDS` | `--cleanup-interval` | Expired session cleanup interval (reloadable) | `60` | No |
 
 ### OpenTelemetry (optional)
 
@@ -269,17 +359,39 @@ OTLP exporter pulls in a full HTTP client worth roughly 700 KB of binary:
 cargo build --release --features otel
 ```
 
-**The published Docker images are built with `otel` enabled**, so
-`OTEL_ENABLED` works out of the box there. A plain `cargo build` does not
-include it; such a binary warns on startup if `OTEL_ENABLED` is set, rather
-than ignoring it silently. Prometheus-style metrics are unaffected and
+**The published Docker images are built with `otel` enabled**, so the settings
+below work out of the box there. A plain `cargo build` does not include it;
+such a binary warns on startup if telemetry is enabled in the configuration,
+rather than ignoring it silently. Prometheus-style metrics are unaffected and
 always available in every build.
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing (requires the `otel` feature) | `false` | No |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint | `http://localhost:4318` | No |
-| `OTEL_SERVICE_NAME` | Service name for traces | `captchapi` | No |
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `OTEL_ENABLED` | `--otel` | Enable OpenTelemetry tracing (requires the `otel` feature) | `false` | No |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` | OTLP HTTP endpoint | `http://localhost:4318` | No |
+| `OTEL_SERVICE_NAME` | `--otel-service-name` | Service name for traces | `captchapi` | No |
+
+### Logging
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `RUST_LOG` | `--log-level` | Tracing filter directives | `captchapi=debug,tower_http=debug` | No |
+
+Directives are `target=level` pairs or a bare level, comma separated — for
+example `captchapi=info,tower_http=warn` or just `debug`. Per-span field
+filtering (`[span{field=value}]=level`) is not supported; the filter is built
+on `tracing_subscriber::filter::Targets` rather than `EnvFilter` to keep the
+`regex` engine out of the binary.
+
+### Admin
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `ADMIN_CONFIG_WRITE` | `--admin-config-write` | Allow `PATCH /api/v1/admin/config` to change settings at runtime | `true` | No |
+
+Set `ADMIN_CONFIG_WRITE=false` (or `--admin-config-write=false`) for deployments that want
+file-driven reload but no remote mutation: `GET /admin/config` and `POST /admin/config/reload`
+keep working, and `PATCH` returns `403`.
 
 ## API Reference
 
@@ -300,6 +412,9 @@ For the complete API documentation including all endpoints, request/response for
 | `PUT` | `/api/v1/api-keys/{hash}` | Master | Update API key |
 | `DELETE` | `/api/v1/api-keys/{hash}` | Master | Delete API key |
 | `POST` | `/api/v1/admin/cleanup` | Master | Manual cleanup |
+| `GET` | `/api/v1/admin/config` | Master | Show effective configuration |
+| `PATCH` | `/api/v1/admin/config` | Master | Change reloadable settings at runtime |
+| `POST` | `/api/v1/admin/config/reload` | Master | Re-read every configuration source |
 
 ## Development
 

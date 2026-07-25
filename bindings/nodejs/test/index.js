@@ -198,6 +198,20 @@ async function runTests() {
     await api.deleteSession(session.sessionId);
   });
 
+  runner.test('Session: Image survives the encrypt/decrypt roundtrip', async () => {
+    // Images are stored encrypted; createSession returns the plaintext JPEG and
+    // getImage decrypts the stored copy, so the two must agree byte for byte.
+    const session = await api.createSession({ difficulty: 4 });
+    const fetched = await api.getImage(session.sessionId);
+
+    assert(session.image.equals(fetched), 'Decrypted image should match the generated one');
+
+    const refetched = await api.getImage(session.sessionId);
+    assert(fetched.equals(refetched), 'Repeated reads should be stable');
+
+    await api.deleteSession(session.sessionId);
+  });
+
   runner.test('Session: Delete returns true for existing', async () => {
     const session = await api.createSession();
     const deleted = await api.deleteSession(session.sessionId);
@@ -213,23 +227,32 @@ async function runTests() {
   // VALIDATION TESTS
   // ============================================
 
-  runner.test('Validation: Correct solution (case-sensitive)', async () => {
+  // A stored session's answer never leaves the process, so this suite cannot
+  // drive a successful validation. Correct-solution behaviour (valid=true and
+  // deletion afterwards) is covered by the Rust tests, which can reach the
+  // service layer. Here we assert the airgap itself.
+  runner.test('Validation: Correct solution is never handed to the caller', async () => {
     const session = await api.createSession();
-    const result = await api.validate(session.sessionId, session.text);
-    assert.strictEqual(result.valid, true);
-    assert.strictEqual(result.attemptsRemaining, 0);
+
+    assert.strictEqual(session.text, undefined, 'createSession must not return the solution');
+    assert.strictEqual(session.solution, undefined, 'createSession must not return the solution');
+    assert.deepStrictEqual(
+      Object.keys(session).sort(),
+      ['createdAt', 'expiresAt', 'image', 'sessionId'],
+      'createSession should only expose id, timestamps and the image'
+    );
+
+    await api.deleteSession(session.sessionId);
   });
 
-  runner.test('Validation: Session deleted after success', async () => {
-    const session = await api.createSession();
-    await api.validate(session.sessionId, session.text);
+  runner.test('Validation: generate() remains the escape hatch for the solution', async () => {
+    // Stateless generation still returns the text, because it stores nothing.
+    const generated = api.generate({ length: 6 });
 
-    try {
-      await api.getSession(session.sessionId);
-      assert.fail('Should have thrown');
-    } catch (e) {
-      assert(e.message.includes('not found'), 'Should be not found error');
-    }
+    assert.strictEqual(typeof generated.solution, 'string');
+    assert.strictEqual(generated.solution.length, 6);
+    assert(generated.image instanceof Buffer, 'Image should be Buffer');
+    assert.strictEqual(generated.sessionId, undefined, 'generate() must not create a session');
   });
 
   runner.test('Validation: Wrong solution decrements attempts', async () => {

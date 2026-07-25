@@ -1,0 +1,20 @@
+meta {
+  name: Get Config - Unauthorized
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+tests {
+  test("should return 401", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return unauthorized error", function() {
+    expect(res.body.error).to.equal("unauthorized");
+    expect(res.body.message).to.be.a("string");
+  });
+}

@@ -22,6 +22,9 @@ echo "Using environment: $ENVIRONMENT"
 # 2. API Key tests (unauthorized, create, list, list unauthorized, create for testing, update, update not found, update unauthorized, delete, delete not found)
 # 3. Admin tests (cleanup unauthorized, invalid key, success)
 # 4. Session tests (unauthorized, invalid params, create, get details, get images, validate wrong/max attempts, not found, delete unauthorized, delete not found)
+# 5. Admin config tests (get/patch/reload) — LAST on purpose: PATCH mutates server-wide
+#    settings, and the session tests above depend on MAX_VALIDATION_ATTEMPTS being unchanged.
+#    The block ends with a reload, which discards every runtime override.
 
 bru run \
   "Health Check.bru" \
@@ -56,6 +59,15 @@ bru run \
   "Tests/Sessions/Delete Session - Unauthorized.bru" \
   "Tests/Sessions/Delete Session - Not Found.bru" \
   "Sessions/Delete Session.bru" \
+  "Tests/Admin Config/Get Config - Unauthorized.bru" \
+  "Tests/Admin Config/Get Config - Invalid Master Key.bru" \
+  "Tests/Admin Config/Get Config - Success.bru" \
+  "Tests/Admin Config/Patch Config - Unauthorized.bru" \
+  "Tests/Admin Config/Patch Config - Not Reloadable.bru" \
+  "Tests/Admin Config/Patch Config - Invalid Value.bru" \
+  "Tests/Admin Config/Patch Config - Success.bru" \
+  "Tests/Admin Config/Reload Config - Unauthorized.bru" \
+  "Tests/Admin Config/Reload Config - Success.bru" \
   --env "$ENVIRONMENT"
 
 echo ""
@@ -66,7 +78,7 @@ echo ""
 echo "Coverage Summary:"
 echo "  ✓ Health Check: 1 endpoint"
 echo "  ✓ API Keys: 4 endpoints (create, list, update, delete)"
-echo "  ✓ Admin: 1 endpoint (cleanup expired sessions)"
+echo "  ✓ Admin: 4 endpoints (cleanup, get/patch config, reload config)"
 echo "  ✓ Sessions: 5 endpoints (create, get details, get image, validate, delete)"
 echo ""
 echo "Test Scenarios:"

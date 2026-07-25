@@ -2,10 +2,10 @@
 # CaptchAPI - Static Distroless Build
 # ============================================================
 # This Dockerfile expects a pre-built musl binary at docker/bin/captchapi-musl
-# Build the binary first with: just build-musl (or: cross build --release --target x86_64-unknown-linux-musl)
+# Build the binary first with: just build amd64 (or: cross build --release --target x86_64-unknown-linux-musl)
 #
 # Benefits of this approach:
-# - Smallest possible image (~7.5 MB)
+# - Smallest possible image (8.5 MB unpacked, 3.4 MB compressed)
 # - Fully static binary (no dependencies)
 # - Maximum security (static distroless base)
 # - Fast Docker builds (binary built externally)
@@ -40,6 +40,15 @@ COPY --chown=nonroot:nonroot migrations /app/migrations
 
 # Layer 3: Binary (changes most frequently - rebuild triggers only this layer)
 COPY --chown=nonroot:nonroot docker/bin/captchapi-musl /app/captchapi
+
+# Pin the writable paths to the ABSOLUTE /data volume.
+#
+# The built-in defaults are relative (./data/...), which is correct for local development but
+# resolves against WORKDIR here — i.e. /app/data, which is not the volume. Without these, a
+# `-v captchapi-data:/data` mount would receive nothing and the database would live in the
+# container's ephemeral layer, silently lost on every replacement.
+ENV DATABASE_URL=sqlite:/data/captchapi.db
+ENV PID_FILE=/data/captchapi.pid
 
 # Expose application port
 EXPOSE 3000

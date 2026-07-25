@@ -1,0 +1,31 @@
+meta {
+  name: Patch Config - Not Reloadable
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "server_port": 9999
+  }
+}
+
+tests {
+  test("should return 400", function() {
+    expect(res.status).to.equal(400);
+  });
+
+  test("should explain that the field needs a restart", function() {
+    expect(res.body.error).to.equal("config_not_reloadable");
+    expect(res.body.message).to.contain("server_port");
+  });
+}

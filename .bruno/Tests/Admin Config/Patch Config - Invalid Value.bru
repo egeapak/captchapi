@@ -1,0 +1,30 @@
+meta {
+  name: Patch Config - Invalid Value
+  type: http
+  seq: 6
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "max_validation_attempts": "not-a-number"
+  }
+}
+
+tests {
+  test("should return 400", function() {
+    expect(res.status).to.equal(400);
+  });
+
+  test("should return invalid_config", function() {
+    expect(res.body.error).to.equal("invalid_config");
+  });
+}

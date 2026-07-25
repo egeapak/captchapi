@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT\n                id as \"id!\",\n                solution_hash as \"solution_hash!\",\n                image_encrypted as \"image_encrypted!\",\n                created_at as \"created_at!\",\n                expires_at as \"expires_at!\",\n                attempt_count as \"attempt_count!\",\n                difficulty as \"difficulty!\",\n                width as \"width!\",\n                height as \"height!\",\n                dark_mode as \"dark_mode!\"\n            FROM sessions\n            WHERE id = ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "solution_hash!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "solution_hash"
+          }
+        }
+      },
+      {
+        "name": "image_encrypted!",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "image_encrypted"
+          }
+        }
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "expires_at!",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "name": "attempt_count!",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "attempt_count"
+          }
+        }
+      },
+      {
+        "name": "difficulty!",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "difficulty"
+          }
+        }
+      },
+      {
+        "name": "width!",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "name": "height!",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "name": "dark_mode!",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "dark_mode"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6e7ea915359d67ff2cf7c9075b3cbf52f11574029ba1c5e35b55e9c61d6af784"
+}

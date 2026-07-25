@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::ConfigHandle;
 use crate::metrics::{init_metrics, Metrics};
 use crate::middleware::{
     request_id_middleware, AuthMiddleware, MasterKeyMiddleware, MetricsMiddleware,
@@ -7,7 +7,9 @@ use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, RateLimiterConfig, StorageService};
+use crate::services::{
+    AuthService, CaptchaService, ImageCipher, RateLimiterConfig, SolutionHasher, StorageService,
+};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use governor::DefaultKeyedRateLimiter;
 use sqlx::SqlitePool;
@@ -29,22 +31,31 @@ pub struct AppComponents {
 ///
 /// Returns [`AppComponents`] containing the assembled `Router`, the governor rate limiter handle
 /// (needed for the cleanup task), and the `StorageService` (also needed for cleanup).
-pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -> AppComponents {
+pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) -> AppComponents {
+    // Everything read here is boot-only: the values are captured into the services, the
+    // middleware and the rate limiter, and cannot change without a restart. One snapshot is
+    // therefore both sufficient and honest about what a reload can reach.
+    let boot = config.get();
+
     // Initialize services
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
-    let auth_service = Arc::new(AuthService::new(config.api_key_salt.clone()));
+    let auth_service = Arc::new(AuthService::new(boot.api_key_salt.clone()));
+    // Both secrets are boot-only, like the API key salt: they are captured into these services
+    // and rotating them would invalidate every stored hash and ciphertext.
+    let solution_hasher = Arc::new(SolutionHasher::new(&boot.solution_hash_secret));
+    let image_cipher = Arc::new(ImageCipher::new(&boot.image_encryption_secret));
 
     // Configure rate limiter
-    let rate_limiter_config = if config.rate_limit_reverse_proxy {
+    let rate_limiter_config = if boot.rate_limit_reverse_proxy {
         RateLimiterConfig::for_reverse_proxy(
-            config.rate_limit_requests_per_second,
-            config.rate_limit_burst_size,
+            boot.rate_limit_requests_per_second,
+            boot.rate_limit_burst_size,
         )
     } else {
         RateLimiterConfig::direct(
-            config.rate_limit_requests_per_second,
-            config.rate_limit_burst_size,
+            boot.rate_limit_requests_per_second,
+            boot.rate_limit_burst_size,
         )
     };
 
@@ -53,16 +64,18 @@ pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -
         storage.clone(),
         auth_service.clone(),
         metrics.clone(),
-        config.master_api_key.clone(),
+        boot.master_api_key.clone(),
     );
-    let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
-    let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
+    let master_middleware = MasterKeyMiddleware::new(boot.master_api_key.clone());
+    let master_middleware_admin = MasterKeyMiddleware::new(boot.master_api_key.clone());
     let metrics_middleware = MetricsMiddleware::new(metrics.clone());
 
     // Create application state
     let sessions_state = SessionsState {
         storage: storage.clone(),
         captcha,
+        solution_hasher,
+        image_cipher,
         config: config.clone(),
         metrics: metrics.clone(),
     };
@@ -76,6 +89,7 @@ pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -
     let admin_state = AdminState {
         storage: storage.clone(),
         metrics: metrics.clone(),
+        config: config.clone(),
     };
 
     // Build base router (without rate-limited sessions routes)
@@ -150,7 +164,7 @@ pub fn build_app(pool: SqlitePool, config: Arc<Config>, metrics: Arc<Metrics>) -
 #[allow(dead_code)]
 pub fn build_app_with_metrics(
     pool: SqlitePool,
-    config: Arc<Config>,
+    config: ConfigHandle,
 ) -> (AppComponents, Arc<Metrics>) {
     let metrics = init_metrics();
     let components = build_app(pool, config, metrics.clone());
@@ -160,6 +174,7 @@ pub fn build_app_with_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -186,22 +201,10 @@ mod tests {
         pool
     }
 
-    fn make_test_config(reverse_proxy: bool) -> Arc<Config> {
-        Arc::new(Config {
-            server_host: "127.0.0.1".to_string(),
-            server_port: 3000,
-            database_url: "sqlite::memory:".to_string(),
-            database_max_connections: 5,
-            api_key_salt: "test-salt-minimum-16chars".to_string(),
-            master_api_key: "test-master-key-minimum-16chars".to_string(),
-            default_session_ttl_seconds: 300,
-            max_session_ttl_seconds: 3600,
-            max_validation_attempts: 3,
-            cleanup_interval_seconds: 60,
-            rate_limit_requests_per_second: 2,
-            rate_limit_burst_size: 10,
+    fn make_test_config(reverse_proxy: bool) -> ConfigHandle {
+        ConfigHandle::from_static(Config {
             rate_limit_reverse_proxy: reverse_proxy,
-            captcha_compression: 40,
+            ..Config::for_test()
         })
     }
 

@@ -1,21 +1,33 @@
-use crate::error::Result;
+use crate::config::params::{by_env, by_field, Reload, PARAMS};
+use crate::config::sources::redact;
+use crate::config::{Config, ConfigHandle};
+use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
 use crate::services::StorageService;
 use crate::tasks::cleanup_expired_sessions;
-use axum::{extract::State, middleware, routing::post, Json, Router};
+use axum::{
+    extract::State,
+    middleware,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct AdminState {
     pub storage: StorageService,
     pub metrics: Arc<Metrics>,
+    pub config: ConfigHandle,
 }
 
 pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -> Router {
     Router::new()
         .route("/cleanup", post(trigger_cleanup))
+        .route("/config", get(get_config).patch(patch_config))
+        .route("/config/reload", post(reload_config))
         .route_layer(middleware::from_fn_with_state(
             master_middleware,
             MasterKeyMiddleware::authenticate,
@@ -60,6 +72,211 @@ async fn trigger_cleanup(State(state): State<AdminState>) -> Result<Json<Cleanup
     }))
 }
 
+/// One parameter as reported by `GET /config`.
+#[derive(Debug, Serialize)]
+pub struct ConfigEntry {
+    /// Effective value, redacted when the parameter is a secret.
+    pub value: String,
+    /// Whether a reload or a PATCH can change this field.
+    pub reloadable: bool,
+    /// Whether the value is hidden because it is a secret.
+    pub secret: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfigResponse {
+    pub config: BTreeMap<&'static str, ConfigEntry>,
+    /// Fields currently overridden through this API, named exactly as `config`'s keys and as
+    /// PATCH expects them, so they can be fed straight back in. Cleared by a reload.
+    pub overrides: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReloadResponse {
+    #[serde(flatten)]
+    pub config: ConfigResponse,
+    /// Boot-only fields whose configured value differs from the running one. Reported, never
+    /// applied — changing them needs a restart.
+    pub ignored: Vec<&'static str>,
+    pub message: String,
+}
+
+/// Render the running configuration, redacting secrets.
+///
+/// Secrets are redacted even for the master key holder: this endpoint exists to explain the
+/// server's behaviour, not to read credentials back out of it.
+fn describe(config: &ConfigHandle) -> ConfigResponse {
+    describe_config(&config.get(), config)
+}
+
+/// Render a specific configuration snapshot, with the override list from `config`.
+///
+/// Callers that just produced a snapshot pass it here rather than re-reading the handle, so a
+/// concurrent reload cannot make the response describe a different configuration than the one
+/// the request produced.
+fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
+    let entries = PARAMS
+        .iter()
+        .filter_map(|param| {
+            let value = snapshot.field_value(param.field)?;
+            Some((
+                param.field,
+                ConfigEntry {
+                    value: redact(param, &value),
+                    reloadable: param.reload == Reload::Live,
+                    secret: param.secret,
+                },
+            ))
+        })
+        .collect();
+
+    // The overlay is keyed by canonical environment key, but every other part of this API —
+    // the `config` map above and the PATCH request body — speaks `Config` field names. Translate
+    // here so a client can feed `overrides` straight back into PATCH.
+    let mut overrides: Vec<String> = config
+        .overlay_keys()
+        .iter()
+        .filter_map(|key| by_env(key).map(|param| param.field.to_string()))
+        .collect();
+    overrides.sort_unstable();
+
+    ConfigResponse {
+        config: entries,
+        overrides,
+    }
+}
+
+/// Return the effective configuration.
+async fn get_config(State(state): State<AdminState>) -> Result<Json<ConfigResponse>> {
+    Ok(Json(describe(&state.config)))
+}
+
+/// Update reloadable configuration fields at runtime.
+///
+/// Values live in memory only: they are never written back to a config file, and the next
+/// reload clears them. Boot-only fields are rejected rather than silently ignored.
+async fn patch_config(
+    State(state): State<AdminState>,
+    Json(req): Json<BTreeMap<String, serde_json::Value>>,
+) -> Result<Json<ConfigResponse>> {
+    // Deployments that want file-driven reload but no remote writes set ADMIN_CONFIG_WRITE=false.
+    // Reload and GET stay available; only mutation is refused.
+    if !state.config.get().admin_config_write {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+        return Err(AppError::Forbidden(
+            "runtime configuration writes are disabled (ADMIN_CONFIG_WRITE=false)".to_string(),
+        ));
+    }
+
+    if req.is_empty() {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+        return Err(AppError::InvalidConfig(
+            "no fields given; supply at least one reloadable field".to_string(),
+        ));
+    }
+
+    let mut updates = Vec::with_capacity(req.len());
+    for (field, value) in &req {
+        let Some(param) = by_field(field) else {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            return Err(AppError::InvalidConfig(format!(
+                "`{field}` is not a configuration field"
+            )));
+        };
+
+        if param.reload != Reload::Live {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            return Err(AppError::ConfigNotReloadable(format!(
+                "`{field}` is applied at startup and cannot be changed at runtime; restart with a new value"
+            )));
+        }
+
+        // Accept both `600` and `"600"`; everything funnels into the same string form the
+        // environment would have provided, so validation stays in exactly one place.
+        let raw = match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            other => {
+                state.metrics.system.config_patch_failures.add(1, &[]);
+                return Err(AppError::InvalidConfig(format!(
+                    "`{field}` must be a string, number or boolean, not `{other}`"
+                )));
+            }
+        };
+        updates.push((param.env.to_string(), raw));
+    }
+
+    let before = state.config.get();
+
+    // Resolution reads files, so it runs off the async worker threads.
+    let handle = state.config.clone();
+    let applied = tokio::task::spawn_blocking(move || handle.patch(&updates))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config patch task failed: {e}")))?
+        .map_err(|e| {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            AppError::InvalidConfig(e)
+        })?;
+
+    // Audit every accepted change: this endpoint can alter security-relevant limits.
+    // Values go through `redact` — no secret is reloadable today (a PARAMS invariant test
+    // enforces that), but the audit trail must not become the one place that leaks if it changes.
+    for field in req.keys() {
+        let Some(param) = by_field(field) else {
+            continue;
+        };
+        let (old, new) = (before.field_value(field), applied.field_value(field));
+        if old != new {
+            tracing::info!(
+                "Admin config change: {field} {} -> {}",
+                redact(param, &old.unwrap_or_default()),
+                redact(param, &new.unwrap_or_default())
+            );
+        }
+    }
+
+    state.metrics.system.config_patches.add(1, &[]);
+    // Report the config this patch actually produced rather than re-reading the handle, which a
+    // concurrent reload could have moved out from under us.
+    Ok(Json(describe_config(&applied, &state.config)))
+}
+
+/// Re-read every configuration source, discarding any runtime overrides.
+async fn reload_config(State(state): State<AdminState>) -> Result<Json<ReloadResponse>> {
+    tracing::info!("Configuration reload requested through the admin API");
+
+    let handle = state.config.clone();
+    let outcome = tokio::task::spawn_blocking(move || handle.reload())
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config reload task failed: {e}")))?
+        .map_err(|e| {
+            state.metrics.system.config_reload_failures.add(1, &[]);
+            AppError::InvalidConfig(e)
+        })?;
+
+    for field in &outcome.drift {
+        tracing::warn!("`{field}` changed but is applied only at startup; restart to change it");
+    }
+
+    state.metrics.system.config_reloads.add(1, &[]);
+
+    let message = if outcome.drift.is_empty() {
+        "Configuration reloaded".to_string()
+    } else {
+        format!(
+            "Configuration reloaded; {} field(s) require a restart and were not applied",
+            outcome.drift.len()
+        )
+    };
+
+    Ok(Json(ReloadResponse {
+        config: describe_config(&outcome.config, &state.config),
+        ignored: outcome.drift,
+        message,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,14 +310,32 @@ mod tests {
     }
 
     fn create_expired_session() -> Session {
-        let mut session = Session::new("EXPIRED".to_string(), vec![1, 2, 3], 0, 5, 220, 120, false);
+        let mut session = Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-EXPIRED".to_string(),
+            vec![1, 2, 3],
+            0,
+            5,
+            220,
+            120,
+            false,
+        );
         let now = Utc::now().timestamp();
         session.expires_at = now - 10;
         session
     }
 
     fn create_valid_session() -> Session {
-        Session::new("VALID".to_string(), vec![4, 5, 6], 3600, 5, 220, 120, false)
+        Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-VALID".to_string(),
+            vec![4, 5, 6],
+            3600,
+            5,
+            220,
+            120,
+            false,
+        )
     }
 
     #[tokio::test]

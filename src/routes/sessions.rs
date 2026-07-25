@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::ConfigHandle;
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::AuthMiddleware;
@@ -7,8 +7,8 @@ use crate::models::{
     ValidateSessionResponse,
 };
 use crate::services::{
-    create_session_orchestrated, validate_session_orchestrated, CaptchaService, StorageService,
-    ValidationOutcome,
+    create_session_orchestrated, get_session_image_orchestrated, validate_session_orchestrated,
+    CaptchaService, CreatedSession, ImageCipher, SolutionHasher, StorageService, ValidationOutcome,
 };
 use crate::validation;
 use axum::{
@@ -26,7 +26,9 @@ use std::sync::Arc;
 pub struct SessionsState {
     pub storage: StorageService,
     pub captcha: Arc<CaptchaService>,
-    pub config: Arc<Config>,
+    pub solution_hasher: Arc<SolutionHasher>,
+    pub image_cipher: Arc<ImageCipher>,
+    pub config: ConfigHandle,
     pub metrics: Arc<Metrics>,
 }
 
@@ -53,18 +55,25 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
     width = req.width.unwrap_or(validation::DEFAULT_WIDTH),
     height = req.height.unwrap_or(validation::DEFAULT_HEIGHT),
     dark_mode = req.dark_mode.unwrap_or(validation::DEFAULT_DARK_MODE),
-    expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
+    expires_in_seconds,
     session_id
 ))]
 async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
+    // One snapshot for the whole request. Reading the handle more than once would let a reload
+    // landing mid-handler make the traced value disagree with the value used for validation.
+    let settings = state.config.session_config();
+
+    let expires_in_seconds = req
+        .expires_in_seconds
+        .unwrap_or(settings.default_session_ttl_seconds);
+    tracing::Span::current().record("expires_in_seconds", expires_in_seconds);
+
     // Validate parameters — use client-supplied compression if provided, else fall back to
     // the server-configured default so existing behaviour is preserved.
-    let compression = req
-        .compression
-        .or_else(|| Some(state.config.captcha_compression.into()));
+    let compression = req.compression.or(Some(settings.captcha_compression));
     let params = validation::validate_session_params(
         req.length,
         req.difficulty,
@@ -73,14 +82,23 @@ async fn create_session(
         req.dark_mode,
         compression,
         req.expires_in_seconds,
-        state.config.default_session_ttl_seconds,
-        state.config.max_session_ttl_seconds,
+        settings.default_session_ttl_seconds,
+        settings.max_session_ttl_seconds,
     )
     .map_err(AppError::InvalidSessionParams)?;
 
-    // Use orchestration function for generate + store + metrics
-    let (session, _image_bytes) =
-        create_session_orchestrated(&state.storage, &state.captcha, &state.metrics, params).await?;
+    // Use orchestration function for generate + hash + store + metrics
+    // The plaintext solution is deliberately dropped here: it is never returned
+    // by the API and never persisted.
+    let CreatedSession { session, .. } = create_session_orchestrated(
+        &state.storage,
+        &state.captcha,
+        &state.solution_hasher,
+        &state.image_cipher,
+        &state.metrics,
+        params,
+    )
+    .await?;
 
     // Record session_id in the span
     tracing::Span::current().record("session_id", session.id.as_str());
@@ -129,15 +147,12 @@ async fn get_image_binary(
     State(state): State<SessionsState>,
     Path(session_id): Path<String>,
 ) -> Result<impl IntoResponse> {
-    // get_active_session handles expiry check and eager deletion
-    let session = state
-        .storage
-        .get_active_session(&session_id)
-        .await?
-        .ok_or(AppError::SessionNotFound)?;
+    // Handles expiry check, eager deletion, and decryption of the stored image
+    let (session, image_bytes) =
+        get_session_image_orchestrated(&state.storage, &state.image_cipher, &session_id).await?;
 
     tracing::Span::current().record("is_expired", false);
-    tracing::Span::current().record("image_size_bytes", session.image_bytes.len());
+    tracing::Span::current().record("image_size_bytes", image_bytes.len());
 
     // Calculate cache duration (time until expiration)
     let now = Utc::now().timestamp();
@@ -163,7 +178,7 @@ async fn get_image_binary(
     );
 
     // Return raw JPEG bytes directly (no base64 encoding/decoding needed!)
-    Ok((headers, session.image_bytes))
+    Ok((headers, image_bytes))
 }
 
 #[tracing::instrument(skip(state, req), fields(
@@ -184,10 +199,11 @@ async fn validate_session(
     // Use orchestration function for full validation flow
     let outcome = validate_session_orchestrated(
         &state.storage,
+        &state.solution_hasher,
         &state.metrics,
         &session_id,
         &req.solution,
-        state.config.max_validation_attempts,
+        state.config.session_config().max_validation_attempts,
     )
     .await?;
 

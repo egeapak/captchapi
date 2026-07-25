@@ -13,8 +13,8 @@
 just
 
 # Or step by step:
-just build-musl      # Build musl binary with cross (~5 min first time)
-just copy-binary     # Copy to docker/bin/
+just build amd64     # Build the musl binary with cross (~5 min first time)
+                     # (`just docker amd64` does this and builds the image)
 just docker          # Build Docker image (~5 sec)
 ```
 
@@ -29,8 +29,8 @@ just run-volume
 
 # Or manually:
 docker run -p 3000:3000 \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   captchapi:latest
 ```
 
@@ -57,11 +57,21 @@ docker run -p 3000:3000 \
 ## Image Details
 
 - **Base**: `gcr.io/distroless/static-debian12:nonroot`
-- **Size**: 7.42 MB (84.5% smaller than original)
+- **Size**: 8.49 MB unpacked, 3.36 MB to pull (compressed), of which the binary is 5.39 MB
 - **Binary**: Fully static musl (no dependencies)
 - **User**: nonroot (UID 65532)
 - **Security**: Maximum (no shell, no libraries, minimal attack surface)
-- **Efficiency**: 100% (only 613 bytes wasted)
+
+Measured on `linux/amd64` at v1.0.1 with:
+
+```bash
+just docker amd64
+docker export $(docker create captchapi:latest) | wc -c   # unpacked
+docker save captchapi:latest | gzip -c | wc -c            # pull size
+```
+
+Quote whichever number you mean — `docker images` reports a third, larger figure that includes
+storage-driver overhead, which is how the previously advertised "7.42 MB" drifted out of date.
 
 ---
 
@@ -82,8 +92,8 @@ CaptchAPI stores its SQLite database in `/data/captchapi.db`. Choose the persist
 **Command:**
 ```bash
 docker run -p 3000:3000 \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   captchapi:latest
 ```
 
@@ -121,8 +131,8 @@ docker volume create captchapi-data
 ```bash
 docker run -p 3000:3000 \
   -v captchapi-data:/data \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   captchapi:latest
 ```
 
@@ -178,8 +188,8 @@ sudo chown -R 65532:65532 ./data  # nonroot user UID
 ```bash
 docker run -p 3000:3000 \
   -v $(pwd)/data:/data \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   captchapi:latest
 ```
 
