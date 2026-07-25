@@ -71,6 +71,7 @@ captchapi/
     │   ├── session_ops.rs       # Session orchestration
     │   ├── solution_hash.rs     # Keyed hashing of CAPTCHA solutions
     │   ├── image_cipher.rs      # Encryption of stored CAPTCHA images
+    │   ├── hmac.rs              # Shared HMAC-SHA256 primitive
     │   ├── api_key_ops.rs       # API key orchestration
     │   └── rate_limiter.rs      # Rate limiter configuration
     ├── routes/                  # HTTP endpoints
@@ -305,9 +306,11 @@ cargo nextest run
    from `SOLUTION_HASH_SECRET` (default: `API_KEY_SALT`) and never lives in the database, so reading
    the database does not reveal answers. A plain digest would be useless here — short alphanumeric
    solutions are brute-forced instantly.
-6. **Image Encryption**: Images are stored as ChaCha20-Poly1305 ciphertext (key from
-   `IMAGE_ENCRYPTION_SECRET`, default `API_KEY_SALT`), with the session ID as associated data, and
-   decrypted only when served. Otherwise the stored challenge could simply be OCR'd.
+6. **Image Encryption**: Images are stored as ChaCha20-Poly1305 ciphertext and decrypted only when
+   served — otherwise the stored challenge could simply be OCR'd. Each session uses its own key,
+   `HMAC-SHA256(master_key, info || session_id)`, with the master key from `IMAGE_ENCRYPTION_SECRET`
+   (default `API_KEY_SALT`). Per-session keys make cross-row reuse and nonce reuse impossible; the
+   session ID is also passed as associated data for defence in depth.
 7. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 

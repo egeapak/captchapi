@@ -140,11 +140,16 @@ CREATE TABLE api_keys (
   in the database, so a leaked database file does not reveal answers — a bare digest would not
   help, since a 5-character alphanumeric keyspace is brute-forced in milliseconds. The session ID
   acts as a per-session salt so identical answers do not produce identical hashes.
-- Images are encrypted at rest with ChaCha20-Poly1305 (`IMAGE_ENCRYPTION_SECRET`, falling back to
-  `API_KEY_SALT`), decrypted only when served. The rendered challenge is the answer in visual form,
-  so leaving it in plaintext would have undone the solution hashing. The session ID is authenticated
-  as associated data, so a ciphertext cannot be moved between rows, and tampered bytes fail the
-  Poly1305 tag rather than being served. Stored layout: `[version][12-byte nonce][ciphertext+tag]`.
+- Images are encrypted at rest with ChaCha20-Poly1305, decrypted only when served. The rendered
+  challenge is the answer in visual form, so leaving it in plaintext would have undone the solution
+  hashing. Each session encrypts under its own key, derived as
+  `HMAC-SHA256(master_key, info || session_id)` where the master key comes from
+  `IMAGE_ENCRYPTION_SECRET` (falling back to `API_KEY_SALT`). Per-session keys bind a ciphertext to
+  its row through the key itself — another row's blob cannot be decrypted at all — and mean each key
+  ever encrypts exactly one message, so nonce reuse cannot occur. The session ID is additionally
+  authenticated as associated data, redundantly, so the binding survives if derivation is ever
+  simplified. Tampered bytes fail the Poly1305 tag rather than being served.
+  Stored layout: `[scheme version][12-byte nonce][ciphertext+tag]`.
 - Net effect: a leaked database file contains no answer and no readable image — only ciphertext,
   timestamps, and challenge dimensions.
 

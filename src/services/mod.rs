@@ -1,6 +1,7 @@
 pub mod api_key_ops;
 pub mod auth;
 pub mod captcha;
+pub(crate) mod hmac;
 pub mod image_cipher;
 pub mod rate_limiter;
 pub mod session_ops;
