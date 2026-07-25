@@ -14,6 +14,7 @@ use crate::app::build_app;
 use crate::config::Config;
 use crate::metrics::init_metrics;
 use crate::tasks::start_cleanup_task;
+#[cfg(feature = "otel")]
 use crate::telemetry::{init_telemetry, shutdown_telemetry};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::sync::Arc;
@@ -51,23 +52,22 @@ fn log_filter_from_env() -> Targets {
     log_filter(std::env::var("RUST_LOG").ok().as_deref())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Load configuration from environment first (needed for telemetry config)
-    dotenvy::dotenv().ok();
+/// Install the fmt subscriber with no OpenTelemetry layer.
+fn init_plain_tracing() {
+    tracing_subscriber::registry()
+        .with(log_filter_from_env())
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
 
-    // Check if OpenTelemetry is enabled
-    let otel_enabled = crate::telemetry::is_telemetry_enabled();
-
-    // Initialize tracing with conditional OpenTelemetry support
+/// Install the tracing subscriber, adding the OTLP export layer when the
+/// `otel` feature is compiled in and `OTEL_ENABLED` asks for it.
+#[cfg(feature = "otel")]
+fn init_tracing(otel_enabled: bool) -> anyhow::Result<()> {
     if otel_enabled {
-        // Initialize OpenTelemetry and get tracer
         let tracer = init_telemetry()?;
-
-        // Create OpenTelemetry tracing layer
         let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-        // Initialize tracing with OpenTelemetry
         tracing_subscriber::registry()
             .with(log_filter_from_env())
             .with(tracing_subscriber::fmt::layer())
@@ -76,14 +76,33 @@ async fn main() -> anyhow::Result<()> {
 
         tracing::info!("OpenTelemetry enabled");
     } else {
-        // Initialize tracing without OpenTelemetry
-        tracing_subscriber::registry()
-            .with(log_filter_from_env())
-            .with(tracing_subscriber::fmt::layer())
-            .init();
-
+        init_plain_tracing();
         tracing::info!("OpenTelemetry disabled");
     }
+    Ok(())
+}
+
+/// Without the `otel` feature there is no exporter to install.
+///
+/// `is_telemetry_enabled` has already warned on stderr if `OTEL_ENABLED` was
+/// set, so this only records the build configuration.
+#[cfg(not(feature = "otel"))]
+fn init_tracing(_otel_enabled: bool) -> anyhow::Result<()> {
+    init_plain_tracing();
+    tracing::info!("OpenTelemetry not compiled in (rebuild with --features otel)");
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Load configuration from environment first (needed for telemetry config)
+    dotenvy::dotenv().ok();
+
+    // Check if OpenTelemetry is enabled
+    let otel_enabled = crate::telemetry::is_telemetry_enabled();
+
+    // Initialize tracing, with OpenTelemetry export when it is available
+    init_tracing(otel_enabled)?;
 
     let config = Arc::new(Config::from_env().map_err(|e| anyhow::anyhow!(e))?);
 
@@ -175,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Shutdown OpenTelemetry gracefully if it was enabled
+    #[cfg(feature = "otel")]
     if otel_enabled {
         shutdown_telemetry();
     }

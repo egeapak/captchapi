@@ -137,7 +137,7 @@ RATE_LIMIT_REVERSE_PROXY=false    # Set true when behind nginx/Cloudflare
 # Background Tasks
 CLEANUP_INTERVAL_SECONDS=60
 
-# OpenTelemetry (optional)
+# OpenTelemetry (optional; requires a build with --features otel)
 OTEL_ENABLED=false
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=captchapi
@@ -325,6 +325,32 @@ sha2 = "0.11"                   # Hashing
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"                 # Logging
 rand = "0.10"                   # Random generation
+```
+
+### Cargo Features
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `otel`  | off     | Compiles in the OpenTelemetry OTLP trace exporter |
+
+`otel` is off because the OTLP exporter pulls a full HTTP client (reqwest and
+friends) into the binary — roughly 700 KB — for a path that is inert unless
+`OTEL_ENABLED` is set at runtime. Build with `--features otel` to enable it.
+
+Note the split: the `opentelemetry` **API** crate is an unconditional
+dependency because `src/metrics.rs` builds every counter and histogram on it.
+Only the SDK, the OTLP exporter and `tracing-opentelemetry` are gated, so
+metrics work in every build.
+
+A binary built without `otel` warns on stderr at startup if `OTEL_ENABLED` is
+set, rather than dropping traces silently.
+
+**Both configurations must be linted**, since `cfg(not(feature = "otel"))`
+paths are invisible to `--all-features`:
+
+```bash
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 ```
 
 ### Vendored CAPTCHA Renderer

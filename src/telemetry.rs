@@ -1,6 +1,18 @@
+//! Tracing setup and, behind the `otel` feature, OpenTelemetry OTLP export.
+//!
+//! `OTEL_ENABLED` gates export at runtime. The `otel` cargo feature gates it
+//! at compile time: without it the OTLP exporter and its HTTP client are not
+//! built at all. A binary built without the feature warns if `OTEL_ENABLED`
+//! asks for telemetry it cannot provide, rather than ignoring it silently.
+
+#[cfg(feature = "otel")]
 use opentelemetry::trace::TracerProvider as _;
+#[cfg(feature = "otel")]
 use opentelemetry::{global, KeyValue};
+
+#[cfg(feature = "otel")]
 use opentelemetry_otlp::WithExportConfig;
+#[cfg(feature = "otel")]
 use opentelemetry_sdk::{
     trace::{
         BatchSpanProcessor, RandomIdGenerator, Sampler, SdkTracerProvider, SimpleSpanProcessor,
@@ -8,26 +20,32 @@ use opentelemetry_sdk::{
     },
     Resource,
 };
+#[cfg(feature = "otel")]
 use std::sync::{Mutex, OnceLock};
+#[cfg(feature = "otel")]
 use std::time::Duration;
 
 /// Holds the active SDK tracer provider so it can be shut down on exit.
 ///
 /// In opentelemetry 0.30+ the global `shutdown_tracer_provider` helper was
 /// removed; callers must retain the provider and call `.shutdown()` on it.
+#[cfg(feature = "otel")]
 static PROVIDER: OnceLock<Mutex<Option<SdkTracerProvider>>> = OnceLock::new();
 
+#[cfg(feature = "otel")]
 fn provider_slot() -> &'static Mutex<Option<SdkTracerProvider>> {
     PROVIDER.get_or_init(|| Mutex::new(None))
 }
 
 /// Configuration for OpenTelemetry telemetry
+#[cfg(feature = "otel")]
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
     pub otlp_endpoint: String,
     pub service_name: String,
 }
 
+#[cfg(feature = "otel")]
 impl TelemetryConfig {
     /// Build a TelemetryConfig from environment variables, using defaults where absent
     pub fn from_env() -> Self {
@@ -46,6 +64,7 @@ impl TelemetryConfig {
 ///
 /// This function is pure — it does not touch global state, making it easy to test.
 /// For production use with batching, see `init_telemetry`.
+#[cfg(feature = "otel")]
 #[allow(dead_code)]
 pub fn build_tracer_provider<E>(config: &TelemetryConfig, exporter: E) -> SdkTracerProvider
 where
@@ -54,6 +73,7 @@ where
     build_tracer_provider_with_processor(config, SimpleSpanProcessor::new(exporter))
 }
 
+#[cfg(feature = "otel")]
 fn build_tracer_provider_with_processor<P>(
     config: &TelemetryConfig,
     processor: P,
@@ -82,10 +102,13 @@ where
         .build()
 }
 
-/// Check if OpenTelemetry is enabled via environment variable
+/// Does `OTEL_ENABLED` ask for telemetry?
 ///
-/// Returns true if OTEL_ENABLED is set to "true", "1", "yes", or "on" (case-insensitive)
-pub fn is_telemetry_enabled() -> bool {
+/// Returns true if OTEL_ENABLED is set to "true", "1", "yes", or "on"
+/// (case-insensitive). This reflects the environment only; whether the
+/// exporter was compiled in is a separate question — see
+/// [`is_telemetry_enabled`].
+pub fn otel_requested() -> bool {
     std::env::var("OTEL_ENABLED")
         .unwrap_or_else(|_| "false".to_string())
         .to_lowercase()
@@ -102,6 +125,32 @@ pub fn is_telemetry_enabled() -> bool {
         })
 }
 
+/// Should telemetry actually be initialised?
+///
+/// Requires both that `OTEL_ENABLED` asks for it and that the exporter was
+/// compiled in via the `otel` feature.
+#[cfg(feature = "otel")]
+pub fn is_telemetry_enabled() -> bool {
+    otel_requested()
+}
+
+/// Always false: this binary was built without the `otel` feature.
+///
+/// Warns rather than ignoring the request silently, so a deployment that
+/// expects traces finds out at startup instead of wondering where they went.
+#[cfg(not(feature = "otel"))]
+pub fn is_telemetry_enabled() -> bool {
+    if otel_requested() {
+        // Called before the subscriber is installed, so this cannot use tracing.
+        eprintln!(
+            "warning: OTEL_ENABLED is set, but this binary was built without the \
+             `otel` feature; no traces will be exported. Rebuild with \
+             `cargo build --features otel` to enable OpenTelemetry."
+        );
+    }
+    false
+}
+
 /// Initialize OpenTelemetry with OTLP exporter
 ///
 /// This sets up both tracing and metrics exporters that send data to an OTLP-compatible backend
@@ -114,6 +163,7 @@ pub fn is_telemetry_enabled() -> bool {
 /// - RUST_LOG: Log level filter
 ///
 /// Returns a Tracer that can be used with tracing-opentelemetry
+#[cfg(feature = "otel")]
 pub fn init_telemetry() -> anyhow::Result<Tracer> {
     let config = TelemetryConfig::from_env();
 
@@ -152,6 +202,7 @@ pub fn init_telemetry() -> anyhow::Result<Tracer> {
 /// Shutdown OpenTelemetry providers
 ///
 /// This should be called before the application exits to ensure all spans are flushed
+#[cfg(feature = "otel")]
 pub fn shutdown_telemetry() {
     tracing::info!("Shutting down OpenTelemetry");
     // Take the retained provider (if any) and shut it down. `take()` makes this
@@ -166,19 +217,26 @@ pub fn shutdown_telemetry() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[cfg(feature = "otel")]
     use opentelemetry::trace::Tracer;
+    #[cfg(feature = "otel")]
     use opentelemetry_sdk::error::OTelSdkResult;
+    #[cfg(feature = "otel")]
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SpanData};
-    use opentelemetry_sdk::Resource;
-    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "otel")]
+    use std::sync::Arc;
 
     /// A capturing exporter wrapper that records the resource passed via set_resource.
+    #[cfg(feature = "otel")]
     #[derive(Clone, Debug)]
     struct ResourceCapturingExporter {
         inner: InMemorySpanExporter,
         resource: Arc<Mutex<Resource>>,
     }
 
+    #[cfg(feature = "otel")]
     impl ResourceCapturingExporter {
         fn new() -> Self {
             Self {
@@ -192,6 +250,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "otel")]
     impl SpanExporter for ResourceCapturingExporter {
         // As of opentelemetry 0.29, `export` takes `&self` and is an async fn.
         async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
@@ -284,77 +343,78 @@ mod tests {
         assert!(std::env::var("CAPTCHAPI_ENV_GUARD_UNSET").is_err());
     }
 
-    // ── is_telemetry_enabled ──────────────────────────────────────────────────
+    // ── otel_requested ──────────────────────────────────────────────────
 
     #[test]
-    fn test_is_telemetry_enabled_with_true() {
+    fn test_otel_requested_with_true() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "true");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_one() {
+    fn test_otel_requested_with_one() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "1");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_yes() {
+    fn test_otel_requested_with_yes() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "yes");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_on() {
+    fn test_otel_requested_with_on() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "on");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_case_insensitive() {
+    fn test_otel_requested_case_insensitive() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
 
         env.set("OTEL_ENABLED", "TRUE");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
 
         env.set("OTEL_ENABLED", "Yes");
-        assert!(is_telemetry_enabled());
+        assert!(otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_false() {
+    fn test_otel_requested_with_false() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "false");
-        assert!(!is_telemetry_enabled());
+        assert!(!otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_zero() {
+    fn test_otel_requested_with_zero() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "0");
-        assert!(!is_telemetry_enabled());
+        assert!(!otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_with_invalid_value() {
+    fn test_otel_requested_with_invalid_value() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.set("OTEL_ENABLED", "invalid");
-        assert!(!is_telemetry_enabled());
+        assert!(!otel_requested());
     }
 
     #[test]
-    fn test_is_telemetry_enabled_default_false() {
+    fn test_otel_requested_default_false() {
         let env = EnvGuard::new(&["OTEL_ENABLED"]);
         env.remove("OTEL_ENABLED");
-        assert!(!is_telemetry_enabled());
+        assert!(!otel_requested());
     }
 
     // ── TelemetryConfig::from_env ─────────────────────────────────────────────
 
+    #[cfg(feature = "otel")]
     #[test]
     fn test_telemetry_config_from_env_defaults() {
         let _env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
@@ -365,6 +425,7 @@ mod tests {
         assert_eq!(config.service_name, "captchapi");
     }
 
+    #[cfg(feature = "otel")]
     #[test]
     fn test_telemetry_config_from_env_custom() {
         let env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
@@ -379,6 +440,7 @@ mod tests {
 
     // ── build_tracer_provider ─────────────────────────────────────────────────
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn test_build_tracer_provider_produces_spans() {
         let exporter = InMemorySpanExporter::default();
@@ -407,6 +469,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn test_build_tracer_provider_sets_service_name() {
         let exporter = ResourceCapturingExporter::new();
@@ -432,6 +495,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn test_build_tracer_provider_sets_service_version() {
         let exporter = ResourceCapturingExporter::new();
@@ -460,6 +524,7 @@ mod tests {
 
     // ── provider shutdown / shutdown_telemetry ────────────────────────────────
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn test_shutdown_telemetry_after_init() {
         // Register a provider globally, then shut it down — must not panic.
@@ -474,6 +539,7 @@ mod tests {
         shutdown_telemetry();
     }
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
     async fn test_provider_shutdown_succeeds_after_recording() {
         // As of opentelemetry 0.30 the global `shutdown_tracer_provider` helper is
@@ -504,6 +570,7 @@ mod tests {
             .expect("provider shutdown should succeed");
     }
 
+    #[cfg(feature = "otel")]
     #[tokio::test]
 
     async fn test_shutdown_telemetry_idempotent() {
@@ -512,6 +579,7 @@ mod tests {
         shutdown_telemetry();
     }
 
+    #[cfg(feature = "otel")]
     #[test]
     fn test_shutdown_telemetry_does_not_panic() {
         // Just ensure shutdown doesn't panic when called

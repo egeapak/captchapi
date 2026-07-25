@@ -94,7 +94,13 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Run Clippy
+      # Both feature configurations are linted: `--all-features` covers the
+      # OpenTelemetry code, and the default build covers the cfg(not(otel))
+      # paths that would otherwise never be compiled in CI.
+      - name: Run Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run Clippy (all features)
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   security-audit:

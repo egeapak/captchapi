@@ -262,9 +262,21 @@ All configuration is via environment variables. Create a `.env` file based on `.
 
 ### OpenTelemetry (optional)
 
+OpenTelemetry trace export is **not compiled in by default**. The OTLP exporter
+pulls in a full HTTP client worth roughly 700 KB of binary, so it sits behind
+the `otel` cargo feature:
+
+```bash
+cargo build --release --features otel
+```
+
+The variables below apply to a binary built with that feature. A binary built
+without it warns on startup if `OTEL_ENABLED` is set, rather than ignoring it
+silently. Prometheus-style metrics are unaffected and always available.
+
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `OTEL_ENABLED` | Enable OpenTelemetry tracing | `false` | No |
+| `OTEL_ENABLED` | Enable OpenTelemetry tracing (requires the `otel` feature) | `false` | No |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP HTTP endpoint | `http://localhost:4318` | No |
 | `OTEL_SERVICE_NAME` | Service name for traces | `captchapi` | No |
 

@@ -60,11 +60,32 @@ dotenvy = "0.15"
 # Logging and Observability
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-opentelemetry = "0.33"
+
+# The OpenTelemetry API crate is unconditional: src/metrics.rs builds all of
+# the service's counters and histograms on it. It is API-only and cheap.
 opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-client"] }
-opentelemetry-semantic-conventions = "0.32"
+
+# Trace *export*, behind the `otel` feature. The OTLP exporter drags in a full
+# HTTP client (reqwest and friends) worth roughly 300 KiB of binary, for a code
+# path that is inert unless OTEL_ENABLED is set at runtime.
+tracing-opentelemetry = { version = "0.33", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true }
+opentelemetry-otlp = { version = "0.32", features = [
+    "http-proto",
+    "reqwest-client",
+], optional = true }
+opentelemetry-semantic-conventions = { version = "0.32", optional = true }
+
+[features]
+default = []
+# Compile in the OpenTelemetry OTLP exporter. Traces are still gated at
+# runtime by OTEL_ENABLED; this only controls whether the exporter exists.
+otel = [
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-semantic-conventions",
+]
 
 [dev-dependencies]
 axum-test = "20"
