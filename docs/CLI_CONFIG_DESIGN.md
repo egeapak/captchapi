@@ -1,6 +1,11 @@
 # CLI & Dynamic Configuration — Design
 
-Status: **proposed** (design only, no implementation yet)
+Status: **implemented.** This is the design record — it exists to explain *why* the shape is
+what it is. For how the shipped system actually works, see
+[ARCHITECTURE.md](ARCHITECTURE.md#configuration) and the
+[Configuration section of the README](../README.md#configuration). Where this document and the
+code disagree the code wins; the decisions that changed during implementation are listed in
+[§12](#12-where-the-implementation-diverged).
 
 This document describes adding a command-line surface (`pico-args`), a TOML config
 file layer, and runtime-reloadable configuration to CaptchAPI.
@@ -390,3 +395,50 @@ behavioural risk lives.
 3. **TOML section naming.** The proposal renames keys into sections
    (`captcha.default_ttl_seconds` ← `DEFAULT_SESSION_TTL_SECONDS`). A flat
    `DEFAULT_SESSION_TTL_SECONDS = 300` file would be a more literal mapping but reads worse.
+
+Resolved: (1) the PID file is written to `./data/captchapi.pid` by default, overridable with
+`--pid-file`, and removed on graceful shutdown so a stale file cannot make `captchapi reload`
+signal a recycled process; (2) admin writes are enabled by default; (3) TOML uses grouped
+sections.
+
+---
+
+## 12. Where the implementation diverged
+
+Five decisions changed once the code met reality. Each is load-bearing.
+
+1. **Log level is boot-only, not reloadable.** Making `RUST_LOG` live requires
+   `tracing_subscriber::reload::Layer`, whose `register_callsite` returns
+   `Interest::sometimes()`. That permanently disables per-callsite interest caching for the
+   whole subscriber, so *every* request in *every* deployment pays for a feature almost nobody
+   uses — a bad trade in a service built with `opt-level = "z"`. It also has an awkward type:
+   `reload::Handle` is generic over the subscriber, and the OTEL-on and OTEL-off paths build
+   different stacks.
+
+2. **`dotenvy::dotenv()` is gone, replaced by an env-file *layer*.** The original plan kept the
+   existing call. But `dotenv()` mutates the process environment once and never overwrites what
+   is already set, which means editing `.env` and sending SIGHUP would silently do nothing while
+   editing the TOML file worked. Parsing the file into its own layer — below the process
+   environment, above the TOML file — preserves today's precedence exactly, makes `--env-file`
+   reloadable, and removes a global `set_var` that tests would otherwise race on.
+
+3. **No `impl Default for Config`.** `api_key_salt` and `master_api_key` are the two required
+   parameters; a `Default` yielding empty strings would silently build an `AuthService` with an
+   empty salt. Replaced by a named `Config::for_test()` with valid placeholders — `pub`, not
+   `#[cfg(test)]`, because `tests/common/mod.rs` is a separate crate.
+
+4. **Provenance is a pure `source_of()` query, not something recorded during `get()`.**
+   `EnvProvider::get` takes `&self`, so recording would need interior mutability; a `RefCell`
+   would make `LayeredEnv` `!Sync` and break the moment a reload runs inside an async task.
+
+5. **A `carried` layer sits below the config file.** Re-resolution during a reload would
+   otherwise hard-fail when a secret file has been rotated away since startup — for a field
+   that is boot-only and would have been discarded anyway. Seeding the running config's
+   boot-only values as the lowest-precedence layer fixes that, and has a second consequence
+   worth knowing: an unspecified boot field resolves to its running value, so "drift" is
+   reported only when a source *explicitly* names a different value.
+
+Also worth recording: `main.rs` was collapsed onto the library crate. It had been re-declaring
+the whole module tree, compiling everything twice into two distinct sets of types — which would
+have made `mod cli;` a source of confusing type errors, and keeps `main.rs` thin enough that the
+85% coverage gate stays comfortable.
