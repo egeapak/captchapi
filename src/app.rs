@@ -7,7 +7,9 @@ use crate::routes::admin::AdminState;
 use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
-use crate::services::{AuthService, CaptchaService, RateLimiterConfig, StorageService};
+use crate::services::{
+    AuthService, CaptchaService, ImageCipher, RateLimiterConfig, SolutionHasher, StorageService,
+};
 use axum::{middleware as axum_middleware, routing::get, Router};
 use governor::DefaultKeyedRateLimiter;
 use sqlx::SqlitePool;
@@ -39,6 +41,10 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
     let storage = StorageService::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(boot.api_key_salt.clone()));
+    // Both secrets are boot-only, like the API key salt: they are captured into these services
+    // and rotating them would invalidate every stored hash and ciphertext.
+    let solution_hasher = Arc::new(SolutionHasher::new(&boot.solution_hash_secret));
+    let image_cipher = Arc::new(ImageCipher::new(&boot.image_encryption_secret));
 
     // Configure rate limiter
     let rate_limiter_config = if boot.rate_limit_reverse_proxy {
@@ -68,6 +74,8 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
     let sessions_state = SessionsState {
         storage: storage.clone(),
         captcha,
+        solution_hasher,
+        image_cipher,
         config: config.clone(),
         metrics: metrics.clone(),
     };

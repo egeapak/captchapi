@@ -139,6 +139,32 @@ pub const PARAMS: &[Param] = &[
         help: "File containing the master admin key (min 16 bytes)",
     },
     Param {
+        env: "SOLUTION_HASH_SECRET",
+        field: "solution_hash_secret",
+        flag: "--solution-hash-secret-file",
+        short: None,
+        toml: None,
+        kind: Kind::SecretFile,
+        reload: Reload::Boot,
+        secret: true,
+        // No static default: falls back to API_KEY_SALT at resolution time.
+        default: None,
+        help: "File containing the CAPTCHA solution hashing key (min 16 bytes; defaults to the API key salt)",
+    },
+    Param {
+        env: "IMAGE_ENCRYPTION_SECRET",
+        field: "image_encryption_secret",
+        flag: "--image-encryption-secret-file",
+        short: None,
+        toml: None,
+        kind: Kind::SecretFile,
+        reload: Reload::Boot,
+        secret: true,
+        // No static default: falls back to API_KEY_SALT at resolution time.
+        default: None,
+        help: "File containing the stored-image encryption key (min 16 bytes; defaults to the API key salt)",
+    },
+    Param {
         env: "DEFAULT_SESSION_TTL_SECONDS",
         field: "default_session_ttl_seconds",
         flag: "--default-session-ttl",

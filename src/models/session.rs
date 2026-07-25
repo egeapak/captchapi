@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Internal struct for SQLite row mapping
 /// SQLite stores booleans as integers (0/1), and all integers as i64
@@ -8,8 +7,8 @@ use uuid::Uuid;
 #[derive(Debug, sqlx::FromRow)]
 pub(crate) struct SessionRow {
     pub id: String,
-    pub solution: String,
-    pub image_bytes: Vec<u8>,
+    pub solution_hash: String,
+    pub image_encrypted: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
     pub attempt_count: i64, // SQLite INTEGER -> i64
@@ -22,8 +21,12 @@ pub(crate) struct SessionRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
-    pub solution: String,
-    pub image_bytes: Vec<u8>,
+    /// Keyed hash of the correct answer — see [`crate::services::SolutionHasher`].
+    /// The plaintext solution is never stored.
+    pub solution_hash: String,
+    /// Encrypted CAPTCHA image — see [`crate::services::ImageCipher`].
+    /// The raw JPEG is never stored.
+    pub image_encrypted: Vec<u8>,
     pub created_at: i64,
     pub expires_at: i64,
     pub attempt_count: i64,
@@ -37,8 +40,8 @@ impl From<SessionRow> for Session {
     fn from(row: SessionRow) -> Self {
         Self {
             id: row.id,
-            solution: row.solution,
-            image_bytes: row.image_bytes,
+            solution_hash: row.solution_hash,
+            image_encrypted: row.image_encrypted,
             created_at: row.created_at,
             expires_at: row.expires_at,
             attempt_count: row.attempt_count,
@@ -51,9 +54,18 @@ impl From<SessionRow> for Session {
 }
 
 impl Session {
+    /// Build a session from a caller-supplied ID and an already-hashed solution.
+    ///
+    /// The hash is salted with the session ID (see [`crate::services::SolutionHasher`])
+    /// and the image is encrypted with it as associated data (see
+    /// [`crate::services::ImageCipher`]), so callers need the ID before the session
+    /// exists: they generate it, hash and encrypt with it, then build here.
+    /// Neither the plaintext answer nor the raw image is ever stored.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        solution: String,
-        image_bytes: Vec<u8>,
+        id: String,
+        solution_hash: String,
+        image_encrypted: Vec<u8>,
         expires_in_seconds: u64,
         difficulty: i64,
         width: i64,
@@ -62,9 +74,9 @@ impl Session {
     ) -> Self {
         let now = Utc::now().timestamp();
         Self {
-            id: Uuid::new_v4().to_string(),
-            solution,
-            image_bytes,
+            id,
+            solution_hash,
+            image_encrypted,
             created_at: now,
             expires_at: now + expires_in_seconds as i64,
             attempt_count: 0,
@@ -136,8 +148,8 @@ mod tests {
     fn make_session_row(dark_mode: i64, created_at: i64, expires_at: i64) -> SessionRow {
         SessionRow {
             id: "test-id".to_string(),
-            solution: "abcd".to_string(),
-            image_bytes: vec![0xFF, 0xD8],
+            solution_hash: "hashed-abcd".to_string(),
+            image_encrypted: vec![0x01, 0x02],
             created_at,
             expires_at,
             attempt_count: 2,
@@ -152,7 +164,8 @@ mod tests {
     fn test_session_new_sets_fields_correctly() {
         let before = Utc::now().timestamp();
         let session = Session::new(
-            "solution123".to_string(),
+            "test-id".to_string(),
+            "hashed-solution123".to_string(),
             vec![1, 2, 3],
             300,
             7,
@@ -162,9 +175,9 @@ mod tests {
         );
         let after = Utc::now().timestamp();
 
-        assert!(!session.id.is_empty(), "id should be non-empty UUID");
-        assert_eq!(session.solution, "solution123");
-        assert_eq!(session.image_bytes, vec![1, 2, 3]);
+        assert_eq!(session.id, "test-id");
+        assert_eq!(session.solution_hash, "hashed-solution123");
+        assert_eq!(session.image_encrypted, vec![1, 2, 3]);
         assert_eq!(session.attempt_count, 0);
         assert_eq!(session.difficulty, 7);
         assert_eq!(session.width, 320);
@@ -175,13 +188,18 @@ mod tests {
     }
 
     #[test]
-    fn test_session_new_unique_ids() {
-        let session1 = Session::new("sol".to_string(), vec![], 60, 5, 220, 120, false);
-        let session2 = Session::new("sol".to_string(), vec![], 60, 5, 220, 120, false);
-        assert_ne!(
-            session1.id, session2.id,
-            "Each session should have a unique ID"
+    fn test_session_new_uses_supplied_id() {
+        let session = Session::new(
+            "caller-supplied-id".to_string(),
+            "hashed-sol".to_string(),
+            vec![],
+            60,
+            5,
+            220,
+            120,
+            false,
         );
+        assert_eq!(session.id, "caller-supplied-id");
     }
 
     #[test]
@@ -189,8 +207,8 @@ mod tests {
         let now = Utc::now().timestamp();
         let session = Session {
             id: "id".to_string(),
-            solution: "sol".to_string(),
-            image_bytes: vec![],
+            solution_hash: "hashed-sol".to_string(),
+            image_encrypted: vec![],
             created_at: now - 10,
             expires_at: now + 1000,
             attempt_count: 0,
@@ -210,8 +228,8 @@ mod tests {
         let now = Utc::now().timestamp();
         let session = Session {
             id: "id".to_string(),
-            solution: "sol".to_string(),
-            image_bytes: vec![],
+            solution_hash: "hashed-sol".to_string(),
+            image_encrypted: vec![],
             created_at: now - 200,
             expires_at: now - 100,
             attempt_count: 0,
@@ -232,8 +250,8 @@ mod tests {
         let now = Utc::now().timestamp();
         let session = Session {
             id: "id".to_string(),
-            solution: "sol".to_string(),
-            image_bytes: vec![],
+            solution_hash: "hashed-sol".to_string(),
+            image_encrypted: vec![],
             created_at: now - 10,
             expires_at: now - 1,
             attempt_count: 0,
@@ -253,8 +271,8 @@ mod tests {
         // 1_700_000_000 = 2023-11-14T22:13:20Z
         let session = Session {
             id: "id".to_string(),
-            solution: "sol".to_string(),
-            image_bytes: vec![],
+            solution_hash: "hashed-sol".to_string(),
+            image_encrypted: vec![],
             created_at: 0,
             expires_at: 1_700_000_000,
             attempt_count: 0,
@@ -271,8 +289,8 @@ mod tests {
     fn test_created_at_datetime_valid_timestamp() {
         let session = Session {
             id: "id".to_string(),
-            solution: "sol".to_string(),
-            image_bytes: vec![],
+            solution_hash: "hashed-sol".to_string(),
+            image_encrypted: vec![],
             created_at: 1_700_000_000,
             expires_at: 1_700_001_000,
             attempt_count: 0,
@@ -306,8 +324,8 @@ mod tests {
     fn test_session_row_to_session_field_mapping() {
         let row = SessionRow {
             id: "abc-123".to_string(),
-            solution: "XyZw".to_string(),
-            image_bytes: vec![0xFF, 0xD8, 0xFF],
+            solution_hash: "hashed-XyZw".to_string(),
+            image_encrypted: vec![0x01, 0x02, 0x03],
             created_at: 1_700_000_000,
             expires_at: 1_700_001_000,
             attempt_count: 3,
@@ -318,8 +336,8 @@ mod tests {
         };
         let session: Session = row.into();
         assert_eq!(session.id, "abc-123");
-        assert_eq!(session.solution, "XyZw");
-        assert_eq!(session.image_bytes, vec![0xFF, 0xD8, 0xFF]);
+        assert_eq!(session.solution_hash, "hashed-XyZw");
+        assert_eq!(session.image_encrypted, vec![0x01, 0x02, 0x03]);
         assert_eq!(session.created_at, 1_700_000_000);
         assert_eq!(session.expires_at, 1_700_001_000);
         assert_eq!(session.attempt_count, 3);

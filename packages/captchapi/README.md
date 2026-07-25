@@ -30,8 +30,9 @@ const session = await api.createSession({
 });
 
 console.log('Session ID:', session.sessionId);
-console.log('CAPTCHA text:', session.text);
 console.log('Image size:', session.image.length, 'bytes');
+// The solution is never returned: show the image to the user and let
+// api.validate() check their answer. Use api.generate() if you need the text.
 
 // Validate user input
 const result = await api.validate(session.sessionId, userAnswer);
@@ -95,10 +96,11 @@ const session = await api.createSession({
   expiresInSeconds: 300,    // TTL
 });
 
-// Response includes generated text
-console.log('Generated text:', session.text);
+// The response never includes the solution — it is stored only as a keyed hash.
+// For the plaintext text, use the stateless api.generate() instead, which
+// returns { solution, image } without storing a session.
 
-// Get image
+// Get image (decrypted on read; stored encrypted at rest)
 const imageBuffer = await api.getImage(session.sessionId);
 
 // Get session info

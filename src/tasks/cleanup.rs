@@ -153,7 +153,16 @@ mod tests {
 
     fn create_expired_session() -> Session {
         // Create session that expired 10 seconds ago
-        let mut session = Session::new("EXPIRED".to_string(), vec![1, 2, 3], 0, 5, 220, 120, false);
+        let mut session = Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-EXPIRED".to_string(),
+            vec![1, 2, 3],
+            0,
+            5,
+            220,
+            120,
+            false,
+        );
         // Manually set expires_at to be in the past
         let now = Utc::now().timestamp();
         session.expires_at = now - 10;
@@ -162,7 +171,8 @@ mod tests {
 
     fn create_valid_session() -> Session {
         Session::new(
-            "VALID".to_string(),
+            Uuid::new_v4().to_string(),
+            "hashed-VALID".to_string(),
             vec![4, 5, 6],
             3600, // Valid for 1 hour
             5,

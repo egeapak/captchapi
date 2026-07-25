@@ -36,6 +36,24 @@ pub fn parse_bool_lenient(value: &str) -> Option<bool> {
     }
 }
 
+/// Resolve a secret that falls back to the API key salt when unset.
+///
+/// Used for the solution-hash and image-encryption keys: a dedicated secret is preferred, but
+/// defaulting to `API_KEY_SALT` means existing deployments keep working without a new required
+/// variable. The uses are domain-separated inside `SolutionHasher` and `ImageCipher`, so sharing
+/// one input value does not let one derive the other.
+fn derived_secret<E: EnvProvider>(env: &E, key: &str, fallback: &str) -> Result<String, String> {
+    match env.get(key) {
+        Ok(secret) => {
+            if secret.len() < 16 {
+                return Err(format!("{key} must be at least 16 bytes for security"));
+            }
+            Ok(secret)
+        }
+        Err(_) => Ok(fallback.to_string()),
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     pub server_host: String,
@@ -45,6 +63,10 @@ pub struct Config {
     pub database_max_connections: u32,
     pub api_key_salt: String,
     pub master_api_key: String,
+    /// Server-side key for hashing CAPTCHA solutions. Defaults to `API_KEY_SALT`.
+    pub solution_hash_secret: String,
+    /// Server-side key for encrypting stored CAPTCHA images. Defaults to `API_KEY_SALT`.
+    pub image_encryption_secret: String,
     pub default_session_ttl_seconds: u64,
     pub max_session_ttl_seconds: u64,
     pub max_validation_attempts: i64,
@@ -76,6 +98,14 @@ impl fmt::Debug for Config {
             .field("database_max_connections", &self.database_max_connections)
             .field("api_key_salt", &Redacted(self.api_key_salt.len()))
             .field("master_api_key", &Redacted(self.master_api_key.len()))
+            .field(
+                "solution_hash_secret",
+                &Redacted(self.solution_hash_secret.len()),
+            )
+            .field(
+                "image_encryption_secret",
+                &Redacted(self.image_encryption_secret.len()),
+            )
             .field(
                 "default_session_ttl_seconds",
                 &self.default_session_ttl_seconds,
@@ -116,6 +146,26 @@ impl Config {
 
     /// Load configuration from a custom environment provider (testing use)
     pub fn from_env_provider<E: EnvProvider>(env: &E) -> Result<Self, String> {
+        let api_key_salt = {
+            let salt = env
+                .get("API_KEY_SALT")
+                .map_err(|_| "API_KEY_SALT must be set")?;
+            if salt.len() < 16 {
+                return Err("API_KEY_SALT must be at least 16 bytes for security".to_string());
+            }
+            salt
+        };
+
+        // Solutions are hashed with a key that must not live in the database. A dedicated
+        // secret is preferred; falling back to API_KEY_SALT keeps existing deployments working
+        // without a new required variable (the two uses are domain-separated inside
+        // SolutionHasher).
+        let solution_hash_secret = derived_secret(env, "SOLUTION_HASH_SECRET", &api_key_salt)?;
+
+        // Same reasoning for the image encryption key (domain-separated inside ImageCipher).
+        let image_encryption_secret =
+            derived_secret(env, "IMAGE_ENCRYPTION_SECRET", &api_key_salt)?;
+
         Ok(Config {
             server_host: env
                 .get("SERVER_HOST")
@@ -136,15 +186,9 @@ impl Config {
                 .unwrap_or_else(|_| "5".to_string())
                 .parse()
                 .map_err(|_| "Invalid DATABASE_MAX_CONNECTIONS: must be a positive integer")?,
-            api_key_salt: {
-                let salt = env
-                    .get("API_KEY_SALT")
-                    .map_err(|_| "API_KEY_SALT must be set")?;
-                if salt.len() < 16 {
-                    return Err("API_KEY_SALT must be at least 16 bytes for security".to_string());
-                }
-                salt
-            },
+            api_key_salt,
+            solution_hash_secret,
+            image_encryption_secret,
             master_api_key: {
                 let key = env
                     .get("MASTER_API_KEY")
@@ -252,6 +296,8 @@ impl Config {
             "database_max_connections" => self.database_max_connections.to_string(),
             "api_key_salt" => self.api_key_salt.clone(),
             "master_api_key" => self.master_api_key.clone(),
+            "solution_hash_secret" => self.solution_hash_secret.clone(),
+            "image_encryption_secret" => self.image_encryption_secret.clone(),
             "default_session_ttl_seconds" => self.default_session_ttl_seconds.to_string(),
             "max_session_ttl_seconds" => self.max_session_ttl_seconds.to_string(),
             "max_validation_attempts" => self.max_validation_attempts.to_string(),
@@ -314,6 +360,8 @@ impl Config {
             database_max_connections: self.database_max_connections,
             api_key_salt: self.api_key_salt.clone(),
             master_api_key: self.master_api_key.clone(),
+            solution_hash_secret: self.solution_hash_secret.clone(),
+            image_encryption_secret: self.image_encryption_secret.clone(),
             rate_limit_requests_per_second: self.rate_limit_requests_per_second,
             rate_limit_burst_size: self.rate_limit_burst_size,
             rate_limit_reverse_proxy: self.rate_limit_reverse_proxy,
@@ -341,6 +389,8 @@ impl Config {
             database_max_connections: 5,
             api_key_salt: "test-salt-minimum-16chars".to_string(),
             master_api_key: "test-master-key-minimum-16chars".to_string(),
+            solution_hash_secret: "test-solution-secret-1234".to_string(),
+            image_encryption_secret: "test-image-secret-1234".to_string(),
             default_session_ttl_seconds: 300,
             max_session_ttl_seconds: 3600,
             max_validation_attempts: 3,
@@ -915,13 +965,109 @@ mod tests {
     }
 
     #[test]
-    fn test_params_without_defaults_are_exactly_the_secrets() {
-        let required: Vec<_> = PARAMS
+    fn test_params_without_a_static_default_are_exactly_the_secrets() {
+        // Secrets have no declared default: two are required, and two derive from
+        // API_KEY_SALT at resolution time, which the table cannot express as a literal.
+        let no_default: Vec<_> = PARAMS
             .iter()
             .filter(|p| p.default.is_none())
             .map(|p| p.env)
             .collect();
-        assert_eq!(required, vec!["API_KEY_SALT", "MASTER_API_KEY"]);
+        assert_eq!(
+            no_default,
+            vec![
+                "API_KEY_SALT",
+                "MASTER_API_KEY",
+                "SOLUTION_HASH_SECRET",
+                "IMAGE_ENCRYPTION_SECRET"
+            ]
+        );
+        assert!(PARAMS
+            .iter()
+            .filter(|p| p.default.is_none())
+            .all(|p| p.secret));
+    }
+
+    #[test]
+    fn test_only_two_parameters_are_actually_required() {
+        // Resolving with just the two required secrets must succeed. If a future parameter
+        // starts erroring when unset, this fails and the table row needs a default.
+        let mut env = MockEnv::new();
+        env.set_only_secrets();
+        assert!(Config::from_env_provider(&env).is_ok());
+
+        for missing in ["API_KEY_SALT", "MASTER_API_KEY"] {
+            let mut env = MockEnv::new();
+            env.set_only_secrets();
+            env.vars.remove(missing);
+            assert!(
+                Config::from_env_provider(&env).is_err(),
+                "{missing} should be required"
+            );
+        }
+    }
+
+    // ── derived secrets ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_derived_secrets_default_to_the_api_key_salt() {
+        let mut env = MockEnv::new();
+        env.set_only_secrets();
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.solution_hash_secret, "test-salt-minimum-16chars");
+        assert_eq!(config.image_encryption_secret, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_derived_secrets_can_be_set_independently() {
+        let mut env = MockEnv::new();
+        env.set_only_secrets();
+        env.set("SOLUTION_HASH_SECRET", "dedicated-solution-secret");
+        env.set("IMAGE_ENCRYPTION_SECRET", "dedicated-image-secret-16");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.solution_hash_secret, "dedicated-solution-secret");
+        assert_eq!(config.image_encryption_secret, "dedicated-image-secret-16");
+        // Setting them must not disturb the salt they would otherwise fall back to.
+        assert_eq!(config.api_key_salt, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_derived_secrets_enforce_the_minimum_length() {
+        for key in ["SOLUTION_HASH_SECRET", "IMAGE_ENCRYPTION_SECRET"] {
+            let mut env = MockEnv::new();
+            env.set_only_secrets();
+            env.set(key, "short");
+
+            let err = Config::from_env_provider(&env).unwrap_err();
+            assert!(err.contains(key), "{err}");
+            assert!(err.contains("at least 16 bytes"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_derived_secrets_resolve_through_the_layers() {
+        // They are ordinary parameters, so a CLI flag or config-file value must win over the
+        // API_KEY_SALT fallback exactly like any other setting.
+        let cli: Layer = [(
+            "SOLUTION_HASH_SECRET".to_string(),
+            "from-the-command-line-16".to_string(),
+        )]
+        .into_iter()
+        .collect();
+        let (env_file, file, carried) = (Layer::new(), Layer::new(), Layer::new());
+        let mut base = MockEnv::new();
+        base.set_only_secrets();
+
+        let layered = LayeredEnv::new(&cli, &base, &env_file, &file, &carried);
+        let config = Config::from_env_provider(&layered).unwrap();
+
+        assert_eq!(config.solution_hash_secret, "from-the-command-line-16");
+        assert_eq!(
+            config.image_encryption_secret, "test-salt-minimum-16chars",
+            "the unset one should still fall back"
+        );
     }
 
     // ── boot/live partition ───────────────────────────────────────────────────

@@ -312,8 +312,16 @@ The same operations are available over HTTP — see [Admin endpoints](docs/API.m
 |----------|------|-------------|---------|----------|
 | `API_KEY_SALT` | `--api-key-salt-file` | Salt for API key hashing (min 16 chars) | - | **Yes** |
 | `MASTER_API_KEY` | `--master-api-key-file` | Admin API key (min 16 chars) | - | **Yes** |
+| `SOLUTION_HASH_SECRET` | `--solution-hash-secret-file` | Key for hashing CAPTCHA solutions (min 16 chars) | `API_KEY_SALT` | No |
+| `IMAGE_ENCRYPTION_SECRET` | `--image-encryption-secret-file` | Key for encrypting stored CAPTCHA images (min 16 chars) | `API_KEY_SALT` | No |
 
-The flags take a *path*, not the secret itself. Neither can be set in the TOML config file.
+The flags take a *path*, not the secret itself. None of these can be set in the TOML config
+file, and all four are redacted by `config show` and the admin API.
+
+> **Rotating `SOLUTION_HASH_SECRET` or `IMAGE_ENCRYPTION_SECRET` invalidates every stored
+> session** — existing solution hashes stop matching and stored images stop decrypting. Like
+> `API_KEY_SALT`, they are applied at startup only; a reload reports a change rather than
+> applying it.
 
 ### CAPTCHA
 

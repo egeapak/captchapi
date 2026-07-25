@@ -146,8 +146,8 @@ server's behaviour, not to read credentials back out of it.
 ```sql
 CREATE TABLE sessions (
     id TEXT PRIMARY KEY,              -- UUID v4
-    solution TEXT NOT NULL,           -- Correct answer
-    image_bytes BLOB NOT NULL,        -- Raw JPEG image bytes
+    solution_hash TEXT NOT NULL,      -- HMAC-SHA256 of the answer (see Security Model)
+    image_encrypted BLOB NOT NULL,    -- ChaCha20-Poly1305 ciphertext of the JPEG
     created_at INTEGER NOT NULL,      -- Unix timestamp
     expires_at INTEGER NOT NULL,      -- Unix timestamp
     attempt_count INTEGER DEFAULT 0,  -- Failed attempts
@@ -183,8 +183,25 @@ CREATE TABLE api_keys (
 - Sessions auto-expire based on configurable TTL
 - Maximum 3 validation attempts per session (configurable)
 - Sessions are deleted after successful validation
-- Case-sensitive solution matching
+- Case-sensitive solution matching, compared in constant time
 - CAPTCHA solution is never returned in API responses
+- Solutions are stored as `HMAC-SHA256(server_secret, session_id || solution)`, never in plaintext.
+  The key is derived from `SOLUTION_HASH_SECRET` (falling back to `API_KEY_SALT`) and never lives
+  in the database, so a leaked database file does not reveal answers — a bare digest would not
+  help, since a 5-character alphanumeric keyspace is brute-forced in milliseconds. The session ID
+  acts as a per-session salt so identical answers do not produce identical hashes.
+- Images are encrypted at rest with ChaCha20-Poly1305, decrypted only when served. The rendered
+  challenge is the answer in visual form, so leaving it in plaintext would have undone the solution
+  hashing. Each session encrypts under its own key, derived as
+  `HMAC-SHA256(master_key, info || session_id)` where the master key comes from
+  `IMAGE_ENCRYPTION_SECRET` (falling back to `API_KEY_SALT`). Per-session keys bind a ciphertext to
+  its row through the key itself — another row's blob cannot be decrypted at all — and mean each key
+  ever encrypts exactly one message, so nonce reuse cannot occur. The session ID is additionally
+  authenticated as associated data, redundantly, so the binding survives if derivation is ever
+  simplified. Tampered bytes fail the Poly1305 tag rather than being served.
+  Stored layout: `[scheme version][12-byte nonce][ciphertext+tag]`.
+- Net effect: a leaked database file contains no answer and no readable image — only ciphertext,
+  timestamps, and challenge dimensions.
 
 ### Rate Limiting
 

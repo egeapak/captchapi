@@ -9,6 +9,17 @@ export interface CaptchaConfig {
   databaseUrl: string
   /** Salt used for hashing API keys */
   apiKeySalt: string
+  /**
+   * Server-side key used to hash CAPTCHA solutions before storing them.
+   * Defaults to `apiKeySalt`. Keep it out of the database — a stolen
+   * database is useless without it.
+   */
+  solutionHashSecret?: string
+  /**
+   * Server-side key used to encrypt stored CAPTCHA images.
+   * Defaults to `apiKeySalt`. Keep it out of the database.
+   */
+  imageEncryptionSecret?: string
   /** Default session TTL in seconds (default: 300) */
   defaultSessionTtlSeconds?: number
   /** Maximum allowed session TTL in seconds (default: 3600) */
@@ -37,16 +48,16 @@ export interface CreateSessionOptions {
   /** JPEG compression quality 1-100 (default: 40) */
   compression?: number
 }
-/** Result of creating a CAPTCHA session */
+/**
+ * Result of creating a CAPTCHA session
+ *
+ * The solution is deliberately absent: a stored session's answer never leaves
+ * the process, in any form, through any API. Use `generate()` if you need the
+ * text yourself — it produces a CAPTCHA without storing a session.
+ */
 export interface SessionResult {
   /** Unique session identifier (UUID) */
   sessionId: string
-  /**
-   * The generated CAPTCHA text (solution).
-   * Available in the library API for server-side use.
-   * Note: The HTTP REST API does NOT expose this field to clients.
-   */
-  text: string
   /** Session creation timestamp (Unix milliseconds) */
   createdAt: number
   /** Session expiration timestamp (Unix milliseconds) */

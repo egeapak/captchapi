@@ -9,11 +9,17 @@
 # Run `captchapi config show` to see the effective value of every setting and which
 # layer supplied it.
 #
-# Secrets (API_KEY_SALT and MASTER_API_KEY) deliberately cannot be set here. Supply
-# them through the environment, or point at a file:
-#   captchapi --api-key-salt-file /run/secrets/salt \
-#             --master-api-key-file /run/secrets/master_key
+# Secrets deliberately cannot be set here — API_KEY_SALT, MASTER_API_KEY,
+# SOLUTION_HASH_SECRET and IMAGE_ENCRYPTION_SECRET. Supply them through the
+# environment, or point at a file:
+#   captchapi --api-key-salt-file           /run/secrets/salt \
+#             --master-api-key-file         /run/secrets/master_key \
+#             --solution-hash-secret-file   /run/secrets/solution_key \
+#             --image-encryption-secret-file /run/secrets/image_key
 # That keeps this file safe to commit.
+#
+# The last two default to API_KEY_SALT when unset. Rotating either invalidates every
+# stored session: solution hashes stop matching and stored images stop decrypting.
 
 [server]
 host = "0.0.0.0"
