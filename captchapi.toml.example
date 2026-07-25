@@ -18,8 +18,10 @@
 [server]
 host = "0.0.0.0"
 port = 3000
-# Written at startup so `captchapi reload` can find the process. Must be somewhere
-# the server can write — in the container image that means the /data volume.
+# Written at startup so `captchapi reload` can find the process. Must be somewhere the
+# server can write. This relative default resolves against the working directory, which is
+# right for local development; the container image overrides it to the absolute
+# /data/captchapi.pid, because its working directory is /app and the volume is /data.
 pid_file = "./data/captchapi.pid"
 
 [database]
@@ -47,6 +49,11 @@ cleanup_interval_seconds = 60
 
 [logging]
 level = "captchapi=debug,tower_http=debug"
+
+[admin]
+# Set to false for deployments that want file-driven reload but no remote mutation:
+# GET /admin/config and POST /admin/config/reload keep working, PATCH returns 403.
+config_write = true
 
 [telemetry]
 enabled = false

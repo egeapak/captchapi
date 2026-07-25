@@ -114,7 +114,52 @@ async fn test_patch_config_updates_a_reloadable_field() {
     response.assert_status_ok();
     let body: serde_json::Value = response.json();
     assert_eq!(body["config"]["captcha_compression"]["value"], "90");
-    assert_eq!(body["overrides"], json!(["CAPTCHA_COMPRESSION"]));
+    assert_eq!(body["overrides"], json!(["captcha_compression"]));
+}
+
+#[tokio::test]
+async fn test_overrides_can_be_fed_straight_back_into_patch() {
+    // The whole API must speak one key form. `overrides` previously returned canonical env
+    // keys (CAPTCHA_COMPRESSION) while PATCH accepted field names (captcha_compression), so
+    // the obvious "revert what an operator changed" loop died with 400 invalid_config and
+    // `config[overrides[0]]` was always undefined.
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .json(&json!({ "captcha_compression": 90, "max_validation_attempts": 5 }))
+        .await
+        .assert_status_ok();
+
+    let listed = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await;
+    listed.assert_status_ok();
+    let body: serde_json::Value = listed.json();
+
+    let overrides = body["overrides"].as_array().unwrap().clone();
+    assert_eq!(overrides.len(), 2, "{overrides:?}");
+
+    for name in overrides {
+        let name = name.as_str().unwrap();
+
+        // Every name in `overrides` must key into the `config` map...
+        assert!(
+            !body["config"][name].is_null(),
+            "`{name}` from overrides is not a key of the config map"
+        );
+
+        // ...and must be accepted by PATCH.
+        server
+            .patch("/api/v1/admin/config")
+            .add_header("Authorization", format!("Bearer {}", app.master_key))
+            .json(&json!({ name: body["config"][name]["value"].as_str().unwrap() }))
+            .await
+            .assert_status_ok();
+    }
 }
 
 #[tokio::test]
@@ -308,6 +353,57 @@ async fn test_patch_config_rejects_an_empty_body() {
     response.assert_status_bad_request();
     let body: serde_json::Value = response.json();
     assert_eq!(body["error"], "invalid_config");
+}
+
+// ── ADMIN_CONFIG_WRITE=false ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_patch_is_forbidden_when_runtime_writes_are_disabled() {
+    // The hardening opt-out: deployments that want file-driven reload but no remote mutation.
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app_with_config(captchapi::config::Config {
+        master_api_key: app.master_key.clone(),
+        admin_config_write: false,
+        ..captchapi::config::Config::for_test()
+    }));
+
+    let response = server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .json(&json!({ "captcha_compression": 90 }))
+        .await;
+
+    // 403, not 401: the caller authenticated fine, the operation is disabled by policy.
+    response.assert_status_forbidden();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "forbidden");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("ADMIN_CONFIG_WRITE"));
+}
+
+#[tokio::test]
+async fn test_reads_and_reload_still_work_when_writes_are_disabled() {
+    // Turning off writes must not turn off the ability to inspect or to reload from files.
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app_with_config(captchapi::config::Config {
+        master_api_key: app.master_key.clone(),
+        admin_config_write: false,
+        ..captchapi::config::Config::for_test()
+    }));
+
+    server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await
+        .assert_status_ok();
+
+    server
+        .post("/api/v1/admin/config/reload")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await
+        .assert_status_ok();
 }
 
 // ── POST /api/v1/admin/config/reload ─────────────────────────────────────────

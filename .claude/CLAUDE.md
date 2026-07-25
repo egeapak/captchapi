@@ -16,10 +16,10 @@ This file provides project overview, architecture, and development workflow. For
 
 - **Language**: Rust (Edition 2021)
 - **Web Framework**: Axum 0.8 (async-first, built on Tokio)
-- **Database**: SQLite via SQLx 0.8 (async, compile-time checked queries)
-- **CAPTCHA Generation**: captcha-rs 0.2.11
+- **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
+- **CAPTCHA Generation**: captcha-rs 0.5
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (7.42 MB)
+- **Deployment**: Static musl binary in distroless container (~7.4 MB — the size below predates the CLI/config work and needs re-measuring with `just docker amd64`)
 
 ### Key Features
 
@@ -32,15 +32,13 @@ This file provides project overview, architecture, and development workflow. For
 - ✅ CAPTCHA solution not returned in API response (removed in v1.0.0 for security)
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
-- ✅ Ultra-small Docker image (7.42 MB with full LTO and static linking)
+- ✅ Ultra-small Docker image (full LTO and static linking)
 - ✅ Zero runtime dependencies (fully static binary)
 
 ## Project Structure
 
 ```
 captchapi/
-├── PLAN.md                      # Implementation specification
-├── PROGRESS.md                  # Development progress tracking
 ├── CLAUDE.md                    # This file - project documentation
 ├── .env.example                 # Example environment configuration
 ├── Cargo.toml                   # Rust dependencies
@@ -96,7 +94,7 @@ For complete API documentation including all endpoints, request/response formats
 **Quick Reference:**
 - **Public**: Health check, Get session details, Get CAPTCHA image (binary JPEG)
 - **Protected**: Create sessions, Validate solutions, Delete sessions
-- **Admin**: Manage API keys (create, list, update, delete), Manual cleanup
+- **Admin**: Manage API keys (create, list, update, delete), manual cleanup, show/patch/reload configuration
 
 The API documentation includes:
 - Full endpoint specifications
@@ -414,7 +412,7 @@ Logs include:
 
 ## Future Enhancements
 
-See `PLAN.md` for detailed future feature ideas:
+Ideas not yet scheduled:
 
 - Multiple CAPTCHA types (math, audio)
 - Session statistics/analytics
@@ -484,7 +482,7 @@ When making changes, follow this workflow:
 
 ### 2. Implement Changes
 - ✅ Write the actual code
-- ✅ Update relevant documentation (PLAN.md, PROGRESS.md, this file)
+- ✅ Update relevant documentation (README.md, docs/, this file)
 
 ### 3. Verify Quality (Run IN ORDER)
 - ✅ Step 1: Run `cargo fmt` to format code
@@ -494,7 +492,6 @@ When making changes, follow this workflow:
 - ✅ Step 5: Run `./.bruno/Tests/Scripts/test-bruno-full.sh` to verify API tests (requires running server)
 
 ### 4. Finalize
-- ✅ Update PROGRESS.md with completed tasks
 - ✅ Commit with descriptive messages
 
 **CRITICAL REQUIREMENTS:**

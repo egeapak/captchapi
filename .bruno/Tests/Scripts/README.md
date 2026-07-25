@@ -13,7 +13,7 @@ Automated test execution scripts for CaptchAPI.
 - Create API key → List keys
 - Create session → Get images (JSON & binary)
 
-**Coverage**: 6 requests, 16 tests
+**Coverage**: 5 requests, 13 tests
 
 **Usage**:
 ```bash
@@ -38,7 +38,7 @@ BRUNO_ENV=ci ./.bruno/Tests/Scripts/test-bruno.sh
 - Failure scenarios (unauthorized, invalid params, not found)
 - Business logic (max attempts, session deletion)
 
-**Coverage**: 18 requests, 38 tests
+**Coverage**: 41 requests, 95 tests
 
 **Usage**:
 ```bash
@@ -86,7 +86,7 @@ BRUNO_ENV=production ./.bruno/Tests/Scripts/test-bruno-full.sh
 
 - **local** → `.bruno/environments/local.bru` (development)
 - **ci** → `.bruno/environments/ci.bru` (GitHub Actions)
-- **production** → `.bruno/environments/production.bru` (production testing)
+- **production** → `.bruno/environments/ci.bru` (production testing)
 
 ---
 
@@ -133,8 +133,8 @@ Using environment: local
 📊 Execution Summary
 ┌───────────────┬────────────────┐
 │ Status        │     ✓ PASS     │
-│ Requests      │ 18 (18 Passed) │
-│ Tests         │     38/38      │
+│ Requests      │ 41 (41 Passed) │
+│ Tests         │     95/95      │
 │ Duration (ms) │      170       │
 └───────────────┴────────────────┘
 
@@ -187,7 +187,7 @@ Error: Environment 'xyz' not found
 **Solution**: Check environment exists in `.bruno/environments/`:
 ```bash
 ls .bruno/environments/
-# Should show: local.bru, ci.bru, production.bru
+# Should show: ci.bru, local.bru
 ```
 
 ### Tests Fail But Server Works
@@ -281,7 +281,7 @@ bru run \
 ### Execution Times
 
 - **test-bruno.sh**: ~130-150ms (6 requests)
-- **test-bruno-full.sh**: ~170-200ms (18 requests)
+- **test-bruno-full.sh**: ~5s (41 requests)
 
 ### Optimization
 

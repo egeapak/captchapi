@@ -30,7 +30,6 @@ Run: **Sessions > Create Session**
 
 ### 3. Get the CAPTCHA Image
 Run either:
-- **Sessions > Get Image (JSON)**: Returns base64-encoded image in JSON
 - **Sessions > Get Image (Binary)**: Returns raw JPEG image
 
 Open the image to see the CAPTCHA challenge.
@@ -70,46 +69,74 @@ Each request includes tests that validate:
 .bruno/
 ├── bruno.json                          # Collection metadata
 ├── README.md                           # This file
-├── .gitignore                          # Git ignore rules
-├── environments/                       # Environment configurations
-│   ├── local.bru                      # Local development
-│   └── production.bru                 # Production template
-├── Health Check.bru                   # Health endpoint
-├── API Keys/                          # Core API key endpoints
-│   ├── Create API Key.bru            # Generate new key
-│   ├── List API Keys.bru             # List all keys
-│   ├── Update API Key.bru            # Modify key (manual hash)
-│   └── Delete API Key.bru            # Remove key (manual hash)
-├── Sessions/                          # Core session endpoints
-│   ├── Create Session.bru            # Generate CAPTCHA
-│   ├── Get Image (JSON).bru          # Base64 image
-│   ├── Get Image (Binary).bru        # Raw JPEG
-│   ├── Validate Session.bru          # Validate solution
-│   └── Delete Session.bru            # Delete session
-└── Tests/                             # Test-specific endpoints & utilities
-    ├── README.md                      # Test documentation
-    ├── API Keys/                      # API key test scenarios
+├── ORGANIZATION.md                     # Core-vs-Tests rationale
+├── environments/
+│   ├── ci.bru                          # Used by CI (BRUNO_ENV=ci)
+│   └── local.bru                       # Local development
+├── Health Check.bru
+├── API Keys/
+│   ├── Create API Key.bru
+│   ├── Delete API Key.bru
+│   ├── List API Keys.bru
+│   └── Update API Key.bru
+├── Sessions/
+│   ├── Create Session.bru
+│   ├── Delete Session.bru
+│   ├── Get Image (Binary).bru
+│   ├── Get Session Details.bru
+│   └── Validate Session.bru
+├── Admin/
+│   ├── Cleanup Expired Sessions.bru
+│   ├── Get Config.bru
+│   ├── Patch Config.bru
+│   └── Reload Config.bru
+└── Tests/
+    ├── API Keys/
     │   ├── Create API Key - Unauthorized.bru
     │   ├── Create API Key for Testing.bru
-    │   ├── Update API Key (Test).bru
     │   ├── Delete API Key (Test).bru
-    │   └── Delete API Key - Not Found.bru
-    ├── Sessions/                      # Session test scenarios
-    │   ├── Create Session - Unauthorized.bru
+    │   ├── Delete API Key - Not Found.bru
+    │   ├── List API Keys - Unauthorized.bru
+    │   ├── Update API Key (Test).bru
+    │   ├── Update API Key - Not Found.bru
+    │   └── Update API Key - Unauthorized.bru
+    ├── Admin/
+    │   ├── Cleanup - Invalid Master Key.bru
+    │   ├── Cleanup - Success.bru
+    │   └── Cleanup - Unauthorized.bru
+    ├── Admin Config/
+    │   ├── Get Config - Invalid Master Key.bru
+    │   ├── Get Config - Success.bru
+    │   ├── Get Config - Unauthorized.bru
+    │   ├── Patch Config - Invalid Value.bru
+    │   ├── Patch Config - Not Reloadable.bru
+    │   ├── Patch Config - Success.bru
+    │   ├── Patch Config - Unauthorized.bru
+    │   ├── Reload Config - Success.bru
+    │   └── Reload Config - Unauthorized.bru
+    ├── Documentation/
+    │   └── TEST-SCENARIOS.md
+    ├── Scripts/
+    │   ├── README.md
+    │   ├── test-bruno-full.sh
+    │   └── test-bruno.sh
+    ├── Sessions/
+    │   ├── Create Session - Invalid Height.bru
+    │   ├── Create Session - Invalid Length.bru
     │   ├── Create Session - Invalid Parameters.bru
+    │   ├── Create Session - Invalid Width.bru
+    │   ├── Create Session - Unauthorized.bru
+    │   ├── Delete Session - Not Found.bru
+    │   ├── Delete Session - Unauthorized.bru
     │   ├── Get Image - Not Found.bru
-    │   ├── Validate Session - Wrong Answer.bru
     │   ├── Validate Session - Max Attempts.bru
-    │   └── Validate Session - Session Deleted.bru
-    ├── Scripts/                       # Test automation
-    │   ├── test-bruno.sh             # Quick happy path test
-    │   └── test-bruno-full.sh        # Comprehensive test suite
-    └── Documentation/                 # Test documentation
-        └── TEST-SCENARIOS.md         # Detailed scenarios
+    │   ├── Validate Session - Session Deleted.bru
+    │   ├── Validate Session - Unauthorized.bru
+    │   └── Validate Session - Wrong Answer.bru
+    └── README.md
 
-Core Endpoints: 10 requests (for normal API usage)
-Test Endpoints: 11 requests (for automated testing)
-Total: 21 requests
+Core requests: 14   Test requests: 32   Total .bru files: 46
+Full suite run: 41 requests, 95 assertions (some requests run twice by design)
 ```
 
 ## Using the Collection
@@ -130,10 +157,10 @@ The collection includes automated test scripts for CI/CD:
 # Install bruno-cli globally
 npm install -g @usebruno/cli
 
-# Quick happy path test (6 requests, 16 tests)
+# Quick happy path test (5 requests, 13 tests)
 ./.bruno/Tests/Scripts/test-bruno.sh
 
-# Comprehensive test suite (18 requests, 38 tests)
+# Comprehensive test suite (41 requests, 95 tests)
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 

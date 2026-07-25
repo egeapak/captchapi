@@ -504,7 +504,11 @@ accepted change is validated exactly as it would be at startup, and logged with 
 value.
 
 **Response: 200 OK** — the same shape as `GET /config`, with the changed fields listed in
-`overrides`.
+`overrides`. Those names match `config`'s keys and this endpoint's request body, so they can be
+fed straight back in.
+
+A patched value outranks every configuration layer, including the command line the server was
+started with, until the next reload clears it.
 
 **Changes are in-memory only.** They are never written back to a config file, and the next
 reload — SIGHUP, `POST /config/reload`, or a restart — discards them.
@@ -520,7 +524,11 @@ curl -X PATCH http://localhost:3000/api/v1/admin/config \
 **Error Responses:**
 - `400 config_not_reloadable` - The field is applied at startup and needs a restart
 - `400 invalid_config` - Unknown field, unusable value, or empty body
-- `401 Unauthorized` - Invalid or missing master key
+- `401 unauthorized` - Invalid or missing master key
+- `403 forbidden` - Runtime writes are disabled (`ADMIN_CONFIG_WRITE=false`)
+
+Set `ADMIN_CONFIG_WRITE=false` to disable this endpoint entirely; `GET /config` and
+`POST /config/reload` are unaffected.
 
 ---
 
@@ -574,6 +582,7 @@ All errors return JSON responses with this format:
 | `session_not_found` | 404 | Session doesn't exist or expired |
 | `unauthorized` | 401 | Invalid or missing API/master key |
 | `invalid_parameters` | 400 | Bad request parameters |
+| `forbidden` | 403 | Authenticated, but the operation is disabled by configuration |
 | `config_not_reloadable` | 400 | Configuration field is applied at startup and needs a restart |
 | `invalid_config` | 400 | Unknown configuration field or unusable value |
 | `database_error` | 500 | Internal database error |

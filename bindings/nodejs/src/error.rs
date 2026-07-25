@@ -29,6 +29,9 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
         AppError::Unauthorized(msg) => {
             napi::Error::new(Status::GenericFailure, format!("Unauthorized: {}", msg))
         }
+        AppError::Forbidden(msg) => {
+            napi::Error::new(Status::GenericFailure, format!("Forbidden: {}", msg))
+        }
         AppError::ConfigNotReloadable(msg) => napi::Error::new(
             Status::InvalidArg,
             format!("Configuration field is not reloadable: {}", msg),

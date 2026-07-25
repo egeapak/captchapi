@@ -66,12 +66,21 @@ impl TestApp {
     }
 
     pub fn build_app(&self) -> Router {
-        let captcha = Arc::new(CaptchaService::new());
-        let metrics = Arc::new(Metrics::new());
-        let config = ConfigHandle::from_static(Config {
+        self.build_app_with_config(Config {
             master_api_key: self.master_key.clone(),
             ..Config::for_test()
-        });
+        })
+    }
+
+    /// Build the app over a specific configuration.
+    ///
+    /// Added alongside `build_app` rather than replacing it, so the other test files do not
+    /// churn. The caller is responsible for setting `master_api_key` if it matters.
+    #[allow(dead_code)] // Used in some test files, but clippy doesn't see cross-module usage
+    pub fn build_app_with_config(&self, config: Config) -> Router {
+        let captcha = Arc::new(CaptchaService::new());
+        let metrics = Arc::new(Metrics::new());
+        let config = ConfigHandle::from_static(config);
 
         let auth_middleware = AuthMiddleware::new(
             self.storage.clone(),

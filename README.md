@@ -44,6 +44,13 @@ CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/c
   - Configurable CAPTCHA difficulty (1-10), dimensions, and compression
   - Dark mode support
   - Complete API documentation
+  - Command-line interface with `config show` / `config check` for deployment pipelines
+
+- **Operable**
+  - Layered configuration: command line, environment, env file, TOML file
+  - Runtime reload of session TTLs, attempt limits and image quality — via SIGHUP,
+    `captchapi reload`, or the admin API — with no restart and no dropped sessions
+  - Secrets read from files, never from flags, and never echoed back by the API
 
 - **Production Ready**
   - Multi-platform Docker images (amd64 + arm64)
@@ -57,7 +64,7 @@ CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/c
 
 ### Prerequisites
 
-- **Rust 1.85+** and Cargo
+- **Rust 1.94+** and Cargo (see `rust-version` in `Cargo.toml`)
 - **SQLite** support (usually built-in)
 
 ### Setup
@@ -97,16 +104,16 @@ docker pull ghcr.io/egeapak/captchapi:latest
 ```bash
 # Transient (no volume)
 docker run -p 3000:3000 \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   ghcr.io/egeapak/captchapi:latest
 
 # Production (with volume)
 docker volume create captchapi-data
 docker run -p 3000:3000 \
   -v captchapi-data:/data \
-  -e API_KEY_SALT=your-salt \
-  -e MASTER_API_KEY=your-key \
+  -e API_KEY_SALT=your-salt-minimum-16chars \
+  -e MASTER_API_KEY=your-key-minimum-16chars \
   ghcr.io/egeapak/captchapi:latest
 ```
 
@@ -273,6 +280,9 @@ captchapi reload                     # or: kill -HUP $(cat data/captchapi.pid)
 docker kill -s HUP <container>       # same thing inside the image
 ```
 
+A value set through `PATCH /api/v1/admin/config` outranks every other layer, including the
+command line, until the next reload clears it.
+
 Everything else — the bind address, the database, the API key salt, the master key and the rate
 limits — is captured at startup by the listener, the connection pool, the middleware and the
 rate limiter. A reload reports any of those that changed and tells you a restart is needed,
@@ -346,6 +356,16 @@ All four are reloadable — a reload applies them without a restart.
 |----------|------|-------------|---------|----------|
 | `RUST_LOG` | `--log-level` | Tracing filter directives | `captchapi=debug,tower_http=debug` | No |
 
+### Admin
+
+| Variable | Flag | Description | Default | Required |
+|----------|------|-------------|---------|----------|
+| `ADMIN_CONFIG_WRITE` | `--admin-config-write` | Allow `PATCH /api/v1/admin/config` to change settings at runtime | `true` | No |
+
+Set `ADMIN_CONFIG_WRITE=false` (or `--admin-config-write=false`) for deployments that want
+file-driven reload but no remote mutation: `GET /admin/config` and `POST /admin/config/reload`
+keep working, and `PATCH` returns `403`.
+
 ## API Reference
 
 For the complete API documentation including all endpoints, request/response formats, and usage examples, see [`docs/API.md`](docs/API.md).
@@ -365,6 +385,9 @@ For the complete API documentation including all endpoints, request/response for
 | `PUT` | `/api/v1/api-keys/{hash}` | Master | Update API key |
 | `DELETE` | `/api/v1/api-keys/{hash}` | Master | Delete API key |
 | `POST` | `/api/v1/admin/cleanup` | Master | Manual cleanup |
+| `GET` | `/api/v1/admin/config` | Master | Show effective configuration |
+| `PATCH` | `/api/v1/admin/config` | Master | Change reloadable settings at runtime |
+| `POST` | `/api/v1/admin/config/reload` | Master | Re-read every configuration source |
 
 ## Development
 

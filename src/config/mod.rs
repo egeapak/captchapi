@@ -54,6 +54,8 @@ pub struct Config {
     pub rate_limit_burst_size: u32,
     pub rate_limit_reverse_proxy: bool,
     pub captcha_compression: u8,
+    /// Whether `PATCH /api/v1/admin/config` may change settings at runtime.
+    pub admin_config_write: bool,
     // Observability
     pub log_level: String,
     pub otel_enabled: bool,
@@ -88,6 +90,7 @@ impl fmt::Debug for Config {
             .field("rate_limit_burst_size", &self.rate_limit_burst_size)
             .field("rate_limit_reverse_proxy", &self.rate_limit_reverse_proxy)
             .field("captcha_compression", &self.captcha_compression)
+            .field("admin_config_write", &self.admin_config_write)
             .field("log_level", &self.log_level)
             .field("otel_enabled", &self.otel_enabled)
             .field("otel_endpoint", &self.otel_endpoint)
@@ -194,6 +197,13 @@ impl Config {
                 .parse::<u8>()
                 .map_err(|_| "Invalid CAPTCHA_COMPRESSION: must be a number between 1 and 100")?
                 .clamp(1, 100),
+            admin_config_write: {
+                let raw = env
+                    .get("ADMIN_CONFIG_WRITE")
+                    .unwrap_or_else(|_| "true".to_string());
+                parse_bool_lenient(&raw)
+                    .ok_or("Invalid ADMIN_CONFIG_WRITE: must be 'true' or 'false'")?
+            },
             log_level: env
                 .get("RUST_LOG")
                 .unwrap_or_else(|_| "captchapi=debug,tower_http=debug".to_string()),
@@ -250,6 +260,7 @@ impl Config {
             "rate_limit_burst_size" => self.rate_limit_burst_size.to_string(),
             "rate_limit_reverse_proxy" => self.rate_limit_reverse_proxy.to_string(),
             "captcha_compression" => self.captcha_compression.to_string(),
+            "admin_config_write" => self.admin_config_write.to_string(),
             "log_level" => self.log_level.clone(),
             "otel_enabled" => self.otel_enabled.to_string(),
             "otel_endpoint" => self.otel_endpoint.clone(),
@@ -306,6 +317,7 @@ impl Config {
             rate_limit_requests_per_second: self.rate_limit_requests_per_second,
             rate_limit_burst_size: self.rate_limit_burst_size,
             rate_limit_reverse_proxy: self.rate_limit_reverse_proxy,
+            admin_config_write: self.admin_config_write,
             log_level: self.log_level.clone(),
             otel_enabled: self.otel_enabled,
             otel_endpoint: self.otel_endpoint.clone(),
@@ -337,6 +349,7 @@ impl Config {
             rate_limit_burst_size: 10,
             rate_limit_reverse_proxy: false,
             captcha_compression: 40,
+            admin_config_write: true,
             log_level: "captchapi=debug,tower_http=debug".to_string(),
             otel_enabled: false,
             otel_endpoint: "http://localhost:4318".to_string(),

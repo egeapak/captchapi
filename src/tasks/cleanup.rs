@@ -47,10 +47,18 @@ pub fn start_cleanup_task(
     rate_limiter: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     shutdown_token: CancellationToken,
 ) -> JoinHandle<()> {
+    // Subscribe, then drop the handle: holding it would keep a sender alive inside this task
+    // forever, so the closed-channel path below could never be reached — or tested.
+    let mut updates = config.subscribe();
+    let mut period = config.get().cleanup_interval_seconds;
+    drop(config);
+
     tokio::spawn(async move {
-        let mut updates = config.subscribe();
-        let mut period = config.get().cleanup_interval_seconds;
         let mut interval = interval_for(period);
+        // Once every sender is gone `changed()` resolves with an error immediately and forever.
+        // The branch has to be disabled by a guard: awaiting inside the arm body instead would
+        // suspend the whole `select!`, including the shutdown branch, and hang the process.
+        let mut config_closed = false;
 
         loop {
             tokio::select! {
@@ -64,13 +72,13 @@ pub fn start_cleanup_task(
                     tracing::info!("Cleanup task shutdown complete");
                     break;
                 }
-                // `changed()` resolves immediately and forever once every sender is dropped, so
-                // an unhandled error here would spin the loop at 100% CPU.
-                changed = updates.changed() => {
+                changed = updates.changed(), if !config_closed => {
                     if changed.is_err() {
-                        tracing::debug!("Configuration channel closed; cleanup task keeps its current interval");
-                        // Stop selecting on a channel that can only ever return an error.
-                        std::future::pending::<()>().await;
+                        tracing::debug!(
+                            "Configuration channel closed; cleanup task keeps its current interval"
+                        );
+                        config_closed = true;
+                        continue;
                     }
                     let updated = updates.borrow_and_update().cleanup_interval_seconds;
                     if updated != period {
@@ -429,9 +437,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_task_survives_the_config_handle_being_dropped() {
-        // `changed()` errors immediately and forever once every sender is gone. If that arm
-        // were left enabled the loop would spin at 100% CPU.
+    async fn test_task_still_shuts_down_after_the_config_channel_closes() {
+        // `changed()` errors immediately and forever once every sender is gone, so the arm has
+        // to be disabled by a guard. Awaiting inside the arm body instead would suspend the
+        // whole `select!` — including the shutdown branch — and this test would time out.
+        //
+        // `start_cleanup_task` drops its own `ConfigHandle` after subscribing, so dropping the
+        // one below really does close the channel. That is what makes this test exercise the
+        // path rather than pass vacuously.
         let storage = setup_test_storage().await;
         let metrics = Arc::new(crate::metrics::Metrics::new());
         let rate_limiter = make_test_rate_limiter();

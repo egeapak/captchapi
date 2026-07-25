@@ -235,6 +235,18 @@ pub const PARAMS: &[Param] = &[
         help: "Read the client IP from proxy headers (only enable behind a trusted proxy)",
     },
     Param {
+        env: "ADMIN_CONFIG_WRITE",
+        field: "admin_config_write",
+        flag: "--admin-config-write",
+        short: None,
+        toml: Some("admin.config_write"),
+        kind: Kind::Bool,
+        reload: Reload::Boot,
+        secret: false,
+        default: Some("true"),
+        help: "Allow PATCH /api/v1/admin/config to change settings at runtime",
+    },
+    Param {
         env: "RUST_LOG",
         field: "log_level",
         flag: "--log-level",
@@ -443,14 +455,60 @@ mod tests {
     }
 
     #[test]
-    fn test_bool_params_default_to_false() {
+    fn test_bool_params_have_a_boolean_default() {
+        // Booleans accept `--flag` (true) and `--flag=false`, so either default is usable.
         for p in PARAMS.iter().filter(|p| p.kind == Kind::Bool) {
+            assert!(
+                matches!(p.default, Some("true") | Some("false")),
+                "{} is a boolean but defaults to {:?}",
+                p.env,
+                p.default
+            );
+        }
+    }
+
+    #[test]
+    fn test_no_secret_is_reloadable() {
+        // The admin audit log and the PATCH path would otherwise be able to handle a secret
+        // value at runtime. Redaction covers it, but the invariant is worth pinning.
+        for p in PARAMS.iter().filter(|p| p.secret) {
             assert_eq!(
-                p.default,
-                Some("false"),
-                "{} is a bare CLI flag, so its default must be false",
+                p.reload,
+                Reload::Boot,
+                "{} is secret, so it must not be runtime-changeable",
                 p.env
             );
+        }
+    }
+
+    #[test]
+    fn test_flags_do_not_collide_with_the_global_options() {
+        // These are parsed outside the PARAMS loop (`parse_shared` and the `reload` verb), so
+        // uniqueness within PARAMS alone is not enough — a colliding row would be silently
+        // double-consumed by pico-args, with the first reader winning.
+        const GLOBAL: &[&str] = &[
+            "-c",
+            "--config",
+            "--env-file",
+            "--no-env-file",
+            "-h",
+            "--help",
+            "-V",
+            "--version",
+            "--pid",
+        ];
+        for p in PARAMS {
+            assert!(
+                !GLOBAL.contains(&p.flag),
+                "{} collides with a global option",
+                p.flag
+            );
+            if let Some(short) = p.short {
+                assert!(
+                    !GLOBAL.contains(&short),
+                    "{short} collides with a global option"
+                );
+            }
         }
     }
 }

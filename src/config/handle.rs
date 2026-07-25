@@ -9,6 +9,7 @@
 //! startup — into the listener, the connection pool, the middleware, and the rate limiter —
 //! and a reload reports drift on those rather than pretending to apply it.
 
+use super::params::{by_env, Reload};
 use super::sources::Layer;
 use super::{Config, RealEnv};
 use crate::cli::{load_layers, Cli};
@@ -22,6 +23,12 @@ struct ReloadState {
     /// The command-line arguments this process started with, retained so a reload resolves
     /// from exactly the same sources as boot.
     cli: Cli,
+    /// Whether re-resolution reads the process environment.
+    ///
+    /// Always true in production. `from_static` sets it false so a test handle resolves against
+    /// the layers it was given and nothing else — otherwise a developer or CI job that happens
+    /// to export `CAPTCHA_COMPRESSION` would fail unrelated reload tests.
+    read_process_env: bool,
     /// Values set through the admin API, keyed by canonical environment key.
     ///
     /// Ephemeral by design: a reload means "re-read the sources of truth", so it clears these.
@@ -59,6 +66,7 @@ impl ConfigHandle {
                 tx,
                 state: Mutex::new(ReloadState {
                     cli,
+                    read_process_env: true,
                     overlay: Layer::new(),
                 }),
             }),
@@ -70,13 +78,20 @@ impl ConfigHandle {
     /// Reloading re-resolves from no command-line arguments and no env file, so a test harness
     /// never picks up a developer's local `.env`.
     pub fn from_static(config: Config) -> Self {
-        Self::new(
+        let handle = Self::new(
             config,
             Cli {
                 no_env_file: true,
                 ..Cli::default()
             },
-        )
+        );
+        handle
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .read_process_env = false;
+        handle
     }
 
     /// Take a snapshot of the current configuration.
@@ -112,7 +127,8 @@ impl ConfigHandle {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let current = self.rx.borrow().clone();
-        let resolved = resolve_with_carry(&state.cli, &current, &Layer::new())?;
+        let resolved =
+            resolve_with_carry(&state.cli, &current, &Layer::new(), state.read_process_env)?;
 
         let drift = current.boot_drift(&resolved);
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
@@ -128,11 +144,28 @@ impl ConfigHandle {
 
     /// Apply an in-memory override to live fields, on top of the resolved configuration.
     ///
+    /// Keys are canonical environment keys. Boot-only keys are **rejected** rather than
+    /// accepted-and-discarded: silently recording an override that provably cannot take effect
+    /// would make `overlay_keys` — and so the admin API — lie about the running state.
+    ///
     /// Rejected values leave the running configuration untouched. The override survives until
     /// the next reload or restart, and is never written back to any file.
     ///
     /// Blocking: reads files. Async callers must wrap this in `spawn_blocking`.
     pub fn patch(&self, updates: &[(String, String)]) -> Result<Arc<Config>, String> {
+        for (key, _) in updates {
+            match by_env(key) {
+                Some(param) if param.reload == Reload::Live => {}
+                Some(param) => {
+                    return Err(format!(
+                        "`{}` is applied at startup and cannot be changed at runtime",
+                        param.field
+                    ))
+                }
+                None => return Err(format!("`{key}` is not a configuration key")),
+            }
+        }
+
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut overlay = state.overlay.clone();
@@ -141,7 +174,7 @@ impl ConfigHandle {
         }
 
         let current = self.rx.borrow().clone();
-        let resolved = resolve_with_carry(&state.cli, &current, &overlay)?;
+        let resolved = resolve_with_carry(&state.cli, &current, &overlay, state.read_process_env)?;
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay = overlay;
@@ -173,13 +206,32 @@ pub struct Outcome {
 /// through the admin API means it now. `current.boot_layer()` sits at the bottom so a reload
 /// cannot fail merely because a secret file was rotated away or unmounted after startup —
 /// those fields are boot-only and would have been discarded regardless.
-fn resolve_with_carry(cli: &Cli, current: &Config, overlay: &Layer) -> Result<Config, String> {
+fn resolve_with_carry(
+    cli: &Cli,
+    current: &Config,
+    overlay: &Layer,
+    read_process_env: bool,
+) -> Result<Config, String> {
     let mut layers = load_layers(cli)?;
     for (key, value) in overlay {
         layers.cli.insert(key.clone(), value.clone());
     }
     layers.carried = current.boot_layer();
-    Config::from_env_provider(&layers.stack(&RealEnv))
+
+    if read_process_env {
+        Config::from_env_provider(&layers.stack(&RealEnv))
+    } else {
+        Config::from_env_provider(&layers.stack(&EmptyEnv))
+    }
+}
+
+/// An environment with nothing in it, for handles that must not read the process environment.
+struct EmptyEnv;
+
+impl crate::config::EnvProvider for EmptyEnv {
+    fn get(&self, _key: &str) -> Result<String, std::env::VarError> {
+        Err(std::env::VarError::NotPresent)
+    }
 }
 
 #[cfg(test)]
@@ -238,16 +290,54 @@ mod tests {
     }
 
     #[test]
-    fn test_patch_cannot_move_a_boot_field() {
+    fn test_patch_rejects_a_boot_field_outright() {
+        // Accepting it and quietly discarding the value would leave the key in the overlay,
+        // so the admin API would report an override that provably has no effect.
         let h = handle();
         let before = h.get().server_port;
 
-        let updated = h.patch(&[("SERVER_PORT".into(), "9999".into())]).unwrap();
+        let err = h
+            .patch(&[("SERVER_PORT".into(), "9999".into())])
+            .unwrap_err();
 
-        assert_eq!(
-            updated.server_port, before,
-            "the listener is already bound; a patch must not appear to change it"
+        assert!(err.contains("server_port"), "{err}");
+        assert!(err.contains("applied at startup"), "{err}");
+        assert_eq!(h.get().server_port, before);
+        assert!(
+            h.overlay_keys().is_empty(),
+            "a rejected patch must not be recorded: {:?}",
+            h.overlay_keys()
         );
+    }
+
+    #[test]
+    fn test_patch_rejects_an_unknown_key() {
+        let h = handle();
+        let err = h
+            .patch(&[("NOT_A_SETTING".into(), "1".into())])
+            .unwrap_err();
+        assert!(err.contains("not a configuration key"), "{err}");
+        assert!(h.overlay_keys().is_empty());
+    }
+
+    #[test]
+    fn test_patch_rejects_the_whole_batch_if_any_key_is_invalid() {
+        // All-or-nothing: a partially applied batch would be worse than a clean rejection.
+        let h = handle();
+        let err = h
+            .patch(&[
+                ("CAPTCHA_COMPRESSION".into(), "90".into()),
+                ("SERVER_PORT".into(), "9999".into()),
+            ])
+            .unwrap_err();
+
+        assert!(err.contains("server_port"), "{err}");
+        assert_eq!(
+            h.get().captcha_compression,
+            40,
+            "nothing should have applied"
+        );
+        assert!(h.overlay_keys().is_empty());
     }
 
     #[test]
@@ -345,6 +435,31 @@ mod tests {
         assert_eq!(
             outcome.config.server_port, 3000,
             "drift is reported, never applied"
+        );
+    }
+
+    #[test]
+    fn test_static_handles_ignore_the_process_environment() {
+        // Otherwise a developer (or CI job) with CAPTCHA_COMPRESSION exported would fail every
+        // reload test in this module for reasons that have nothing to do with the code.
+        //
+        // Safety: this is the only test that touches process env, and it restores it. The
+        // assertion is precisely that the handle does not observe it.
+        let key = "CAPTCHA_COMPRESSION";
+        let previous = std::env::var(key).ok();
+        std::env::set_var(key, "7");
+
+        let h = handle();
+        let outcome = h.reload().unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+
+        assert_eq!(
+            outcome.config.captcha_compression, 40,
+            "a static handle must resolve from its own layers only"
         );
     }
 

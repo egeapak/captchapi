@@ -140,7 +140,11 @@ async fn main() -> anyhow::Result<()> {
     // Reload on SIGHUP. Installed before the server starts because SIGHUP's default
     // disposition terminates the process — which is exactly what `captchapi reload` sends.
     #[cfg(unix)]
-    let reload_task = tokio::spawn(reload_on_sighup(config.clone(), shutdown_token.clone()));
+    let reload_task = tokio::spawn(reload_on_sighup(
+        config.clone(),
+        metrics.clone(),
+        shutdown_token.clone(),
+    ));
 
     // Start server
     let listener = tokio::net::TcpListener::bind(boot.server_address()).await?;
@@ -163,6 +167,11 @@ async fn main() -> anyhow::Result<()> {
 
     // Run the server
     let result = server.await;
+
+    // The background tasks only exit when the token is cancelled, and `shutdown_signal` cancels
+    // it only on Ctrl-C/SIGTERM. If `serve` returned for any other reason, cancelling here is
+    // what stops the awaits below from blocking forever and swallowing the error.
+    shutdown_token.cancel();
 
     // Wait for background tasks to complete
     tracing::info!("Waiting for background tasks to complete...");
@@ -194,7 +203,11 @@ async fn main() -> anyhow::Result<()> {
 /// A failed reload is reported and discarded: a running server must never be taken down by a
 /// bad edit to a config file.
 #[cfg(unix)]
-async fn reload_on_sighup(config: ConfigHandle, shutdown_token: CancellationToken) {
+async fn reload_on_sighup(
+    config: ConfigHandle,
+    metrics: std::sync::Arc<captchapi::metrics::Metrics>,
+    shutdown_token: CancellationToken,
+) {
     let mut hangup = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(stream) => stream,
         Err(e) => {
@@ -220,12 +233,17 @@ async fn reload_on_sighup(config: ConfigHandle, shutdown_token: CancellationToke
                                 "`{field}` changed but is applied only at startup; restart to change it"
                             );
                         }
+                        metrics.system.config_reloads.add(1, &[]);
                         tracing::info!("Configuration reloaded");
                     }
                     Ok(Err(e)) => {
+                        metrics.system.config_reload_failures.add(1, &[]);
                         tracing::error!("Reload failed, keeping the running configuration: {e}");
                     }
-                    Err(e) => tracing::error!("Reload task panicked: {e:?}"),
+                    Err(e) => {
+                        metrics.system.config_reload_failures.add(1, &[]);
+                        tracing::error!("Reload task panicked: {e:?}");
+                    }
                 }
             }
         }

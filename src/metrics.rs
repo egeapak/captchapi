@@ -43,9 +43,16 @@ pub struct ErrorMetrics {
 #[derive(Clone)]
 pub struct SystemMetrics {
     /// Successful configuration reloads, from SIGHUP or the admin API.
+    ///
+    /// A reload re-reads the sources of truth and discards runtime overrides — the opposite of
+    /// a patch, which is counted separately so the two are distinguishable on a dashboard.
     pub config_reloads: Counter<u64>,
     /// Reloads rejected because the resolved configuration was invalid.
     pub config_reload_failures: Counter<u64>,
+    /// Successful runtime overrides applied through the admin API.
+    pub config_patches: Counter<u64>,
+    /// Runtime overrides rejected as invalid or not reloadable.
+    pub config_patch_failures: Counter<u64>,
     pub health_checks: Counter<u64>,
 }
 
@@ -189,6 +196,14 @@ impl SystemMetrics {
             config_reload_failures: meter
                 .u64_counter("system.config_reload_failures")
                 .with_description("Total number of configuration reloads rejected as invalid")
+                .build(),
+            config_patches: meter
+                .u64_counter("system.config_patches")
+                .with_description("Total number of runtime configuration overrides applied")
+                .build(),
+            config_patch_failures: meter
+                .u64_counter("system.config_patch_failures")
+                .with_description("Total number of runtime configuration overrides rejected")
                 .build(),
         }
     }

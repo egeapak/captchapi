@@ -33,7 +33,8 @@ Three independent config readers exist. Everything is boot-time and immutable.
   `tests/common/mod.rs:71`. Adding fields breaks both — fixed here with a `Default` impl.
 - **The NAPI bindings never touch `Config`** (only `SessionConfig`), so `bindings/nodejs`
   and `packages/captchapi` are unaffected.
-- **Distroless runtime**: no shell, no `pidof`, read-only except `/data`.
+- **Distroless runtime**: no shell, no `pidof`, read-only except `/data` — note the working
+  directory is `/app`, so a *relative* `./data` path does **not** land in the volume.
 
 ---
 
@@ -285,16 +286,24 @@ Two new `AppError` variants: `config_not_reloadable`, `invalid_config`.
 server may not own it — the distroless image is read-only outside `/data`), and they are
 **cleared by any reload**, since "reload" means re-reading the sources of truth. This is
 the least-surprising rule, but it must be documented prominently: a PATCH survives until
-the next SIGHUP or restart, and no longer. `config show` and `GET /admin/config` mark such
-fields with source `[admin]` so the state is never ambiguous.
+the next SIGHUP or restart, and no longer.
+
+*As implemented:* `GET /admin/config` reports overridden fields in an `overrides` array rather
+than as an `[admin]` provenance source — `config show` runs in a separate process and cannot
+see another process's overrides, so a source label there would have been meaningless.
 
 ### Hardening note
 
 `PATCH` is an authenticated remote mutation of security-relevant parameters
-(`max_validation_attempts`, TTLs). Mitigations: master-key only; every change audit-logged
-at `info` with field, old value, new value, and request ID; and a boot-only
-`--no-admin-config-write` / `ADMIN_CONFIG_WRITE=false` escape hatch for deployments that
-want reload-from-file but no remote writes.
+(`max_validation_attempts`, TTLs). Mitigations as implemented: master-key only; every change
+audit-logged at `info` with field, old value and new value, redacted through the same helper
+the API uses; and a boot-only `ADMIN_CONFIG_WRITE=false` escape hatch (flag form
+`--admin-config-write=false`) that makes `PATCH` return `403` while `GET` and
+`POST /config/reload` keep working.
+
+*Not implemented:* request-ID correlation in the audit line. `request_id_middleware` only sets
+a response header — it opens no tracing span — so there is nothing for a log line to inherit.
+Adding it means threading the ID into a span, which is worth doing but was out of scope here.
 
 ---
 
@@ -398,8 +407,14 @@ behavioural risk lives.
 
 Resolved: (1) the PID file is written to `./data/captchapi.pid` by default, overridable with
 `--pid-file`, and removed on graceful shutdown so a stale file cannot make `captchapi reload`
-signal a recycled process; (2) admin writes are enabled by default; (3) TOML uses grouped
-sections.
+signal a recycled process; (2) admin writes are enabled by default, with an `ADMIN_CONFIG_WRITE`
+opt-out; (3) TOML uses grouped sections.
+
+**Correction to (1).** The claim below that `./data` is "the one directory writable in the
+distroless image" was wrong: the image sets `WORKDIR /app`, so a relative `./data` resolves to
+`/app/data`, not to the `/data` volume. Verified by simulation — with the relative default the
+mounted volume received zero files. Both Dockerfiles now set `DATABASE_URL` and `PID_FILE` to
+absolute `/data/...` paths; the relative defaults remain correct for local development.
 
 ---
 

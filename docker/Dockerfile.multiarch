@@ -42,6 +42,15 @@ COPY --chown=nonroot:nonroot migrations /app/migrations
 # TARGETARCH is automatically set by buildx to either "amd64" or "arm64"
 COPY --chown=nonroot:nonroot docker/bin/captchapi-${TARGETARCH} /app/captchapi
 
+# Pin the writable paths to the ABSOLUTE /data volume.
+#
+# The built-in defaults are relative (./data/...), which is correct for local development but
+# resolves against WORKDIR here — i.e. /app/data, which is not the volume. Without these, a
+# `-v captchapi-data:/data` mount would receive nothing and the database would live in the
+# container's ephemeral layer, silently lost on every replacement.
+ENV DATABASE_URL=sqlite:/data/captchapi.db
+ENV PID_FILE=/data/captchapi.pid
+
 # Expose application port
 EXPOSE 3000
 
@@ -56,8 +65,8 @@ EXPOSE 3000
 #
 # Usage:
 #   docker run -p 3000:3000 \
-#     -e API_KEY_SALT=your-salt \
-#     -e MASTER_API_KEY=your-key \
+#     -e API_KEY_SALT=your-salt-minimum-16chars \
+#     -e MASTER_API_KEY=your-key-minimum-16chars \
 #     captchapi:latest
 
 LABEL org.opencontainers.image.source="https://github.com/egeapak/captchapi"

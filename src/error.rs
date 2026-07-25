@@ -32,6 +32,9 @@ pub enum AppError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Configuration field is not reloadable: {0}")]
     ConfigNotReloadable(String),
 
@@ -79,6 +82,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(ref msg) => {
                 (StatusCode::UNAUTHORIZED, "unauthorized", msg.clone())
             }
+            AppError::Forbidden(ref msg) => (StatusCode::FORBIDDEN, "forbidden", msg.clone()),
             AppError::ConfigNotReloadable(ref msg) => (
                 StatusCode::BAD_REQUEST,
                 "config_not_reloadable",
@@ -214,6 +218,40 @@ mod tests {
 
         assert_eq!(body["error"], "invalid_api_key_parameters");
         assert_eq!(body["message"], "Description exceeds 255 characters");
+    }
+
+    #[test]
+    fn test_forbidden_status_and_error_code() {
+        // Distinct from Unauthorized: the caller authenticated fine, the operation is disabled.
+        let error = AppError::Forbidden("writes are disabled".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let body = extract_body_json(response);
+        assert_eq!(body["error"], "forbidden");
+        assert_eq!(body["message"], "writes are disabled");
+    }
+
+    #[test]
+    fn test_config_not_reloadable_status_and_error_code() {
+        let error = AppError::ConfigNotReloadable("`server_port` needs a restart".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = extract_body_json(response);
+        assert_eq!(body["error"], "config_not_reloadable");
+        assert_eq!(body["message"], "`server_port` needs a restart");
+    }
+
+    #[test]
+    fn test_invalid_config_status_and_error_code() {
+        let error = AppError::InvalidConfig("not a number".to_string());
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = extract_body_json(response);
+        assert_eq!(body["error"], "invalid_config");
+        assert_eq!(body["message"], "not a number");
     }
 
     #[test]

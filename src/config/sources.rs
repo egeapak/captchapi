@@ -137,11 +137,31 @@ pub fn load_env_file(path: &Path) -> Result<Layer, String> {
         .map_err(|e| format!("cannot read env file {}: {}", path.display(), e))?;
     let mut layer = Layer::new();
     for item in iter {
-        let (key, value) =
-            item.map_err(|e| format!("invalid line in env file {}: {}", path.display(), e))?;
+        let (key, value) = item.map_err(|e| describe_env_file_error(path, e))?;
         layer.insert(key, value);
     }
     Ok(layer)
+}
+
+/// Describe an env-file parse failure **without quoting the offending line**.
+///
+/// `dotenvy::Error::LineParse` carries the raw source line, which for an env file is
+/// `KEY=VALUE` — so rendering it with `Display` would put a secret into the boot log, the
+/// reload log, and the body of `POST /api/v1/admin/config/reload`. Only the line index is
+/// safe to report. `Io` and `EnvVar` carry no file content and are rendered normally.
+fn describe_env_file_error(path: &Path, err: dotenvy::Error) -> String {
+    match err {
+        dotenvy::Error::LineParse(_, index) => format!(
+            "invalid line in env file {} at index {} (line content withheld: it may contain a secret)",
+            path.display(),
+            index
+        ),
+        dotenvy::Error::Io(e) => format!("cannot read env file {}: {}", path.display(), e),
+        dotenvy::Error::EnvVar(e) => format!("invalid value in env file {}: {}", path.display(), e),
+        // `dotenvy::Error` is #[non_exhaustive]; a future variant might carry file content, so
+        // the fallback must stay content-free.
+        _ => format!("invalid env file {}", path.display()),
+    }
 }
 
 /// Load and validate a TOML config file into a layer of canonical keys.
@@ -514,6 +534,29 @@ mod tests {
     fn test_load_env_file_missing_names_the_path() {
         let err = load_env_file(Path::new("/nonexistent/.env")).unwrap_err();
         assert!(err.contains("cannot read env file"), "{err}");
+    }
+
+    #[test]
+    fn test_malformed_env_file_never_quotes_the_offending_line() {
+        // dotenvy's LineParse error Displays the whole raw `KEY=VALUE` line. Rendering it
+        // would put the secret into the boot log, the SIGHUP reload log, and the body of
+        // POST /admin/config/reload. Only the index may be reported.
+        let sentinel = "s3cr3t-that-must-never-be-logged";
+        let f = temp_file(
+            &format!("MASTER_API_KEY={sentinel}\"unterminated\n"),
+            ".env",
+        );
+
+        let err = load_env_file(f.path()).unwrap_err();
+
+        assert!(
+            !err.contains(sentinel),
+            "env file parse error leaked a secret: {err}"
+        );
+        assert!(!err.contains("MASTER_API_KEY="), "{err}");
+        // It still has to be actionable.
+        assert!(err.contains("invalid line in env file"), "{err}");
+        assert!(err.contains(&f.path().display().to_string()), "{err}");
     }
 
     #[test]

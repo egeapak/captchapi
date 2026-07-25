@@ -92,7 +92,7 @@ push registry tag=image_tag:
 # Run locally
 run:
     docker run --rm -p 3000:3000 \
-        -e API_KEY_SALT=test-salt \
+        -e API_KEY_SALT=local-dev-salt-16chars \
         -e MASTER_API_KEY=change-this-to-a-secure-master-key-in-production \
         {{image_name}}:{{image_tag}}
 
@@ -100,7 +100,7 @@ run:
 run-volume:
     docker volume create captchapi-data || true
     docker run --rm -v captchapi-data:/data -p 3000:3000 \
-        -e API_KEY_SALT=test-salt \
+        -e API_KEY_SALT=local-dev-salt-16chars \
         -e MASTER_API_KEY=change-this-to-a-secure-master-key-in-production \
         {{image_name}}:{{image_tag}}
 

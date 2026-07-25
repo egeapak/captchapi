@@ -1,6 +1,6 @@
-use crate::config::params::{by_field, Reload, PARAMS};
+use crate::config::params::{by_env, by_field, Reload, PARAMS};
 use crate::config::sources::redact;
-use crate::config::ConfigHandle;
+use crate::config::{Config, ConfigHandle};
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
@@ -86,7 +86,8 @@ pub struct ConfigEntry {
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
     pub config: BTreeMap<&'static str, ConfigEntry>,
-    /// Fields currently overridden through this API. These are cleared by a reload.
+    /// Fields currently overridden through this API, named exactly as `config`'s keys and as
+    /// PATCH expects them, so they can be fed straight back in. Cleared by a reload.
     pub overrides: Vec<String>,
 }
 
@@ -105,7 +106,15 @@ pub struct ReloadResponse {
 /// Secrets are redacted even for the master key holder: this endpoint exists to explain the
 /// server's behaviour, not to read credentials back out of it.
 fn describe(config: &ConfigHandle) -> ConfigResponse {
-    let snapshot = config.get();
+    describe_config(&config.get(), config)
+}
+
+/// Render a specific configuration snapshot, with the override list from `config`.
+///
+/// Callers that just produced a snapshot pass it here rather than re-reading the handle, so a
+/// concurrent reload cannot make the response describe a different configuration than the one
+/// the request produced.
+fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
     let entries = PARAMS
         .iter()
         .filter_map(|param| {
@@ -121,9 +130,19 @@ fn describe(config: &ConfigHandle) -> ConfigResponse {
         })
         .collect();
 
+    // The overlay is keyed by canonical environment key, but every other part of this API —
+    // the `config` map above and the PATCH request body — speaks `Config` field names. Translate
+    // here so a client can feed `overrides` straight back into PATCH.
+    let mut overrides: Vec<String> = config
+        .overlay_keys()
+        .iter()
+        .filter_map(|key| by_env(key).map(|param| param.field.to_string()))
+        .collect();
+    overrides.sort_unstable();
+
     ConfigResponse {
         config: entries,
-        overrides: config.overlay_keys(),
+        overrides,
     }
 }
 
@@ -140,7 +159,17 @@ async fn patch_config(
     State(state): State<AdminState>,
     Json(req): Json<BTreeMap<String, serde_json::Value>>,
 ) -> Result<Json<ConfigResponse>> {
+    // Deployments that want file-driven reload but no remote writes set ADMIN_CONFIG_WRITE=false.
+    // Reload and GET stay available; only mutation is refused.
+    if !state.config.get().admin_config_write {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+        return Err(AppError::Forbidden(
+            "runtime configuration writes are disabled (ADMIN_CONFIG_WRITE=false)".to_string(),
+        ));
+    }
+
     if req.is_empty() {
+        state.metrics.system.config_patch_failures.add(1, &[]);
         return Err(AppError::InvalidConfig(
             "no fields given; supply at least one reloadable field".to_string(),
         ));
@@ -148,11 +177,15 @@ async fn patch_config(
 
     let mut updates = Vec::with_capacity(req.len());
     for (field, value) in &req {
-        let param = by_field(field).ok_or_else(|| {
-            AppError::InvalidConfig(format!("`{field}` is not a configuration field"))
-        })?;
+        let Some(param) = by_field(field) else {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            return Err(AppError::InvalidConfig(format!(
+                "`{field}` is not a configuration field"
+            )));
+        };
 
         if param.reload != Reload::Live {
+            state.metrics.system.config_patch_failures.add(1, &[]);
             return Err(AppError::ConfigNotReloadable(format!(
                 "`{field}` is applied at startup and cannot be changed at runtime; restart with a new value"
             )));
@@ -165,9 +198,10 @@ async fn patch_config(
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
             other => {
+                state.metrics.system.config_patch_failures.add(1, &[]);
                 return Err(AppError::InvalidConfig(format!(
                     "`{field}` must be a string, number or boolean, not `{other}`"
-                )))
+                )));
             }
         };
         updates.push((param.env.to_string(), raw));
@@ -180,22 +214,32 @@ async fn patch_config(
     let applied = tokio::task::spawn_blocking(move || handle.patch(&updates))
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("config patch task failed: {e}")))?
-        .map_err(AppError::InvalidConfig)?;
+        .map_err(|e| {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            AppError::InvalidConfig(e)
+        })?;
 
     // Audit every accepted change: this endpoint can alter security-relevant limits.
+    // Values go through `redact` — no secret is reloadable today (a PARAMS invariant test
+    // enforces that), but the audit trail must not become the one place that leaks if it changes.
     for field in req.keys() {
+        let Some(param) = by_field(field) else {
+            continue;
+        };
         let (old, new) = (before.field_value(field), applied.field_value(field));
         if old != new {
             tracing::info!(
                 "Admin config change: {field} {} -> {}",
-                old.unwrap_or_default(),
-                new.unwrap_or_default()
+                redact(param, &old.unwrap_or_default()),
+                redact(param, &new.unwrap_or_default())
             );
         }
     }
 
-    state.metrics.system.config_reloads.add(1, &[]);
-    Ok(Json(describe(&state.config)))
+    state.metrics.system.config_patches.add(1, &[]);
+    // Report the config this patch actually produced rather than re-reading the handle, which a
+    // concurrent reload could have moved out from under us.
+    Ok(Json(describe_config(&applied, &state.config)))
 }
 
 /// Re-read every configuration source, discarding any runtime overrides.
@@ -227,7 +271,7 @@ async fn reload_config(State(state): State<AdminState>) -> Result<Json<ReloadRes
     };
 
     Ok(Json(ReloadResponse {
-        config: describe(&state.config),
+        config: describe_config(&outcome.config, &state.config),
         ignored: outcome.drift,
         message,
     }))

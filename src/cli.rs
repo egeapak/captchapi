@@ -63,6 +63,11 @@ impl std::fmt::Debug for Cli {
 pub struct ReloadTarget {
     pub pid: Option<i32>,
     pub pid_file: Option<PathBuf>,
+    /// Config/env files to consult for `PID_FILE`, so a server started with `-c prod.toml`
+    /// can be found by `captchapi reload -c prod.toml`.
+    pub config_file: Option<PathBuf>,
+    pub env_file: Option<PathBuf>,
+    pub no_env_file: bool,
 }
 
 /// What the user asked for.
@@ -112,8 +117,32 @@ pub fn parse(args: Vec<OsString>) -> Result<Action, String> {
                 .opt_value_from_str::<_, String>("--pid-file")
                 .map_err(describe)?
                 .map(PathBuf::from);
+            // The server's PID file location can come from a config or env file, so `reload`
+            // has to be able to read the same sources in order to find it.
+            let config_file = pargs
+                .opt_value_from_str::<_, String>(["-c", "--config"])
+                .map_err(describe)?
+                .map(PathBuf::from);
+            let env_file = pargs
+                .opt_value_from_str::<_, String>("--env-file")
+                .map_err(describe)?
+                .map(PathBuf::from);
+            let no_env_file = pargs.contains("--no-env-file");
             finish(pargs)?;
-            Ok(Action::Reload(ReloadTarget { pid, pid_file }))
+
+            if pid.is_some() && pid_file.is_some() {
+                return Err(
+                    "--pid and --pid-file are mutually exclusive; pass only one".to_string()
+                );
+            }
+
+            Ok(Action::Reload(ReloadTarget {
+                pid,
+                pid_file,
+                config_file,
+                env_file,
+                no_env_file,
+            }))
         }
         Some(other) => Err(format!(
             "unknown command `{other}` (expected `run`, `reload`, or `config`)"
@@ -138,11 +167,24 @@ fn parse_shared(mut pargs: pico_args::Arguments) -> Result<Cli, String> {
 
     for param in PARAMS {
         match param.kind {
-            // Bare flags: present means true. To set one to false, use the environment
-            // variable or the config file — all boolean parameters default to false.
+            // Booleans accept both forms: bare `--flag` means true, and `--flag=false` turns
+            // off a setting that defaults to true.
+            //
+            // `contains` is checked first because it matches the bare flag exactly and removes
+            // it. Trying the value form first would make `--flag --port 8080` consume `--port`
+            // as the flag's value; and because `--flag=false` is not equal to `--flag`,
+            // `contains` leaves the `=` form alone for `opt_value_from_str` below.
             Kind::Bool => {
                 if pargs.contains(param.flag) {
                     cli.values.insert(param.env.to_string(), "true".to_string());
+                } else if let Some(raw) = pargs
+                    .opt_value_from_str::<_, String>(param.flag)
+                    .map_err(describe)?
+                {
+                    let value = crate::config::parse_bool_lenient(&raw).ok_or_else(|| {
+                        format!("{} expects true or false, not `{raw}`", param.flag)
+                    })?;
+                    cli.values.insert(param.env.to_string(), value.to_string());
                 }
             }
             // The flag names a file; its trimmed contents become the value, so secrets stay
@@ -208,13 +250,41 @@ fn describe(err: pico_args::Error) -> String {
 }
 
 /// The four explicit layers, owned so a [`LayeredEnv`] can borrow them.
-#[derive(Debug, Default)]
+///
+/// `Debug` is hand-written for the same reason as [`Cli`]'s: these maps hold resolved secret
+/// values (`cli` from a `--*-file` flag, `carried` from `Config::boot_layer`).
+#[derive(Default)]
 pub struct Layers {
     pub cli: Layer,
     pub env_file: Layer,
     pub file: Layer,
     /// Boot-only values carried over from a running config during a reload.
     pub carried: Layer,
+}
+
+/// Render a layer with secret values redacted.
+fn redact_layer(layer: &Layer) -> Vec<(&str, String)> {
+    layer
+        .iter()
+        .map(|(key, value)| {
+            let rendered = match crate::config::params::by_env(key) {
+                Some(param) => redact(param, value),
+                None => value.clone(),
+            };
+            (key.as_str(), rendered)
+        })
+        .collect()
+}
+
+impl std::fmt::Debug for Layers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Layers")
+            .field("cli", &redact_layer(&self.cli))
+            .field("env_file", &redact_layer(&self.env_file))
+            .field("file", &redact_layer(&self.file))
+            .field("carried", &redact_layer(&self.carried))
+            .finish()
+    }
 }
 
 impl Layers {
@@ -317,6 +387,9 @@ pub fn help() -> String {
     out.push_str(
         "    Precedence: command line > environment > env file > config file > default.\n",
     );
+    out.push_str("    A value set through PATCH /api/v1/admin/config outranks all of these,\n");
+    out.push_str("    until the next reload clears it.\n");
+    out.push_str("    Booleans take a bare flag for true, or an explicit --flag=false.\n");
     out.push_str("    Secrets are read from files only, never from flag values, so they stay\n");
     out.push_str("    out of `ps`, shell history, and `docker inspect`. They cannot be set in\n");
     out.push_str("    the TOML config file at all, which keeps a committed file safe.\n");
@@ -384,7 +457,8 @@ pub fn read_pid_file(path: &Path) -> Result<i32, String> {
 /// Resolve which PID file `captchapi reload` should consult.
 ///
 /// Deliberately lighter than a full [`Config`] resolution: `reload` must work without the
-/// secrets that `Config` requires.
+/// secrets that `Config` requires. It still walks the same layers in the same order, so a
+/// `PID_FILE` set in a config or env file is honoured.
 pub fn reload_pid_file<E: EnvProvider>(target: &ReloadTarget, env: &E) -> PathBuf {
     if let Some(path) = &target.pid_file {
         return path.clone();
@@ -392,6 +466,21 @@ pub fn reload_pid_file<E: EnvProvider>(target: &ReloadTarget, env: &E) -> PathBu
     if let Ok(value) = env.get("PID_FILE") {
         return PathBuf::from(value);
     }
+
+    let layers = load_layers(&Cli {
+        config_file: target.config_file.clone(),
+        env_file: target.env_file.clone(),
+        no_env_file: target.no_env_file,
+        values: Layer::new(),
+    })
+    .unwrap_or_default();
+
+    for layer in [&layers.env_file, &layers.file] {
+        if let Some(value) = layer.get("PID_FILE") {
+            return PathBuf::from(value);
+        }
+    }
+
     PathBuf::from(
         crate::config::params::by_env("PID_FILE")
             .and_then(|p| p.default)
@@ -568,19 +657,49 @@ mod tests {
     }
 
     #[test]
+    fn test_reload_rejects_pid_and_pid_file_together() {
+        // Silently preferring one would drop the other without a word.
+        let err = parse(args(&["reload", "--pid", "42", "--pid-file", "/run/x.pid"])).unwrap_err();
+        assert!(err.contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn test_reload_finds_the_pid_file_named_in_a_config_file() {
+        // A server started with `-c prod.toml` writes its PID where that file says; `reload`
+        // has to read the same file or it will look in the wrong place.
+        let toml = temp_file("[server]\npid_file = \"/run/from-toml.pid\"\n", ".toml");
+        let action = parse(args(&[
+            "reload",
+            "--no-env-file",
+            "-c",
+            toml.path().to_str().unwrap(),
+        ]))
+        .unwrap();
+
+        let Action::Reload(target) = action else {
+            panic!("expected Reload")
+        };
+        let empty = MockEnv(HashMap::new());
+        assert_eq!(
+            reload_pid_file(&target, &empty),
+            PathBuf::from("/run/from-toml.pid")
+        );
+    }
+
+    #[test]
     fn test_reload_verb_accepts_pid_and_pid_file() {
         assert_eq!(
             parse(args(&["reload", "--pid", "42"])).unwrap(),
             Action::Reload(ReloadTarget {
                 pid: Some(42),
-                pid_file: None
+                ..ReloadTarget::default()
             })
         );
         assert_eq!(
             parse(args(&["reload", "--pid-file", "/run/x.pid"])).unwrap(),
             Action::Reload(ReloadTarget {
-                pid: None,
-                pid_file: Some(PathBuf::from("/run/x.pid"))
+                pid_file: Some(PathBuf::from("/run/x.pid")),
+                ..ReloadTarget::default()
             })
         );
         assert_eq!(
@@ -638,6 +757,30 @@ mod tests {
 
         let cli = run_cli(&[]);
         assert!(!cli.values.contains_key("RATE_LIMIT_REVERSE_PROXY"));
+    }
+
+    #[test]
+    fn test_boolean_flag_accepts_an_explicit_value() {
+        // Needed for settings that default to true — a bare flag could never turn one off.
+        let cli = run_cli(&["--admin-config-write=false"]);
+        assert_eq!(cli.values.get("ADMIN_CONFIG_WRITE").unwrap(), "false");
+
+        let cli = run_cli(&["--admin-config-write=true"]);
+        assert_eq!(cli.values.get("ADMIN_CONFIG_WRITE").unwrap(), "true");
+    }
+
+    #[test]
+    fn test_boolean_flag_rejects_a_non_boolean_value() {
+        let err = parse(args(&["--admin-config-write=maybe"])).unwrap_err();
+        assert!(err.contains("expects true or false"), "{err}");
+    }
+
+    #[test]
+    fn test_bare_boolean_flag_does_not_swallow_the_next_argument() {
+        // `--flag --port 8080` must not read `--port` as the boolean's value.
+        let cli = run_cli(&["--rate-limit-reverse-proxy", "--port", "8080"]);
+        assert_eq!(cli.values.get("RATE_LIMIT_REVERSE_PROXY").unwrap(), "true");
+        assert_eq!(cli.values.get("SERVER_PORT").unwrap(), "8080");
     }
 
     #[test]
@@ -706,6 +849,27 @@ mod tests {
         assert!(
             !rendered.contains("salt-from-a-file-16chars"),
             "Cli Debug leaked a secret: {rendered}"
+        );
+        assert!(rendered.contains("<redacted"), "{rendered}");
+    }
+
+    #[test]
+    fn test_debug_of_layers_never_leaks_a_secret() {
+        // The `cli` layer holds the contents of any --*-file flag, and `carried` holds the
+        // running config's boot values — both include the salt and master key in the clear.
+        let salt = temp_file("salt-from-a-file-16chars\n", ".secret");
+        let cli = run_cli(&["--api-key-salt-file", salt.path().to_str().unwrap()]);
+        let mut layers = load_layers(&cli).unwrap();
+        layers.carried = Config::for_test().boot_layer();
+
+        let rendered = format!("{layers:?}");
+        assert!(
+            !rendered.contains("salt-from-a-file-16chars"),
+            "Layers Debug leaked a secret: {rendered}"
+        );
+        assert!(
+            !rendered.contains("test-master-key-minimum-16chars"),
+            "Layers Debug leaked the carried master key: {rendered}"
         );
         assert!(rendered.contains("<redacted"), "{rendered}");
     }
@@ -937,6 +1101,7 @@ mod tests {
         // Explicit flag wins.
         let target = ReloadTarget {
             pid_file: Some(PathBuf::from("/from/flag.pid")),
+            no_env_file: true,
             ..Default::default()
         };
         assert_eq!(
@@ -945,7 +1110,10 @@ mod tests {
         );
 
         // Then the environment.
-        let target = ReloadTarget::default();
+        let target = ReloadTarget {
+            no_env_file: true,
+            ..Default::default()
+        };
         assert_eq!(
             reload_pid_file(&target, &env),
             PathBuf::from("/from/env.pid")
@@ -979,8 +1147,8 @@ mod tests {
     #[test]
     fn test_handle_reload_without_a_pid_file_fails_cleanly() {
         let action = Action::Reload(ReloadTarget {
-            pid: None,
             pid_file: Some(PathBuf::from("/nonexistent/captchapi.pid")),
+            ..ReloadTarget::default()
         });
         let err = handle(action).unwrap_err();
         assert!(err.contains("cannot read pid file"), "{err}");
