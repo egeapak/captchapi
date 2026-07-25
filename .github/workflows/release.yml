@@ -157,6 +157,52 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Smoke test the image
+        run: |
+          # The image is otherwise built and pushed without ever being run. This catches the
+          # class of bug where the container starts but writes its state somewhere other than
+          # the /data volume, which is invisible to every other check.
+          set -euo pipefail
+          # Build the multiarch Dockerfile — the one that actually ships — for a single
+          # platform so it can be loaded and run. It consumes docker/bin/captchapi-amd64,
+          # which the "Prepare Docker build context" step above produced.
+          docker buildx build --platform linux/amd64 --load \
+            -t captchapi:smoke -f ./docker/Dockerfile.multiarch .
+          docker volume create captchapi-smoke
+          docker run -d --name captchapi-smoke -p 3000:3000 \
+            -v captchapi-smoke:/data \
+            -e API_KEY_SALT=smoke-test-salt-minimum-16 \
+            -e MASTER_API_KEY=smoke-test-master-key-16 \
+            captchapi:smoke
+
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:3000/health && break
+            sleep 2
+          done
+          curl -fs http://127.0.0.1:3000/health
+
+          # The database and pid file must land in the mounted volume, not in the image's
+          # ephemeral layer — otherwise the documented volume mode silently loses data.
+          docker run --rm -v captchapi-smoke:/data alpine ls /data > volume.txt
+          cat volume.txt
+          grep -q captchapi.db  volume.txt || { echo "::error::database not in /data volume"; exit 1; }
+          grep -q captchapi.pid volume.txt || { echo "::error::pid file not in /data volume"; exit 1; }
+
+          # SIGHUP must reload rather than terminate.
+          docker kill -s HUP captchapi-smoke
+          sleep 3
+          curl -fs http://127.0.0.1:3000/health || { echo "::error::SIGHUP killed the server"; exit 1; }
+          docker logs captchapi-smoke 2>&1 | grep -q "Configuration reloaded" \
+            || { echo "::error::SIGHUP did not reload the configuration"; exit 1; }
+
+          echo "✅ Container smoke test passed"
+
+      - name: Clean up smoke test
+        if: always()
+        run: |
+          docker rm -f captchapi-smoke || true
+          docker volume rm -f captchapi-smoke || true
+
       - name: Build summary
         run: |
           echo "🎉 Multi-platform image built and pushed!"

@@ -412,9 +412,19 @@ opt-out; (3) TOML uses grouped sections.
 
 **Correction to (1).** The claim below that `./data` is "the one directory writable in the
 distroless image" was wrong: the image sets `WORKDIR /app`, so a relative `./data` resolves to
-`/app/data`, not to the `/data` volume. Verified by simulation — with the relative default the
-mounted volume received zero files. Both Dockerfiles now set `DATABASE_URL` and `PID_FILE` to
-absolute `/data/...` paths; the relative defaults remain correct for local development.
+`/app/data`, not to the `/data` volume.
+
+Confirmed against the real image, not just by reasoning. Running the pre-fix build with
+`-v captchapi-data:/data` leaves the volume **empty**, and `docker diff` shows
+`A /app/data/captchapi.db` — the database was created in the container's ephemeral layer, so the
+documented "production recommended" mode lost it on every container replacement. This predates
+the CLI work; the new `PID_FILE` default merely inherited the same broken path.
+
+Both Dockerfiles now set `DATABASE_URL` and `PID_FILE` to absolute `/data/...` paths; the
+relative defaults remain correct for local development. After the fix the volume contains both
+`captchapi.db` and `captchapi.pid`, they survive `docker restart`, and `docker kill -s HUP`
+reloads rather than terminating. `release.yml` gained a smoke test that runs the image and
+asserts exactly this — verified to fail against the pre-fix build.
 
 ---
 
@@ -457,3 +467,25 @@ Also worth recording: `main.rs` was collapsed onto the library crate. It had bee
 the whole module tree, compiling everything twice into two distinct sets of types — which would
 have made `mod cli;` a source of confusing type errors, and keeps `main.rs` thin enough that the
 85% coverage gate stays comfortable.
+
+
+---
+
+## 13. Measured cost
+
+Built on `linux/amd64` with the real musl/distroless toolchain, comparing `879c202`
+(pre-feature) with `c41b9e2`:
+
+| | before | after | delta |
+|---|---|---|---|
+| static musl binary | 5,126,096 B (4.89 MB) | 5,392,720 B (5.14 MB) | **+260 KB (+5.2%)** |
+| image, unpacked | 8.23 MB | 8.49 MB | +260 KB (+3.2%) |
+| image, compressed (pull) | 3.23 MB | 3.36 MB | +130 KB (+4.1%) |
+
+The whole delta is the two new dependencies (`pico-args`, `toml`) plus the new modules; nothing
+else moved.
+
+Note the previously advertised **7.42 MB** was already stale *before* this work — the
+pre-feature image measures 8.23 MB unpacked. `docker images` reports a third, larger figure
+(14.2 MB) that includes storage-driver overhead, which is probably how the published number
+drifted. The docs now state which measurement they mean and how to reproduce it.

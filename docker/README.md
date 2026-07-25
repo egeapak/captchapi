@@ -57,11 +57,21 @@ docker run -p 3000:3000 \
 ## Image Details
 
 - **Base**: `gcr.io/distroless/static-debian12:nonroot`
-- **Size**: ~7.4 MB (84.5% smaller than original) — the size below predates the CLI/config work and needs re-measuring with `just docker amd64`
+- **Size**: 8.49 MB unpacked, 3.36 MB to pull (compressed), of which the binary is 5.39 MB
 - **Binary**: Fully static musl (no dependencies)
 - **User**: nonroot (UID 65532)
 - **Security**: Maximum (no shell, no libraries, minimal attack surface)
-- **Efficiency**: 100% (only 613 bytes wasted)
+
+Measured on `linux/amd64` at v1.0.1 with:
+
+```bash
+just docker amd64
+docker export $(docker create captchapi:latest) | wc -c   # unpacked
+docker save captchapi:latest | gzip -c | wc -c            # pull size
+```
+
+Quote whichever number you mean — `docker images` reports a third, larger figure that includes
+storage-driver overhead, which is how the previously advertised "7.42 MB" drifted out of date.
 
 ---
 
