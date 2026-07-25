@@ -337,16 +337,15 @@ rather than used as a dependency, for two reasons:
    re-enables every image codec no matter what this crate declares. Vendoring
    is the only way to hold the feature set down.
 2. Upstream embeds Monotype Arial, whose license forbids redistribution. The
-   renderer uses Liberation Sans Bold (SIL OFL 1.1, metric-compatible with
-   Arial) instead.
+   renderer uses Roboto Bold (SIL OFL 1.1) instead.
 
 Attribution for both lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep them
 in sync when touching the renderer or the bundled font.
 
 ### Embedded Font
 
-`assets/fonts/CaptchAPIGlyphs-Bold.ttf` is Liberation Sans Bold subset to the
-54 characters in `BASIC_CHAR` — 7,360 bytes instead of 414,568.
+`assets/fonts/Roboto-Bold-subset.ttf` is Roboto Bold subset to the 54
+characters in `BASIC_CHAR` — 8,196 bytes instead of 33,864.
 
 **The subset locks the character set.** Adding a character to `BASIC_CHAR`
 without regenerating the font makes it render as `.notdef`. The
@@ -355,11 +354,12 @@ follow it up with:
 
 ```bash
 pip install fonttools
-python3 scripts/subset-font.py path/to/LiberationSans-Bold.ttf
+python3 scripts/subset-font.py path/to/Roboto-Bold.ttf
 ```
 
-The subset is a Modified Version under the OFL and is renamed accordingly;
-`scripts/subset-font.py` handles that. Do not rename it back to "Liberation".
+Roboto declares no Reserved Font Name, so the subset keeps the family name
+and needs no renaming. Swapping to a font that *does* reserve its name (most
+OFL fonts, including Liberation) would reintroduce that obligation.
 
 ## Background Tasks
 

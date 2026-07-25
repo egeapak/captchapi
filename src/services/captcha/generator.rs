@@ -7,7 +7,7 @@
 //! Upstream pulls in `image/default`, which drags every codec (AVIF, EXR,
 //! TIFF, PNG, WebP, ...) into the build even though only JPEG is used.
 //! Upstream also embeds a proprietary Monotype Arial; this port uses a subset
-//! of Liberation Sans Bold (SIL OFL 1.1), which is metric-compatible.
+//! of Roboto Bold (SIL OFL 1.1, no Reserved Font Name).
 
 use ab_glyph::FontArc;
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -54,13 +54,13 @@ const SCALE_LG: f32 = 50.0;
 const INTERFERENCE_LINES: usize = 2;
 const INTERFERENCE_ELLIPSES: usize = 2;
 
-/// Liberation Sans Bold subset to exactly [`BASIC_CHAR`], SIL OFL 1.1 — see
+/// Roboto Bold subset to exactly [`BASIC_CHAR`], SIL OFL 1.1 — see
 /// assets/fonts/ and scripts/subset-font.py.
 ///
 /// The subset carries only the glyphs below. Extending `BASIC_CHAR` without
 /// rerunning the script renders the new characters as .notdef;
 /// `test_every_basic_char_has_a_glyph` catches that.
-static FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/CaptchAPIGlyphs-Bold.ttf");
+static FONT_BYTES: &[u8] = include_bytes!("../../../assets/fonts/Roboto-Bold-subset.ttf");
 
 /// Parsed once per process; upstream re-parsed the whole face for every
 /// character of every CAPTCHA.

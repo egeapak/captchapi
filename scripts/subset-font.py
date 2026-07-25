@@ -3,14 +3,13 @@
 
 The renderer only ever draws the 54 characters in `BASIC_CHAR`
 (src/services/captcha/generator.rs), so shipping a full font face wastes
-~400 KB in every binary and container image. This script cuts Liberation
-Sans Bold down to exactly those glyphs.
+tens of KB in every binary and container image. This script cuts Roboto
+Bold down to exactly those glyphs.
 
-Subsetting produces a "Modified Version" under the SIL Open Font License,
-which forbids Modified Versions from carrying a Reserved Font Name. The
-face is therefore renamed away from "Liberation" (and from Arimo/Tinos/
-Cousine, reserved by the same copyright holders). Copyright, license and
-license-URL records are preserved verbatim, as the OFL requires.
+Roboto is licensed under the SIL Open Font License 1.1 and declares no
+Reserved Font Name, so a subset may keep the family name. The copyright,
+license and license-URL records are preserved in the face, and the
+modification is disclosed in the description record.
 
 IMPORTANT: the subset locks the character set. If BASIC_CHAR gains a
 character, rerun this script or that glyph renders as .notdef. The
@@ -19,9 +18,9 @@ forgetting.
 
 Usage:
     pip install fonttools
-    # Source: https://github.com/liberationfonts/liberation-fonts/releases
-    # (or a distro package, e.g. /usr/share/fonts/truetype/liberation/)
-    python3 scripts/subset-font.py path/to/LiberationSans-Bold.ttf
+    # Source: https://github.com/googlefonts/roboto-classic
+    # or the TTF Google Fonts serves for `family=Roboto:700`.
+    python3 scripts/subset-font.py path/to/Roboto-Bold.ttf
 """
 
 from __future__ import annotations
@@ -39,44 +38,42 @@ BASIC_CHAR = (
     "abcdefghjkmnpqrstuvwxyz"
 )
 
-# Renaming is mandatory: "Liberation" is a Reserved Font Name under the OFL.
-FAMILY = "CaptchAPI Glyphs"
-SUBFAMILY = "Bold"
-FULL_NAME = f"{FAMILY} {SUBFAMILY}"
-POSTSCRIPT_NAME = "CaptchAPIGlyphs-Bold"
-VERSION = "Version 2.1.5"
-
-# The OFL FAQ permits acknowledging the original in the description record
-# (name ID 10); the Reserved Font Name must stay out of the naming records
-# proper (IDs 1, 3, 4, 5, 6, 16, 17).
-DESCRIPTION = (
-    "Subset of Liberation Sans Bold 2.1.5 containing only the glyphs CaptchAPI "
-    "renders. Renamed as required by the SIL Open Font License. Not affiliated "
-    "with or endorsed by the Liberation Fonts project or its copyright holders."
+OUT_PATH = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "assets"
+    / "fonts"
+    / "Roboto-Bold-subset.ttf"
 )
 
-OUT_PATH = pathlib.Path(__file__).resolve().parent.parent / "assets" / "fonts" / "CaptchAPIGlyphs-Bold.ttf"
+COPYRIGHT = (
+    "Copyright 2011 The Roboto Project Authors "
+    "(https://github.com/googlefonts/roboto-classic)"
+)
+LICENSE = "This Font Software is licensed under the SIL Open Font License, Version 1.1."
+LICENSE_URL = "https://openfontlicense.org"
+DESCRIPTION = (
+    f"Roboto Bold subset to the {len(BASIC_CHAR)} characters CaptchAPI renders. "
+    "Modified by the CaptchAPI project; hinting and unused layout tables removed. "
+    "Roboto declares no Reserved Font Name, so the family name is retained."
+)
 
-# name IDs that must lose the Reserved Font Name. IDs 0 (copyright),
-# 13 (license) and 14 (license URL) are deliberately left untouched.
+# Records to (re)write. Google's CDN build omits the license records, so they
+# are restored explicitly rather than assumed present.
 NAME_OVERRIDES = {
-    1: FAMILY,
-    2: SUBFAMILY,
-    3: f"{POSTSCRIPT_NAME};2.1.5",
-    4: FULL_NAME,
-    5: VERSION,
-    6: POSTSCRIPT_NAME,
+    0: COPYRIGHT,
     10: DESCRIPTION,
-    16: FAMILY,
-    17: SUBFAMILY,
+    13: LICENSE,
+    14: LICENSE_URL,
 }
 
-# fontTools keeps only IDs 0-6 by default, which would strip the OFL notice
-# out of the face. Keep copyright, description, license and license URL.
+# fontTools keeps only IDs 0-6 by default, which would drop the notice records.
 KEEP_NAME_IDS = [0, 1, 2, 3, 4, 5, 6, 10, 13, 14, 16, 17]
 
 # Layout, hinting and metadata tables the rasteriser never reads.
-DROP_TABLES = ["DSIG", "LTSH", "VDMX", "PCLT", "hdmx", "kern", "GSUB", "GDEF", "JSTF", "gasp", "FFTM"]
+DROP_TABLES = [
+    "DSIG", "LTSH", "VDMX", "PCLT", "hdmx", "kern",
+    "GSUB", "GDEF", "GPOS", "JSTF", "gasp", "FFTM",
+]
 
 
 def main() -> int:
@@ -108,7 +105,7 @@ def main() -> int:
     for name_id, value in NAME_OVERRIDES.items():
         name_table.setName(value, name_id, 3, 1, 0x409)  # Windows / Unicode BMP / en-US
         name_table.setName(value, name_id, 1, 0, 0)      # Macintosh / Roman / English
-    # Trademark: the Liberation trademark does not carry over to this subset.
+    # The Apache-era trademark record does not apply to this subset.
     name_table.removeNames(nameID=7)
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -117,7 +114,7 @@ def main() -> int:
     before = source.stat().st_size
     after = OUT_PATH.stat().st_size
     print(f"{source.name}: {before:,} bytes")
-    print(f"{OUT_PATH.name}: {after:,} bytes ({len(BASIC_CHAR)} glyphs, -{before - after:,})")
+    print(f"{OUT_PATH.name}: {after:,} bytes ({len(BASIC_CHAR)} glyphs)")
     return 0
 
 

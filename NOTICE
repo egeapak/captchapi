@@ -21,9 +21,8 @@ See THIRD_PARTY_LICENSES for complete license information.
 This product includes CAPTCHA rendering code derived from captcha-rs,
 Copyright (c) 2022 Samir Djelal, licensed under the MIT License.
 
-This product embeds a modified version of the Liberation Sans Bold font,
-Copyright (c) 2010 Google Corporation and Copyright (c) 2012 Red Hat,
-Inc., licensed under the SIL Open Font License, Version 1.1. The font has
-been subset to the characters CaptchAPI renders and renamed to "CaptchAPI
-Glyphs" as the license requires of modified versions. CaptchAPI is not
-affiliated with or endorsed by the Liberation Fonts project.
+This product embeds a modified version of the Roboto Bold font,
+Copyright 2011 The Roboto Project Authors, licensed under the SIL Open
+Font License, Version 1.1. The font has been subset to the characters
+CaptchAPI renders. Roboto declares no Reserved Font Name, so the family
+name is retained.
