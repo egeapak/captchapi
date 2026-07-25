@@ -8,6 +8,71 @@ compatible with this project's Apache-2.0 license.
 
 ---
 
+## Vendored Source Code
+
+### captcha-rs (MIT)
+
+`src/services/captcha/generator.rs` is a derivative work of the `captcha-rs`
+crate, v0.5.0. It was vendored so that CaptchAPI can select the `image` and
+`imageproc` feature sets directly (upstream forces `image/default`, which
+pulls in every image codec) and so that the proprietary font upstream embeds
+could be replaced — see "Embedded Fonts" below.
+
+- Upstream: https://github.com/samirdjelal/captcha-rs
+- License: MIT
+- Copyright: Copyright (c) 2022 Samir Djelal
+
+```
+MIT License
+
+Copyright (c) 2022 Samir Djelal
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## Embedded Fonts
+
+### Liberation Sans Bold (SIL OFL 1.1)
+
+`assets/fonts/LiberationSans-Bold.ttf` is compiled into the CaptchAPI binary
+via `include_bytes!` and used to render CAPTCHA glyphs. It is embedded
+unmodified, and CaptchAPI does not use any Reserved Font Name.
+
+- Upstream: https://github.com/liberationfonts
+- Version: 2.1.5
+- License: SIL Open Font License, Version 1.1
+- Copyright: Copyright (c) 2010 Google Corporation with Reserved Font Name
+  Arimo, Tinos and Cousine; Copyright (c) 2012 Red Hat, Inc. with Reserved
+  Font Name Liberation.
+
+The full license text is distributed alongside the font at
+`assets/fonts/LICENSE-Liberation-OFL-1.1.txt`.
+
+Liberation Sans is metric-compatible with Arial. It replaces the Monotype
+Arial that `captcha-rs` v0.5.0 embeds; that font is proprietary and its
+embedded license notice forbids redistribution, so it could not be shipped
+in CaptchAPI's binaries or container images.
+
+---
+
 ## BSD-3-Clause Licensed Dependencies
 
 The following dependencies are licensed under the BSD-3-Clause license:
@@ -165,8 +230,8 @@ license. Notable dependencies include:
 - axum, tokio, tower, tower-http (MIT)
 - sqlx (MIT OR Apache-2.0)
 - serde, serde_json (MIT OR Apache-2.0)
-- captcha-rs (MIT)
-- image (MIT OR Apache-2.0)
+- image, imageproc (MIT OR Apache-2.0)
+- ab_glyph (Apache-2.0)
 - uuid (MIT OR Apache-2.0)
 - chrono (MIT OR Apache-2.0)
 - tracing (MIT)

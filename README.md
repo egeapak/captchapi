@@ -6,7 +6,7 @@
 
 A secure, high-performance REST API for CAPTCHA generation and validation. Built with Rust, featuring async/await architecture, SQLite persistence, and distroless Docker containers.
 
-CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/captcha-rs) with configurable difficulty and dark mode support:
+CAPTCHA images are rendered in-process with configurable difficulty and dark mode support:
 
 | Easy (difficulty 2) | Hard + dark mode (difficulty 8) |
 |:---:|:---:|

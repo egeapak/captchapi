@@ -8,7 +8,7 @@
 | Web Framework | Axum | 0.8 |
 | Async Runtime | Tokio | 1.x |
 | Database | SQLite via SQLx | 0.8 |
-| CAPTCHA Generation | [captcha-rs](https://github.com/samirdjelal/captcha-rs) | 0.5 |
+| CAPTCHA Generation | In-tree renderer on image + imageproc (JPEG/text only) | - |
 | Authentication | SHA256 + salt | - |
 | Telemetry | OpenTelemetry + tracing | 0.27 |
 | Rate Limiting | tower_governor (GCRA) | 0.8 |
@@ -33,7 +33,9 @@ src/
 │   └── api_key.rs           # API key models
 ├── services/                # Business logic layer
 │   ├── mod.rs
-│   ├── captcha.rs           # CAPTCHA generation
+│   ├── captcha/             # CAPTCHA generation
+│   │   ├── mod.rs           # CaptchaService (JPEG encoding)
+│   │   └── generator.rs     # In-tree renderer (vendored from captcha-rs)
 │   ├── auth.rs              # API key hashing
 │   ├── storage.rs           # Database operations
 │   ├── session_ops.rs       # Session orchestration

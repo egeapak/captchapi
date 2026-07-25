@@ -17,7 +17,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Language**: Rust (Edition 2021)
 - **Web Framework**: Axum 0.8 (async-first, built on Tokio)
 - **Database**: SQLite via SQLx 0.8 (async, compile-time checked queries)
-- **CAPTCHA Generation**: captcha-rs 0.2.11
+- **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) on image + imageproc, JPEG/text features only
 - **Authentication**: API key-based with SHA256 hashing
 - **Deployment**: Static musl binary in distroless container (7.42 MB)
 
@@ -63,7 +63,9 @@ captchapi/
     │   └── api_key.rs           # API key models
     ├── services/                # Business logic layer
     │   ├── mod.rs
-    │   ├── captcha.rs           # CAPTCHA generation
+    │   ├── captcha/             # CAPTCHA generation
+    │   │   ├── mod.rs           # CaptchaService (JPEG encoding)
+    │   │   └── generator.rs     # In-tree renderer (vendored from captcha-rs)
     │   ├── auth.rs              # API key hashing
     │   ├── storage.rs           # Database operations
     │   ├── session_ops.rs       # Session orchestration
@@ -307,16 +309,39 @@ cargo nextest run
 
 ```toml
 axum = "0.8"                    # Web framework
-tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
-captcha-rs = "0.2"              # CAPTCHA generation
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+# CAPTCHA rendering. Deliberately minimal features: only JPEG is encoded and
+# only text/shape drawing is used. `image`'s defaults would add every codec
+# (AVIF, EXR, TIFF, PNG, WebP, ...) and ~58 transitive crates.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+imageproc = { version = "0.26", default-features = false, features = ["text"] }
+ab_glyph = "0.2"
+
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-sha2 = "0.10"                   # Hashing
+sha2 = "0.11"                   # Hashing
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"                 # Logging
-rand = "0.8"                    # Random generation
+rand = "0.10"                   # Random generation
 ```
+
+### Vendored CAPTCHA Renderer
+
+`src/services/captcha/generator.rs` is vendored from `captcha-rs` v0.5.0 (MIT)
+rather than used as a dependency, for two reasons:
+
+1. Upstream depends on `imageproc` with default features, whose `default`
+   list includes `image/default`. Because Cargo features are additive, that
+   re-enables every image codec no matter what this crate declares. Vendoring
+   is the only way to hold the feature set down.
+2. Upstream embeds Monotype Arial, whose license forbids redistribution. The
+   renderer uses Liberation Sans Bold (SIL OFL 1.1, metric-compatible with
+   Arial) from `assets/fonts/` instead.
+
+Attribution for both lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep them
+in sync when touching the renderer or the bundled font.
 
 ## Background Tasks
 
