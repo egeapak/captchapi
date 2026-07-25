@@ -23,6 +23,10 @@ pub struct Config {
     pub database_max_connections: u32,
     pub api_key_salt: String,
     pub master_api_key: String,
+    /// Server-side key for hashing CAPTCHA solutions. Defaults to `API_KEY_SALT`.
+    pub solution_hash_secret: String,
+    /// Server-side key for encrypting stored CAPTCHA images. Defaults to `API_KEY_SALT`.
+    pub image_encryption_secret: String,
     pub default_session_ttl_seconds: u64,
     pub max_session_ttl_seconds: u64,
     pub max_validation_attempts: i64,
@@ -42,6 +46,47 @@ impl Config {
 
     /// Load configuration from a custom environment provider (testing use)
     pub fn from_env_provider<E: EnvProvider>(env: &E) -> Result<Self, String> {
+        let api_key_salt = {
+            let salt = env
+                .get("API_KEY_SALT")
+                .map_err(|_| "API_KEY_SALT must be set")?;
+            if salt.len() < 16 {
+                return Err("API_KEY_SALT must be at least 16 bytes for security".to_string());
+            }
+            salt
+        };
+
+        // Solutions are hashed with a key that must not live in the database.
+        // A dedicated secret is preferred; falling back to API_KEY_SALT keeps
+        // existing deployments working without a new required variable
+        // (the two uses are domain-separated inside SolutionHasher).
+        let solution_hash_secret = match env.get("SOLUTION_HASH_SECRET") {
+            Ok(secret) => {
+                if secret.len() < 16 {
+                    return Err(
+                        "SOLUTION_HASH_SECRET must be at least 16 bytes for security".to_string(),
+                    );
+                }
+                secret
+            }
+            Err(_) => api_key_salt.clone(),
+        };
+
+        // Same reasoning for the image encryption key: dedicated secret when
+        // provided, otherwise API_KEY_SALT (domain-separated inside ImageCipher).
+        let image_encryption_secret = match env.get("IMAGE_ENCRYPTION_SECRET") {
+            Ok(secret) => {
+                if secret.len() < 16 {
+                    return Err(
+                        "IMAGE_ENCRYPTION_SECRET must be at least 16 bytes for security"
+                            .to_string(),
+                    );
+                }
+                secret
+            }
+            Err(_) => api_key_salt.clone(),
+        };
+
         Ok(Config {
             server_host: env
                 .get("SERVER_HOST")
@@ -59,15 +104,9 @@ impl Config {
                 .unwrap_or_else(|_| "5".to_string())
                 .parse()
                 .map_err(|_| "Invalid DATABASE_MAX_CONNECTIONS: must be a positive integer")?,
-            api_key_salt: {
-                let salt = env
-                    .get("API_KEY_SALT")
-                    .map_err(|_| "API_KEY_SALT must be set")?;
-                if salt.len() < 16 {
-                    return Err("API_KEY_SALT must be at least 16 bytes for security".to_string());
-                }
-                salt
-            },
+            api_key_salt,
+            solution_hash_secret,
+            image_encryption_secret,
             master_api_key: {
                 let key = env
                     .get("MASTER_API_KEY")
@@ -250,6 +289,84 @@ mod tests {
         let result = Config::from_env_provider(&env);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("at least 16 bytes"));
+    }
+
+    #[test]
+    fn test_config_solution_hash_secret_defaults_to_api_key_salt() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.solution_hash_secret, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_config_custom_solution_hash_secret() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("SOLUTION_HASH_SECRET", "dedicated-solution-secret");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.solution_hash_secret, "dedicated-solution-secret");
+        // The API key salt must be unaffected
+        assert_eq!(config.api_key_salt, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_config_solution_hash_secret_too_short() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("SOLUTION_HASH_SECRET", "short");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 16 bytes"));
+    }
+
+    #[test]
+    fn test_config_image_encryption_secret_defaults_to_api_key_salt() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.image_encryption_secret, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_config_custom_image_encryption_secret() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("IMAGE_ENCRYPTION_SECRET", "dedicated-image-secret-16");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.image_encryption_secret, "dedicated-image-secret-16");
+        // The other secrets must be unaffected
+        assert_eq!(config.api_key_salt, "test-salt-minimum-16chars");
+        assert_eq!(config.solution_hash_secret, "test-salt-minimum-16chars");
+    }
+
+    #[test]
+    fn test_config_image_encryption_secret_too_short() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("IMAGE_ENCRYPTION_SECRET", "short");
+
+        let result = Config::from_env_provider(&env);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("at least 16 bytes"));
+    }
+
+    #[test]
+    fn test_config_secrets_are_independent() {
+        let mut env = MockEnv::new();
+        env.set_all_required();
+        env.set("SOLUTION_HASH_SECRET", "dedicated-solution-secret");
+        env.set("IMAGE_ENCRYPTION_SECRET", "dedicated-image-secret-16");
+
+        let config = Config::from_env_provider(&env).unwrap();
+        assert_eq!(config.solution_hash_secret, "dedicated-solution-secret");
+        assert_eq!(config.image_encryption_secret, "dedicated-image-secret-16");
+        assert_eq!(config.api_key_salt, "test-salt-minimum-16chars");
     }
 
     #[test]

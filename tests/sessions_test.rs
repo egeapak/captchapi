@@ -65,29 +65,11 @@ async fn test_complete_session_flow() {
     let app = test_app.build_app();
     let server = TestServer::new(app);
 
-    // 1. Create session with custom length
-    let create_response = server
-        .post("/api/v1/sessions")
-        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({
-            "length": 6,
-            "difficulty": 5,
-            "expires_in_seconds": 300
-        }))
-        .await;
-
-    create_response.assert_status(axum::http::StatusCode::CREATED);
-    let create_body: serde_json::Value = create_response.json();
-    let session_id = create_body["session_id"].as_str().unwrap();
-
-    // Get solution from the database (text is no longer in the response)
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let text = &session.solution;
+    // 1. Create session through the service layer: the API never returns the
+    //    solution and storage only keeps its hash, so this is the only way for
+    //    a test to learn the correct answer.
+    let (session_id, text) = test_app.create_session_with_solution(6).await;
+    let session_id = session_id.as_str();
 
     // Verify text has correct length
     assert_eq!(text.len(), 6);
@@ -371,22 +353,8 @@ async fn test_validation_case_sensitive() {
     let app = test_app.build_app();
     let server = TestServer::new(app);
 
-    // Create session
-    let create_response = server
-        .post("/api/v1/sessions")
-        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"length": 6}))
-        .await;
-
-    let create_body: serde_json::Value = create_response.json();
-    let session_id = create_body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let text = session.solution.clone();
+    // Create session (through the service layer so the answer is known)
+    let (session_id, text) = test_app.create_session_with_solution(6).await;
 
     // Test exact match (should be valid)
     let response1 = server
@@ -399,21 +367,7 @@ async fn test_validation_case_sensitive() {
     assert_eq!(body1["valid"], true);
 
     // Create another session to test case mismatch
-    let create_response2 = server
-        .post("/api/v1/sessions")
-        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"length": 6}))
-        .await;
-
-    let create_body2: serde_json::Value = create_response2.json();
-    let session_id2 = create_body2["session_id"].as_str().unwrap();
-    let session2 = test_app
-        .storage
-        .get_session(session_id2)
-        .await
-        .unwrap()
-        .unwrap();
-    let text2 = session2.solution.clone();
+    let (session_id2, text2) = test_app.create_session_with_solution(6).await;
 
     // Test with different case (should be invalid if text contains letters)
     let text2_swapped_case: String = text2
@@ -447,21 +401,7 @@ async fn test_validate_three_failed_attempts_deletes_session() {
     let server = TestServer::new(app);
 
     // Create session
-    let create_response = server
-        .post("/api/v1/sessions")
-        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({"length": 7}))
-        .await;
-
-    let create_body: serde_json::Value = create_response.json();
-    let session_id = create_body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let correct_text = session.solution.clone();
+    let (session_id, correct_text) = test_app.create_session_with_solution(7).await;
 
     // First failed attempt
     let response1 = server
@@ -638,27 +578,9 @@ async fn test_validate_session_with_master_key_succeeds() {
     let app = test_app.build_app();
     let server = TestServer::new(app);
 
-    // Create session using regular API key
-    let create_response = server
-        .post("/api/v1/sessions")
-        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
-        .json(&json!({
-            "length": 6,
-            "difficulty": 5,
-            "expires_in_seconds": 300
-        }))
-        .await;
-
-    create_response.assert_status(axum::http::StatusCode::CREATED);
-    let create_body: serde_json::Value = create_response.json();
-    let session_id = create_body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let text = session.solution.clone();
+    // Creating with a regular API key is covered elsewhere; create through the
+    // service layer here so the correct solution is known for validation.
+    let (session_id, text) = test_app.create_session_with_solution(6).await;
 
     // Validate session using master key
     let validate_response = server
@@ -726,13 +648,10 @@ async fn test_complete_session_flow_with_master_key() {
     create_response.assert_status(axum::http::StatusCode::CREATED);
     let create_body: serde_json::Value = create_response.json();
     let session_id = create_body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let text = session.solution.clone();
+
+    // The created session's solution is only stored as a hash, so the
+    // validation legs below use a session created through the service layer.
+    let (validatable_id, text) = test_app.create_session_with_solution(9).await;
 
     // Verify text length
     assert_eq!(text.len(), 9);
@@ -750,7 +669,7 @@ async fn test_complete_session_flow_with_master_key() {
 
     // 3. Validate with correct solution using master key
     let validate_response = server
-        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .post(&format!("/api/v1/sessions/{}/validate", validatable_id))
         .add_header("Authorization", format!("Bearer {}", test_app.master_key))
         .json(&json!({
             "solution": text
@@ -761,9 +680,9 @@ async fn test_complete_session_flow_with_master_key() {
     let validate_body: serde_json::Value = validate_response.json();
     assert_eq!(validate_body["valid"], true);
 
-    // 4. Session should be deleted after successful validation
+    // 4. The validated session should be deleted after successful validation
     let details_response2 = server
-        .get(&format!("/api/v1/sessions/{}", session_id))
+        .get(&format!("/api/v1/sessions/{}", validatable_id))
         .await;
 
     details_response2.assert_status_not_found();
@@ -955,15 +874,11 @@ async fn test_create_session_with_valid_length_boundary() {
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
-    let body: serde_json::Value = response.json();
-    let session_id = body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.solution.len(), 1);
+
+    // The generated text honours the requested length (checked through the
+    // service layer, since the stored value is a hash)
+    let (_, solution) = test_app.create_session_with_solution(1).await;
+    assert_eq!(solution.chars().count(), 1);
 
     // Test length = 20 (maximum)
     let response = server
@@ -975,15 +890,9 @@ async fn test_create_session_with_valid_length_boundary() {
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
-    let body: serde_json::Value = response.json();
-    let session_id = body["session_id"].as_str().unwrap();
-    let session = test_app
-        .storage
-        .get_session(session_id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(session.solution.len(), 20);
+
+    let (_, solution) = test_app.create_session_with_solution(20).await;
+    assert_eq!(solution.chars().count(), 20);
 }
 
 #[tokio::test]
@@ -1132,4 +1041,211 @@ async fn test_create_session_with_valid_compression() {
         .await;
 
     response.assert_status(axum::http::StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_solution_is_not_stored_in_plaintext() {
+    let test_app = TestApp::new().await;
+
+    let (session_id, solution) = test_app.create_session_with_solution(6).await;
+
+    let stored = test_app
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+    assert_ne!(
+        stored.solution_hash, solution,
+        "The answer must never be persisted in plaintext"
+    );
+    assert!(
+        !stored.solution_hash.contains(&solution),
+        "The stored hash must not contain the answer"
+    );
+    assert_eq!(
+        stored.solution_hash.len(),
+        64,
+        "Stored value should be a 64-character HMAC-SHA256 digest"
+    );
+    assert!(
+        stored.solution_hash.chars().all(|c| c.is_ascii_hexdigit()),
+        "Stored value should be hex-encoded"
+    );
+}
+
+#[tokio::test]
+async fn test_submitting_the_stored_hash_does_not_validate() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let (session_id, _solution) = test_app.create_session_with_solution(6).await;
+    let stored = test_app
+        .storage
+        .get_session(&session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+    // Someone who reads the database learns only the hash; replaying it must fail.
+    let response = server
+        .post(&format!("/api/v1/sessions/{}/validate", session_id))
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"solution": stored.solution_hash}))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["valid"], false);
+}
+
+#[tokio::test]
+async fn test_image_is_not_stored_in_plaintext() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // The endpoint still serves a real JPEG
+    let image_response = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+    image_response.assert_status_ok();
+    let served = image_response.as_bytes().to_vec();
+    assert!(
+        served.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "Served bytes should be a JPEG"
+    );
+
+    // ...but the stored blob is ciphertext
+    let stored = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+
+    assert!(
+        !stored.image_encrypted.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "Stored image must not be a raw JPEG"
+    );
+    assert_ne!(stored.image_encrypted, served);
+    assert!(
+        !stored
+            .image_encrypted
+            .windows(32)
+            .any(|w| w == &served[..32]),
+        "No plaintext image data should appear in the stored blob"
+    );
+    assert_eq!(
+        stored.image_encrypted.len(),
+        served.len() + 29,
+        "Overhead should be version byte (1) + nonce (12) + Poly1305 tag (16)"
+    );
+}
+
+#[tokio::test]
+async fn test_image_endpoint_is_repeatable() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Decryption must be deterministic across requests
+    let first = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+    let second = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+
+    first.assert_status_ok();
+    second.assert_status_ok();
+    assert_eq!(first.as_bytes(), second.as_bytes());
+}
+
+#[tokio::test]
+async fn test_image_endpoint_rejects_tampered_stored_image() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    let session_id = create_body["session_id"].as_str().unwrap();
+
+    // Simulate someone editing the database: flip one bit of the stored blob
+    let mut session = test_app
+        .storage
+        .get_session(session_id)
+        .await
+        .unwrap()
+        .expect("session should exist");
+    let mid = session.image_encrypted.len() / 2;
+    session.image_encrypted[mid] ^= 0b0000_0001;
+    test_app.storage.delete_session(session_id).await.unwrap();
+    test_app.storage.create_session(&session).await.unwrap();
+
+    let image_response = server
+        .get(&format!("/api/v1/sessions/{}/image.jpeg", session_id))
+        .await;
+
+    image_response.assert_status(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let body: serde_json::Value = image_response.json();
+    assert_eq!(body["error"], "internal_error");
+}
+
+#[tokio::test]
+async fn test_create_response_never_contains_the_solution() {
+    let test_app = TestApp::new().await;
+    let app = test_app.build_app();
+    let server = TestServer::new(app);
+
+    let (session_id, solution) = test_app.create_session_with_solution(6).await;
+
+    // Neither the create response fields nor the public details endpoint may
+    // carry the answer in any form.
+    let create_response = server
+        .post("/api/v1/sessions")
+        .add_header("Authorization", format!("Bearer {}", test_app.api_key))
+        .json(&json!({"length": 6}))
+        .await;
+    let create_body: serde_json::Value = create_response.json();
+    assert!(create_body.get("text").is_none());
+    assert!(create_body.get("solution").is_none());
+    assert_eq!(
+        create_body.as_object().unwrap().len(),
+        3,
+        "Create response should only expose session_id, created_at and expires_at"
+    );
+
+    let details = server
+        .get(&format!("/api/v1/sessions/{}", session_id))
+        .await;
+    let details_text = details.text();
+    assert!(
+        !details_text.contains(&solution),
+        "Session details must not leak the solution"
+    );
+    assert!(details_text.find("solution").is_none());
 }

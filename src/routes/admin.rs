@@ -93,14 +93,32 @@ mod tests {
     }
 
     fn create_expired_session() -> Session {
-        let mut session = Session::new("EXPIRED".to_string(), vec![1, 2, 3], 0, 5, 220, 120, false);
+        let mut session = Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-EXPIRED".to_string(),
+            vec![1, 2, 3],
+            0,
+            5,
+            220,
+            120,
+            false,
+        );
         let now = Utc::now().timestamp();
         session.expires_at = now - 10;
         session
     }
 
     fn create_valid_session() -> Session {
-        Session::new("VALID".to_string(), vec![4, 5, 6], 3600, 5, 220, 120, false)
+        Session::new(
+            Uuid::new_v4().to_string(),
+            "hashed-VALID".to_string(),
+            vec![4, 5, 6],
+            3600,
+            5,
+            220,
+            120,
+            false,
+        )
     }
 
     #[tokio::test]

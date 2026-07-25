@@ -234,6 +234,8 @@ All configuration is via environment variables. Create a `.env` file based on `.
 |----------|-------------|---------|----------|
 | `API_KEY_SALT` | Salt for API key hashing (min 16 chars) | - | **Yes** |
 | `MASTER_API_KEY` | Admin API key (min 16 chars) | - | **Yes** |
+| `SOLUTION_HASH_SECRET` | Key for hashing CAPTCHA solutions (min 16 chars) | `API_KEY_SALT` | No |
+| `IMAGE_ENCRYPTION_SECRET` | Key for encrypting stored CAPTCHA images (min 16 chars) | `API_KEY_SALT` | No |
 
 ### CAPTCHA
 
