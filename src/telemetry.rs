@@ -204,90 +204,160 @@ mod tests {
         }
     }
 
+    // ── environment isolation ─────────────────────────────────────────────────
+
+    /// Serialises tests that mutate environment variables, and restores what
+    /// they found on the way out.
+    ///
+    /// Environment variables are process-global, so these tests race whenever
+    /// the harness runs them as threads in one process — which is what plain
+    /// `cargo test` does. `cargo nextest` gives every test its own process and
+    /// hides the problem, so CI stays green while `cargo test` fails
+    /// intermittently.
+    ///
+    /// Restoring on drop matters as much as the lock: without it, a test that
+    /// panics between setting and clearing a variable leaks it into whichever
+    /// test acquires the lock next.
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        /// Take the lock, snapshot `keys`, and clear them for a known start state.
+        fn new(keys: &[&'static str]) -> Self {
+            static LOCK: Mutex<()> = Mutex::new(());
+
+            // A panicking test poisons the mutex. Recover from it so one
+            // failure stays local instead of cascading into every other test.
+            let lock = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+            for key in keys {
+                std::env::remove_var(key);
+            }
+            Self { _lock: lock, saved }
+        }
+
+        fn set(&self, key: &str, value: &str) {
+            std::env::set_var(key, value);
+        }
+
+        fn remove(&self, key: &str) {
+            std::env::remove_var(key);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_env_guard_restores_previous_value() {
+        std::env::set_var("CAPTCHAPI_ENV_GUARD_PROBE", "original");
+        {
+            let env = EnvGuard::new(&["CAPTCHAPI_ENV_GUARD_PROBE"]);
+            assert!(std::env::var("CAPTCHAPI_ENV_GUARD_PROBE").is_err());
+            env.set("CAPTCHAPI_ENV_GUARD_PROBE", "changed");
+        }
+        assert_eq!(
+            std::env::var("CAPTCHAPI_ENV_GUARD_PROBE").as_deref(),
+            Ok("original")
+        );
+        std::env::remove_var("CAPTCHAPI_ENV_GUARD_PROBE");
+    }
+
+    #[test]
+    fn test_env_guard_clears_variable_that_was_unset() {
+        std::env::remove_var("CAPTCHAPI_ENV_GUARD_UNSET");
+        {
+            let env = EnvGuard::new(&["CAPTCHAPI_ENV_GUARD_UNSET"]);
+            env.set("CAPTCHAPI_ENV_GUARD_UNSET", "temporary");
+        }
+        assert!(std::env::var("CAPTCHAPI_ENV_GUARD_UNSET").is_err());
+    }
+
     // ── is_telemetry_enabled ──────────────────────────────────────────────────
 
     #[test]
-
     fn test_is_telemetry_enabled_with_true() {
-        std::env::set_var("OTEL_ENABLED", "true");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "true");
         assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_one() {
-        std::env::set_var("OTEL_ENABLED", "1");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "1");
         assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_yes() {
-        std::env::set_var("OTEL_ENABLED", "yes");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "yes");
         assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_on() {
-        std::env::set_var("OTEL_ENABLED", "on");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "on");
         assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_case_insensitive() {
-        std::env::set_var("OTEL_ENABLED", "TRUE");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
 
-        std::env::set_var("OTEL_ENABLED", "Yes");
+        env.set("OTEL_ENABLED", "TRUE");
         assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
+
+        env.set("OTEL_ENABLED", "Yes");
+        assert!(is_telemetry_enabled());
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_false() {
-        std::env::set_var("OTEL_ENABLED", "false");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "false");
         assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_zero() {
-        std::env::set_var("OTEL_ENABLED", "0");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "0");
         assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_with_invalid_value() {
-        std::env::set_var("OTEL_ENABLED", "invalid");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.set("OTEL_ENABLED", "invalid");
         assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
     }
 
     #[test]
-
     fn test_is_telemetry_enabled_default_false() {
-        std::env::remove_var("OTEL_ENABLED");
+        let env = EnvGuard::new(&["OTEL_ENABLED"]);
+        env.remove("OTEL_ENABLED");
         assert!(!is_telemetry_enabled());
     }
 
     // ── TelemetryConfig::from_env ─────────────────────────────────────────────
 
     #[test]
-
     fn test_telemetry_config_from_env_defaults() {
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        std::env::remove_var("OTEL_SERVICE_NAME");
+        let _env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
 
         let config = TelemetryConfig::from_env();
 
@@ -296,18 +366,15 @@ mod tests {
     }
 
     #[test]
-
     fn test_telemetry_config_from_env_custom() {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318");
-        std::env::set_var("OTEL_SERVICE_NAME", "my-service");
+        let env = EnvGuard::new(&["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"]);
+        env.set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318");
+        env.set("OTEL_SERVICE_NAME", "my-service");
 
         let config = TelemetryConfig::from_env();
 
         assert_eq!(config.otlp_endpoint, "http://otel-collector:4318");
         assert_eq!(config.service_name, "my-service");
-
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        std::env::remove_var("OTEL_SERVICE_NAME");
     }
 
     // ── build_tracer_provider ─────────────────────────────────────────────────
