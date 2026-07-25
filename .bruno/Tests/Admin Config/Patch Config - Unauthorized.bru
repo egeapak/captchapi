@@ -1,0 +1,29 @@
+meta {
+  name: Patch Config - Unauthorized
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body {
+  {
+    "captcha_compression": 75
+  }
+}
+
+tests {
+  test("should return 401", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return unauthorized error", function() {
+    expect(res.body.error).to.equal("unauthorized");
+  });
+}

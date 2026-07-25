@@ -1,0 +1,67 @@
+# CaptchAPI configuration file
+#
+# Pass with `captchapi --config captchapi.toml`, or check it without starting the
+# server: `captchapi config check --config captchapi.toml`.
+#
+# Precedence, highest first:
+#   command line > environment variable > env file (.env) > this file > built-in default
+#
+# Run `captchapi config show` to see the effective value of every setting and which
+# layer supplied it.
+#
+# Secrets deliberately cannot be set here — API_KEY_SALT, MASTER_API_KEY,
+# SOLUTION_HASH_SECRET and IMAGE_ENCRYPTION_SECRET. Supply them through the
+# environment, or point at a file:
+#   captchapi --api-key-salt-file           /run/secrets/salt \
+#             --master-api-key-file         /run/secrets/master_key \
+#             --solution-hash-secret-file   /run/secrets/solution_key \
+#             --image-encryption-secret-file /run/secrets/image_key
+# That keeps this file safe to commit.
+#
+# The last two default to API_KEY_SALT when unset. Rotating either invalidates every
+# stored session: solution hashes stop matching and stored images stop decrypting.
+
+[server]
+host = "0.0.0.0"
+port = 3000
+# Written at startup so `captchapi reload` can find the process. Must be somewhere the
+# server can write. This relative default resolves against the working directory, which is
+# right for local development; the container image overrides it to the absolute
+# /data/captchapi.pid, because its working directory is /app and the volume is /data.
+pid_file = "./data/captchapi.pid"
+
+[database]
+url = "sqlite:./data/captchapi.db"
+max_connections = 5
+
+[captcha]
+# Applied at runtime: a reload changes these without restarting.
+default_ttl_seconds = 300
+max_ttl_seconds = 3600
+max_validation_attempts = 3
+# JPEG quality, 1-100. Higher means a larger, cleaner image.
+compression = 40
+
+[rate_limit]
+requests_per_second = 2
+burst_size = 10
+# Read the client IP from X-Forwarded-For / X-Real-IP / Forwarded.
+# WARNING: only enable behind a proxy you trust — clients can otherwise spoof these.
+reverse_proxy = false
+
+[tasks]
+# How often expired sessions are removed. Applied at runtime.
+cleanup_interval_seconds = 60
+
+[logging]
+level = "captchapi=debug,tower_http=debug"
+
+[admin]
+# Set to false for deployments that want file-driven reload but no remote mutation:
+# GET /admin/config and POST /admin/config/reload keep working, PATCH returns 403.
+config_write = true
+
+[telemetry]
+enabled = false
+endpoint = "http://localhost:4318"
+service_name = "captchapi"

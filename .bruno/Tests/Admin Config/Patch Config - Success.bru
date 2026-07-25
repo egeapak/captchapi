@@ -1,0 +1,34 @@
+meta {
+  name: Patch Config - Success
+  type: http
+  seq: 7
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "captcha_compression": 75
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should apply the value", function() {
+    expect(res.body.config.captcha_compression.value).to.equal("75");
+  });
+
+  test("should record the override", function() {
+    expect(res.body.overrides).to.include("captcha_compression");
+  });
+}

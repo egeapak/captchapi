@@ -16,10 +16,10 @@ This file provides project overview, architecture, and development workflow. For
 
 - **Language**: Rust (Edition 2021)
 - **Web Framework**: Axum 0.8 (async-first, built on Tokio)
-- **Database**: SQLite via SQLx 0.8 (async, compile-time checked queries)
-- **CAPTCHA Generation**: captcha-rs 0.2.11
+- **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
+- **CAPTCHA Generation**: captcha-rs 0.5
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (7.42 MB)
+- **Deployment**: Static musl binary in distroless container (8.49 MB unpacked / 3.36 MB compressed)
 
 ### Key Features
 
@@ -34,15 +34,13 @@ This file provides project overview, architecture, and development workflow. For
 - ✅ CAPTCHA solution not returned in API response (removed in v1.0.0 for security)
 - ✅ Structured logging with tracing
 - ✅ In-process SQLite database (zero external dependencies)
-- ✅ Ultra-small Docker image (7.42 MB with full LTO and static linking)
+- ✅ Ultra-small Docker image (full LTO and static linking)
 - ✅ Zero runtime dependencies (fully static binary)
 
 ## Project Structure
 
 ```
 captchapi/
-├── PLAN.md                      # Implementation specification
-├── PROGRESS.md                  # Development progress tracking
 ├── CLAUDE.md                    # This file - project documentation
 ├── .env.example                 # Example environment configuration
 ├── Cargo.toml                   # Rust dependencies
@@ -53,7 +51,11 @@ captchapi/
     ├── main.rs                  # Application entry point (thin wrapper)
     ├── lib.rs                   # Library crate exports
     ├── app.rs                   # App builder (router, services, middleware)
-    ├── config.rs                # Environment configuration
+    ├── config/                  # Layered, reloadable configuration
+    │   ├── mod.rs               # Config struct, resolution, redacting Debug
+    │   ├── params.rs            # PARAMS: the single source of truth for every setting
+    │   ├── sources.rs           # CLI / env / env-file / TOML layers and provenance
+    │   └── handle.rs            # ConfigHandle: watch channel, reload, runtime overrides
     ├── error.rs                 # Error types and handling
     ├── metrics.rs               # Prometheus-style metrics
     ├── telemetry.rs             # OpenTelemetry tracing setup
@@ -97,7 +99,7 @@ For complete API documentation including all endpoints, request/response formats
 **Quick Reference:**
 - **Public**: Health check, Get session details, Get CAPTCHA image (binary JPEG)
 - **Protected**: Create sessions, Validate solutions, Delete sessions
-- **Admin**: Manage API keys (create, list, update, delete), Manual cleanup
+- **Admin**: Manage API keys (create, list, update, delete), manual cleanup, show/patch/reload configuration
 
 The API documentation includes:
 - Full endpoint specifications
@@ -108,6 +110,39 @@ The API documentation includes:
 - Migration guides
 
 ## Configuration
+
+Configuration can come from the command line, the environment, an env file or a TOML file.
+Precedence, highest first:
+
+```
+command line > environment > env file (.env) > config file > built-in default
+```
+
+**Adding a new setting is two edits:** one row in `PARAMS` (`src/config/params.rs`) and one
+field on `Config` (`src/config/mod.rs`). The flag, help text, TOML key, provenance reporting
+and the reloadable/boot-only split are all derived from the table. Tests enforce that the two
+stay in sync, including that every declared default matches what the code actually produces.
+
+**Reloadable vs boot-only.** Only values read per request or per tick can change at runtime:
+session TTLs, the attempt limit, JPEG compression and the cleanup interval. Everything else is
+captured at startup by the listener, the connection pool, the middleware or the rate limiter.
+A reload reports drift on those rather than pretending to apply it.
+
+Reload is triggered by SIGHUP, `captchapi reload`, or `POST /api/v1/admin/config/reload`.
+
+**Secrets** are file-only on the CLI (`--api-key-salt-file`, `--master-api-key-file`) and cannot
+be set in the TOML file at all. `Config` and `Cli` both have hand-written `Debug` impls that
+redact them — keep it that way when adding fields.
+
+### CLI
+
+```bash
+captchapi                        # run the server (default verb)
+captchapi config show            # effective config with provenance, secrets redacted
+captchapi config check           # validate and exit (0 ok, 2 bad) — useful in CI
+captchapi reload                 # signal a running server to re-read its config
+captchapi --help
+```
 
 ### Environment Variables
 
@@ -227,8 +262,11 @@ cargo clippy
 
 #### Step 3: Check Compilation
 ```bash
-cargo check
+cargo check --all-targets --workspace
 ```
+
+**Use `--workspace`.** `bindings/nodejs` matches on `AppError` exhaustively with no wildcard
+arm, so adding a variant breaks that crate — and a bare `cargo check` will not tell you.
 
 #### Step 4: Run Rust Tests
 ```bash
@@ -396,7 +434,7 @@ Logs include:
 
 ## Future Enhancements
 
-See `PLAN.md` for detailed future feature ideas:
+Ideas not yet scheduled:
 
 - Multiple CAPTCHA types (math, audio)
 - Session statistics/analytics
@@ -466,7 +504,7 @@ When making changes, follow this workflow:
 
 ### 2. Implement Changes
 - ✅ Write the actual code
-- ✅ Update relevant documentation (PLAN.md, PROGRESS.md, this file)
+- ✅ Update relevant documentation (README.md, docs/, this file)
 
 ### 3. Verify Quality (Run IN ORDER)
 - ✅ Step 1: Run `cargo fmt` to format code
@@ -476,7 +514,6 @@ When making changes, follow this workflow:
 - ✅ Step 5: Run `./.bruno/Tests/Scripts/test-bruno-full.sh` to verify API tests (requires running server)
 
 ### 4. Finalize
-- ✅ Update PROGRESS.md with completed tasks
 - ✅ Commit with descriptive messages
 
 **CRITICAL REQUIREMENTS:**

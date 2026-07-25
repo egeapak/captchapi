@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::ConfigHandle;
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::AuthMiddleware;
@@ -28,7 +28,7 @@ pub struct SessionsState {
     pub captcha: Arc<CaptchaService>,
     pub solution_hasher: Arc<SolutionHasher>,
     pub image_cipher: Arc<ImageCipher>,
-    pub config: Arc<Config>,
+    pub config: ConfigHandle,
     pub metrics: Arc<Metrics>,
 }
 
@@ -55,18 +55,25 @@ pub fn sessions_routes(state: SessionsState, auth_middleware: AuthMiddleware) ->
     width = req.width.unwrap_or(validation::DEFAULT_WIDTH),
     height = req.height.unwrap_or(validation::DEFAULT_HEIGHT),
     dark_mode = req.dark_mode.unwrap_or(validation::DEFAULT_DARK_MODE),
-    expires_in_seconds = req.expires_in_seconds.unwrap_or(state.config.default_session_ttl_seconds),
+    expires_in_seconds,
     session_id
 ))]
 async fn create_session(
     State(state): State<SessionsState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<CreateSessionResponse>)> {
+    // One snapshot for the whole request. Reading the handle more than once would let a reload
+    // landing mid-handler make the traced value disagree with the value used for validation.
+    let settings = state.config.session_config();
+
+    let expires_in_seconds = req
+        .expires_in_seconds
+        .unwrap_or(settings.default_session_ttl_seconds);
+    tracing::Span::current().record("expires_in_seconds", expires_in_seconds);
+
     // Validate parameters — use client-supplied compression if provided, else fall back to
     // the server-configured default so existing behaviour is preserved.
-    let compression = req
-        .compression
-        .or_else(|| Some(state.config.captcha_compression.into()));
+    let compression = req.compression.or(Some(settings.captcha_compression));
     let params = validation::validate_session_params(
         req.length,
         req.difficulty,
@@ -75,8 +82,8 @@ async fn create_session(
         req.dark_mode,
         compression,
         req.expires_in_seconds,
-        state.config.default_session_ttl_seconds,
-        state.config.max_session_ttl_seconds,
+        settings.default_session_ttl_seconds,
+        settings.max_session_ttl_seconds,
     )
     .map_err(AppError::InvalidSessionParams)?;
 
@@ -196,7 +203,7 @@ async fn validate_session(
         &state.metrics,
         &session_id,
         &req.solution,
-        state.config.max_validation_attempts,
+        state.config.session_config().max_validation_attempts,
     )
     .await?;
 

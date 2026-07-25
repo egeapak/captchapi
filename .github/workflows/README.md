@@ -38,7 +38,7 @@ Runs on every push and pull request to `main`/`master` branches.
 - Starts the server in background
 - Waits for server to be ready (health check)
 - Installs Bruno CLI
-- Runs comprehensive API test suite (38 tests)
+- Runs comprehensive API test suite (95 tests)
 - Uploads artifacts on failure
 - Always stops server
 - Duration: ~3-4 minutes

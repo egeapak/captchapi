@@ -4,27 +4,10 @@ This document explains the organization and purpose of each part of the Bruno co
 
 ## Directory Structure
 
-```
-.bruno/
-├── Core Collection (Interactive Usage)
-│   ├── Health Check.bru
-│   ├── API Keys/
-│   └── Sessions/
-│
-├── Tests/ (Automated Testing)
-│   ├── API Keys/
-│   ├── Sessions/
-│   ├── Scripts/
-│   └── Documentation/
-│
-└── Configuration
-    ├── bruno.json
-    ├── environments/
-    ├── README.md
-    └── .gitignore
-```
+> **Folder tree:** see [README.md](README.md#collection-structure), which is kept in sync with
+> the filesystem. Duplicating it here is what let three copies drift apart.
 
-## Core Collection (10 requests)
+## Core Collection (14 requests)
 
 **Purpose**: Normal API usage, interactive testing in Bruno GUI
 
@@ -44,12 +27,11 @@ This document explains the organization and purpose of each part of the Bruno co
 4. `API Keys/Update API Key.bru` - Update key (manual hash)
 5. `API Keys/Delete API Key.bru` - Delete key (manual hash)
 6. `Sessions/Create Session.bru` - Generate CAPTCHA
-7. `Sessions/Get Image (JSON).bru` - Base64 image
 8. `Sessions/Get Image (Binary).bru` - Raw JPEG
 9. `Sessions/Validate Session.bru` - Validate solution
 10. `Sessions/Delete Session.bru` - Delete session
 
-## Test Collection (11 requests)
+## Test Collection (32 requests)
 
 **Purpose**: Automated testing, CI/CD, regression testing
 
@@ -86,13 +68,13 @@ This document explains the organization and purpose of each part of the Bruno co
 **Location**: `.bruno/Tests/Scripts/`
 
 1. **test-bruno.sh** - Quick happy path test
-   - 6 requests, 16 tests
+   - 5 requests, 13 tests
    - Success scenarios only
    - ~130ms execution time
    - Use for: Smoke testing, quick validation
 
 2. **test-bruno-full.sh** - Comprehensive test suite
-   - 18 requests, 38 tests
+   - 41 requests, 95 tests
    - Success + failure scenarios
    - ~170ms execution time
    - Use for: CI/CD, full regression testing
@@ -102,7 +84,7 @@ This document explains the organization and purpose of each part of the Bruno co
 **Location**: `.bruno/Tests/Documentation/`
 
 1. **TEST-SCENARIOS.md** - Detailed test documentation
-   - All 18 test scenarios explained
+   - All 41 test scenarios explained
    - Expected results
    - Variable management
    - Execution order

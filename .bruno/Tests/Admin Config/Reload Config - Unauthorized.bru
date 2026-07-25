@@ -1,0 +1,23 @@
+meta {
+  name: Reload Config - Unauthorized
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/config/reload
+}
+
+headers {
+  Content-Type: application/json
+}
+
+tests {
+  test("should return 401", function() {
+    expect(res.status).to.equal(401);
+  });
+
+  test("should return unauthorized error", function() {
+    expect(res.body.error).to.equal("unauthorized");
+  });
+}

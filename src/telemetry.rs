@@ -29,15 +29,14 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
-    /// Build a TelemetryConfig from environment variables, using defaults where absent
-    pub fn from_env() -> Self {
-        let otlp_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-            .unwrap_or_else(|_| "http://localhost:4318".to_string());
-        let service_name =
-            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "captchapi".to_string());
+    /// Build a `TelemetryConfig` from the resolved application configuration.
+    ///
+    /// This is the path used at startup, so telemetry honours `--otel-endpoint` and the TOML
+    /// config file rather than only reading the process environment.
+    pub fn from_config(config: &crate::config::Config) -> Self {
         Self {
-            otlp_endpoint,
-            service_name,
+            otlp_endpoint: config.otel_endpoint.clone(),
+            service_name: config.otel_service_name.clone(),
         }
     }
 }
@@ -82,40 +81,17 @@ where
         .build()
 }
 
-/// Check if OpenTelemetry is enabled via environment variable
-///
-/// Returns true if OTEL_ENABLED is set to "true", "1", "yes", or "on" (case-insensitive)
-pub fn is_telemetry_enabled() -> bool {
-    std::env::var("OTEL_ENABLED")
-        .unwrap_or_else(|_| "false".to_string())
-        .to_lowercase()
-        .parse::<bool>()
-        .unwrap_or_else(|_| {
-            // If parse fails, check for other common truthy values
-            matches!(
-                std::env::var("OTEL_ENABLED")
-                    .unwrap_or_default()
-                    .to_lowercase()
-                    .as_str(),
-                "yes" | "on" | "1"
-            )
-        })
-}
-
 /// Initialize OpenTelemetry with OTLP exporter
 ///
 /// This sets up both tracing and metrics exporters that send data to an OTLP-compatible backend
 /// (e.g., Jaeger, Grafana Tempo, OpenTelemetry Collector)
 ///
-/// Configuration via environment variables:
-/// - OTEL_ENABLED: Enable OpenTelemetry (default: false). Set to "true", "1", "yes", or "on"
-/// - OTEL_EXPORTER_OTLP_ENDPOINT: The OTLP endpoint (default: http://localhost:4318)
-/// - OTEL_SERVICE_NAME: Service name for traces (default: captchapi)
-/// - RUST_LOG: Log level filter
+/// Endpoint and service name come from the resolved [`Config`](crate::config::Config), so they
+/// honour the command line and the config file, not just the process environment.
 ///
 /// Returns a Tracer that can be used with tracing-opentelemetry
-pub fn init_telemetry() -> anyhow::Result<Tracer> {
-    let config = TelemetryConfig::from_env();
+pub fn init_telemetry(config: &crate::config::Config) -> anyhow::Result<Tracer> {
+    let config = TelemetryConfig::from_config(config);
 
     tracing::info!(
         "Initializing OpenTelemetry with endpoint: {}",
@@ -204,110 +180,29 @@ mod tests {
         }
     }
 
-    // ── is_telemetry_enabled ──────────────────────────────────────────────────
+    // ── TelemetryConfig::from_config ──────────────────────────────────────────
 
     #[test]
+    fn test_from_config_uses_the_resolved_configuration() {
+        // Telemetry settings come from the layered config, so `--otel-endpoint` and the TOML
+        // file work — not just the process environment, which the removed `from_env` read.
+        let config = crate::config::Config {
+            otel_endpoint: "http://collector:4318".to_string(),
+            otel_service_name: "my-service".to_string(),
+            ..crate::config::Config::for_test()
+        };
 
-    fn test_is_telemetry_enabled_with_true() {
-        std::env::set_var("OTEL_ENABLED", "true");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
+        let telemetry = TelemetryConfig::from_config(&config);
+
+        assert_eq!(telemetry.otlp_endpoint, "http://collector:4318");
+        assert_eq!(telemetry.service_name, "my-service");
     }
 
     #[test]
-
-    fn test_is_telemetry_enabled_with_one() {
-        std::env::set_var("OTEL_ENABLED", "1");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_with_yes() {
-        std::env::set_var("OTEL_ENABLED", "yes");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_with_on() {
-        std::env::set_var("OTEL_ENABLED", "on");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_case_insensitive() {
-        std::env::set_var("OTEL_ENABLED", "TRUE");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-
-        std::env::set_var("OTEL_ENABLED", "Yes");
-        assert!(is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_with_false() {
-        std::env::set_var("OTEL_ENABLED", "false");
-        assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_with_zero() {
-        std::env::set_var("OTEL_ENABLED", "0");
-        assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_with_invalid_value() {
-        std::env::set_var("OTEL_ENABLED", "invalid");
-        assert!(!is_telemetry_enabled());
-        std::env::remove_var("OTEL_ENABLED");
-    }
-
-    #[test]
-
-    fn test_is_telemetry_enabled_default_false() {
-        std::env::remove_var("OTEL_ENABLED");
-        assert!(!is_telemetry_enabled());
-    }
-
-    // ── TelemetryConfig::from_env ─────────────────────────────────────────────
-
-    #[test]
-
-    fn test_telemetry_config_from_env_defaults() {
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        std::env::remove_var("OTEL_SERVICE_NAME");
-
-        let config = TelemetryConfig::from_env();
-
-        assert_eq!(config.otlp_endpoint, "http://localhost:4318");
-        assert_eq!(config.service_name, "captchapi");
-    }
-
-    #[test]
-
-    fn test_telemetry_config_from_env_custom() {
-        std::env::set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318");
-        std::env::set_var("OTEL_SERVICE_NAME", "my-service");
-
-        let config = TelemetryConfig::from_env();
-
-        assert_eq!(config.otlp_endpoint, "http://otel-collector:4318");
-        assert_eq!(config.service_name, "my-service");
-
-        std::env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
-        std::env::remove_var("OTEL_SERVICE_NAME");
+    fn test_from_config_carries_the_defaults() {
+        let telemetry = TelemetryConfig::from_config(&crate::config::Config::for_test());
+        assert_eq!(telemetry.otlp_endpoint, "http://localhost:4318");
+        assert_eq!(telemetry.service_name, "captchapi");
     }
 
     // ── build_tracer_provider ─────────────────────────────────────────────────

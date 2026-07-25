@@ -4,28 +4,8 @@ This directory contains all test-specific endpoints, scripts, and documentation 
 
 ## Directory Structure
 
-```
-Tests/
-├── README.md                       # This file
-├── API Keys/                       # API Key test scenarios
-│   ├── Create API Key - Unauthorized.bru
-│   ├── Create API Key for Testing.bru
-│   ├── Update API Key (Test).bru
-│   ├── Delete API Key (Test).bru
-│   └── Delete API Key - Not Found.bru
-├── Sessions/                       # Session test scenarios
-│   ├── Create Session - Unauthorized.bru
-│   ├── Create Session - Invalid Parameters.bru
-│   ├── Get Image - Not Found.bru
-│   ├── Validate Session - Wrong Answer.bru
-│   ├── Validate Session - Max Attempts.bru
-│   └── Validate Session - Session Deleted.bru
-├── Scripts/                        # Test automation scripts
-│   ├── test-bruno.sh              # Quick happy path test
-│   └── test-bruno-full.sh         # Comprehensive test suite
-└── Documentation/                  # Test documentation
-    └── TEST-SCENARIOS.md          # Detailed test scenarios
-```
+> **Folder tree:** see [README.md](../README.md#collection-structure), which is kept in sync with
+> the filesystem. Duplicating it here is what let three copies drift apart.
 
 ## Running Tests
 
@@ -42,7 +22,7 @@ cd /path/to/captchapi
 ./.bruno/Tests/Scripts/test-bruno.sh
 ```
 
-**Coverage**: 6 requests, 16 tests
+**Coverage**: 5 requests, 13 tests
 - Health check
 - Create API key → List keys
 - Create session → Get images
@@ -56,7 +36,7 @@ Tests all endpoints with both success and failure scenarios:
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 
-**Coverage**: 18 requests, 38 tests
+**Coverage**: 41 requests, 95 tests
 - ✅ All success scenarios
 - ❌ Unauthorized access
 - ❌ Invalid parameters
@@ -214,8 +194,8 @@ jobs:
 📊 Execution Summary
 ┌───────────────┬────────────────┐
 │ Status        │     ✓ PASS     │
-│ Requests      │ 18 (18 Passed) │
-│ Tests         │     38/38      │
+│ Requests      │ 41 (41 Passed) │
+│ Tests         │     95/95      │
 │ Duration (ms) │      ~150      │
 └───────────────┴────────────────┘
 ```

@@ -2,6 +2,8 @@
 
 pub mod app;
 #[doc(hidden)]
+pub mod cli;
+#[doc(hidden)]
 pub mod config;
 pub mod error;
 pub mod metrics;

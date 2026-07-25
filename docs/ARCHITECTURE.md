@@ -18,10 +18,15 @@
 
 ```
 src/
-├── main.rs                  # Entry point (thin wrapper)
+├── main.rs                  # Entry point (thin wrapper over the library crate)
 ├── lib.rs                   # Library crate exports
 ├── app.rs                   # App builder (router, services, middleware)
-├── config.rs                # Environment configuration
+├── cli.rs                   # Command-line surface, `config show`/`check`, reload client
+├── config/                  # Layered, reloadable configuration
+│   ├── mod.rs               # Config struct, resolution, redacting Debug
+│   ├── params.rs            # PARAMS table: one row per setting, drives everything
+│   ├── sources.rs           # CLI / env / env-file / TOML layers, provenance
+│   └── handle.rs            # ConfigHandle: watch channel, reload, runtime overrides
 ├── error.rs                 # Error types and handling
 ├── metrics.rs               # Prometheus-style metrics
 ├── telemetry.rs             # OpenTelemetry tracing setup
@@ -29,7 +34,7 @@ src/
 ├── models/                  # Data structures
 │   ├── mod.rs
 │   ├── session.rs           # Session models
-│   ├── session_config.rs    # Session configuration
+│   ├── session_config.rs    # The reloadable subset, snapshotted per request
 │   └── api_key.rs           # API key models
 ├── services/                # Business logic layer
 │   ├── mod.rs
@@ -87,7 +92,52 @@ HTTP Request
 - **`app.rs` builder pattern**: All router assembly, service instantiation, and middleware wiring lives in `build_app()`, making it testable and reusable across main and integration tests.
 - **Centralized validation**: All input validation lives in `validation.rs`, shared between the HTTP server and NAPI bindings.
 - **In-process SQLite**: Zero network overhead, no external database dependency. The database file is created automatically on startup.
-- **Background cleanup**: A Tokio task runs periodically to delete expired sessions without blocking request handling.
+- **Background cleanup**: A Tokio task runs periodically to delete expired sessions without blocking request handling. It watches the config handle, so a reload changes its interval without a restart.
+
+## Configuration
+
+Settings resolve through four layers, highest precedence first: the command line, the process
+environment, an env file, then a TOML config file, falling back to built-in defaults.
+
+The key design decision is that **the command line is not a second configuration system**.
+Every layer resolves the same canonical keys — the environment variable names — so the CLI
+plugs in as just another `EnvProvider`, the trait that already existed for testing. All parsing,
+validation and error messages continue to come from `Config::from_env_provider`, in one place.
+
+`PARAMS` (`config/params.rs`) is the single source of truth: one row per setting, carrying its
+environment key, flag, TOML path, type, default, help text and whether it is reloadable. Help
+output, TOML validation, provenance reporting and the reload partition are all derived from it,
+so adding a setting is one row plus one struct field.
+
+### Reload
+
+```
+SIGHUP ─┐
+CLI ────┼─→ ConfigHandle::reload() ─→ re-resolve ─→ watch::Sender ─┬─→ request handlers
+API ────┘                                                          └─→ cleanup task
+```
+
+The running `Config` lives behind a `tokio::sync::watch` channel. Readers take a cheap snapshot;
+the cleanup task gets change notification, which it needs to adopt a new interval. Resolution
+and publication happen under a single lock, so a SIGHUP and an admin request cannot interleave
+into a lost update.
+
+Only values read per request or per tick can change: session TTLs, the attempt limit, JPEG
+compression and the cleanup interval — exactly the fields of `SessionConfig`. Everything else is
+captured at startup into the listener, the connection pool, the middleware or the rate limiter,
+and a reload reports drift on those rather than pretending to apply it. A reload that fails to
+resolve is logged and discarded; the running server is never taken down by a bad config edit.
+
+Handlers take **one** snapshot per request, so a reload landing mid-request cannot make a traced
+value disagree with the value used for validation.
+
+### Secret handling
+
+Secrets are accepted as file paths on the command line, never as flag values, keeping them out
+of `ps`, shell history and `docker inspect`. They have no TOML key at all, so a config file is
+safe to commit. `Config` and `Cli` carry hand-written `Debug` impls that redact them, and
+`config show` and the admin API redact them too — the admin endpoint exists to explain the
+server's behaviour, not to read credentials back out of it.
 
 ## Database Schema
 

@@ -37,7 +37,7 @@ jobs:
           echo "✅ .sqlx directory found"
 
       - name: Check compilation with offline mode
-        run: cargo check --all-targets --all-features
+        run: cargo check --all-targets --all-features --workspace
         env:
           SQLX_OFFLINE: true
 
@@ -95,7 +95,7 @@ jobs:
           cache-on-failure: true
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
 
   test:
     name: Test Suite
@@ -198,9 +198,15 @@ jobs:
       - name: Build project
         run: cargo build --release
 
+      - name: Validate configuration
+        run: cargo run --release -- config check
+
       - name: Start server
         run: |
-          cargo run --release &
+          # Run the binary directly rather than through `cargo run`: `$!` would otherwise be
+          # cargo's pid, and killing cargo orphans the server. The server also writes its own
+          # pid file, which the stop step prefers.
+          ./target/release/captchapi &
           echo $! > server.pid
 
       - name: Wait for server to be ready
@@ -243,10 +249,13 @@ jobs:
       - name: Stop server
         if: always()
         run: |
-          if [ -f server.pid ]; then
-            kill $(cat server.pid) || true
-            rm server.pid
+          # Prefer the server's own pid file; fall back to the shell's recorded pid.
+          if [ -f data/captchapi.pid ]; then
+            kill "$(cat data/captchapi.pid)" || true
+          elif [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
           fi
+          rm -f server.pid
 
       - name: Upload test results
         if: always()

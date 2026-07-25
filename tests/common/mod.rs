@@ -1,6 +1,6 @@
 use axum::Router;
 use captchapi::{
-    config::Config,
+    config::{Config, ConfigHandle},
     metrics::Metrics,
     middleware::{AuthMiddleware, MasterKeyMiddleware},
     models::ApiKey,
@@ -76,35 +76,32 @@ impl TestApp {
     }
 
     pub fn build_app(&self) -> Router {
+        self.build_app_with_config(Config {
+            master_api_key: self.master_key.clone(),
+            ..Config::for_test()
+        })
+    }
+
+    /// Build the app over a specific configuration.
+    ///
+    /// Added alongside `build_app` rather than replacing it, so the other test files do not
+    /// churn. The caller is responsible for setting `master_api_key` if it matters.
+    #[allow(dead_code)] // Used in some test files, but clippy doesn't see cross-module usage
+    pub fn build_app_with_config(&self, config: Config) -> Router {
         let captcha = Arc::new(CaptchaService::new());
         let metrics = Arc::new(Metrics::new());
-        let config = Arc::new(Config {
-            server_host: "127.0.0.1".to_string(),
-            server_port: 3000,
-            database_url: "sqlite::memory:".to_string(),
-            database_max_connections: 5,
-            api_key_salt: "test-salt-minimum-16chars".to_string(),
-            solution_hash_secret: "test-solution-secret-1234".to_string(),
-            image_encryption_secret: "test-image-secret-1234".to_string(),
-            master_api_key: self.master_key.clone(),
-            default_session_ttl_seconds: 300,
-            max_session_ttl_seconds: 3600,
-            max_validation_attempts: 3,
-            cleanup_interval_seconds: 60,
-            rate_limit_requests_per_second: 2,
-            rate_limit_burst_size: 10,
-            rate_limit_reverse_proxy: false,
-            captcha_compression: 40,
-        });
+        // `Config::for_test()` carries the same secrets this harness passes to SolutionHasher
+        // and ImageCipher above, so the config and the services agree.
+        let config = ConfigHandle::from_static(config);
 
         let auth_middleware = AuthMiddleware::new(
             self.storage.clone(),
             self.auth_service.clone(),
             metrics.clone(),
-            config.master_api_key.clone(),
+            self.master_key.clone(),
         );
-        let master_middleware = MasterKeyMiddleware::new(config.master_api_key.clone());
-        let master_middleware_admin = MasterKeyMiddleware::new(config.master_api_key.clone());
+        let master_middleware = MasterKeyMiddleware::new(self.master_key.clone());
+        let master_middleware_admin = MasterKeyMiddleware::new(self.master_key.clone());
 
         let sessions_state = SessionsState {
             storage: self.storage.clone(),
@@ -124,6 +121,7 @@ impl TestApp {
         let admin_state = AdminState {
             storage: self.storage.clone(),
             metrics: metrics.clone(),
+            config: config.clone(),
         };
 
         Router::new()

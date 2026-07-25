@@ -1,3 +1,4 @@
+use crate::config::ConfigHandle;
 use crate::error::Result;
 use crate::metrics::Metrics;
 use crate::services::StorageService;
@@ -25,17 +26,39 @@ pub async fn cleanup_expired_sessions(storage: &StorageService, metrics: &Metric
     Ok(count)
 }
 
+/// Build the tick interval for a given period.
+///
+/// Uses `interval_at` with the first tick a full period away: `time::interval` fires
+/// immediately, which would turn every unrelated configuration change into a spurious cleanup.
+fn interval_for(seconds: u64) -> time::Interval {
+    // A zero period would panic inside tokio; treat it as "as fast as one second".
+    let period = Duration::from_secs(seconds.max(1));
+    time::interval_at(time::Instant::now() + period, period)
+}
+
 /// Start a background task that periodically cleans up expired sessions and rate limiter entries.
+///
+/// The task watches `config` so a reload changes the cleanup interval without a restart.
 /// Returns a JoinHandle that can be awaited for graceful shutdown.
 pub fn start_cleanup_task(
     storage: StorageService,
-    interval_seconds: u64,
+    config: ConfigHandle,
     metrics: Arc<Metrics>,
     rate_limiter: Arc<DefaultKeyedRateLimiter<IpAddr>>,
     shutdown_token: CancellationToken,
 ) -> JoinHandle<()> {
+    // Subscribe, then drop the handle: holding it would keep a sender alive inside this task
+    // forever, so the closed-channel path below could never be reached — or tested.
+    let mut updates = config.subscribe();
+    let mut period = config.get().cleanup_interval_seconds;
+    drop(config);
+
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(interval_seconds));
+        let mut interval = interval_for(period);
+        // Once every sender is gone `changed()` resolves with an error immediately and forever.
+        // The branch has to be disabled by a guard: awaiting inside the arm body instead would
+        // suspend the whole `select!`, including the shutdown branch, and hang the process.
+        let mut config_closed = false;
 
         loop {
             tokio::select! {
@@ -48,6 +71,25 @@ pub fn start_cleanup_task(
                     rate_limiter.retain_recent();
                     tracing::info!("Cleanup task shutdown complete");
                     break;
+                }
+                changed = updates.changed(), if !config_closed => {
+                    if changed.is_err() {
+                        tracing::debug!(
+                            "Configuration channel closed; cleanup task keeps its current interval"
+                        );
+                        config_closed = true;
+                        continue;
+                    }
+                    let updated = updates.borrow_and_update().cleanup_interval_seconds;
+                    if updated != period {
+                        tracing::info!(
+                            "Cleanup interval changed from {}s to {}s",
+                            period,
+                            updated
+                        );
+                        period = updated;
+                        interval = interval_for(period);
+                    }
                 }
                 _ = interval.tick() => {
                     // Cleanup expired sessions
@@ -76,6 +118,14 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use tower_governor::governor::GovernorConfigBuilder;
     use uuid::Uuid;
+
+    /// A config handle with the given cleanup interval.
+    fn test_config(interval_seconds: u64) -> ConfigHandle {
+        ConfigHandle::from_static(crate::config::Config {
+            cleanup_interval_seconds: interval_seconds,
+            ..crate::config::Config::for_test()
+        })
+    }
 
     async fn setup_test_storage() -> StorageService {
         let db_name = format!(
@@ -233,9 +283,8 @@ mod tests {
         // Use a 100 ms interval so the task ticks quickly in CI.
         let handle = start_cleanup_task(
             storage,
-            // interval_seconds is u64 — pass the smallest positive value (1s)
-            // and cancel before the second tick to keep the test fast.
-            1,
+            // The smallest positive interval (1s); the test cancels before the second tick.
+            test_config(1),
             metrics,
             rate_limiter,
             shutdown_token.clone(),
@@ -288,20 +337,26 @@ mod tests {
             "valid session should be in the database before task starts"
         );
 
-        // Start the task with a 1-second interval.  The interval fires
-        // immediately on the first tick, so we only need a short wait.
+        // Start the task with a 1-second interval. The first tick lands one full period out —
+        // the task deliberately does not fire immediately, so that a configuration change
+        // cannot trigger a spurious cleanup.
         let handle = start_cleanup_task(
             storage.clone(),
-            1,
+            test_config(1),
             metrics,
             rate_limiter,
             shutdown_token.clone(),
         );
 
-        // Wait long enough for the first interval tick to execute
-        // (tokio's interval fires immediately the first time, so 200 ms is
-        // generous while staying well below any CI timeout).
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait past the first tick, with margin for a loaded CI runner.
+        tokio::time::sleep(Duration::from_millis(1_400)).await;
+
+        // Assert before cancelling: the shutdown path also runs a cleanup, so checking
+        // afterwards would pass even if the periodic tick never fired.
+        assert!(
+            storage.get_session(&expired.id).await.unwrap().is_none(),
+            "the periodic tick should have cleaned up the expired session"
+        );
 
         // Cancel the task now that at least one tick has occurred.
         shutdown_token.cancel();
@@ -328,5 +383,102 @@ mod tests {
             storage.get_session(&valid.id).await.unwrap().is_some(),
             "valid session should not have been removed by the task"
         );
+    }
+
+    #[tokio::test]
+    async fn test_interval_does_not_fire_immediately() {
+        // `time::interval` ticks straight away; this task must not, or every unrelated
+        // configuration change would trigger a spurious cleanup.
+        let mut interval = interval_for(60);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), interval.tick())
+                .await
+                .is_err(),
+            "the first tick should be a full period away"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_interval_for_treats_zero_as_one_second() {
+        // A zero period panics inside tokio, so it must be clamped rather than trusted.
+        let mut interval = interval_for(0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1_400), interval.tick())
+                .await
+                .is_ok(),
+            "a zero interval should behave as one second, not panic or hang"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_task_adopts_a_new_interval_without_restarting() {
+        let storage = setup_test_storage().await;
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let rate_limiter = make_test_rate_limiter();
+        let shutdown_token = CancellationToken::new();
+
+        // Start with an interval far too long to fire during this test...
+        let config = test_config(3_600);
+        let handle = start_cleanup_task(
+            storage.clone(),
+            config.clone(),
+            metrics,
+            rate_limiter,
+            shutdown_token.clone(),
+        );
+
+        let expired = create_expired_session();
+        storage.create_session(&expired).await.unwrap();
+
+        // ...then shorten it. The task must pick this up without a restart.
+        config
+            .patch(&[("CLEANUP_INTERVAL_SECONDS".into(), "1".into())])
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(1_400)).await;
+
+        assert!(
+            storage.get_session(&expired.id).await.unwrap().is_none(),
+            "the task should have adopted the shorter interval and cleaned up"
+        );
+
+        shutdown_token.cancel();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    #[tokio::test]
+    async fn test_task_still_shuts_down_after_the_config_channel_closes() {
+        // `changed()` errors immediately and forever once every sender is gone, so the arm has
+        // to be disabled by a guard. Awaiting inside the arm body instead would suspend the
+        // whole `select!` — including the shutdown branch — and this test would time out.
+        //
+        // `start_cleanup_task` drops its own `ConfigHandle` after subscribing, so dropping the
+        // one below really does close the channel. That is what makes this test exercise the
+        // path rather than pass vacuously.
+        let storage = setup_test_storage().await;
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        let rate_limiter = make_test_rate_limiter();
+        let shutdown_token = CancellationToken::new();
+
+        let config = test_config(3_600);
+        let handle = start_cleanup_task(
+            storage,
+            config.clone(),
+            metrics,
+            rate_limiter,
+            shutdown_token.clone(),
+        );
+
+        drop(config);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // The task must still be responsive to shutdown rather than stuck in a hot loop.
+        shutdown_token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(
+            result.is_ok(),
+            "task did not shut down after losing its config sender"
+        );
+        assert!(result.unwrap().is_ok(), "task panicked");
     }
 }

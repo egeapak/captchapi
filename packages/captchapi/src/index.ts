@@ -37,7 +37,7 @@ import type {
 // =============================================================================
 
 /** Current wrapper package version */
-export const VERSION = "1.0.0";
+export const VERSION = "1.0.1";
 
 /** Minimum compatible @captchapi/core version */
 export const MIN_CORE_VERSION = "1.0.0";
