@@ -333,9 +333,13 @@ rand = "0.10"                   # Random generation
 |---------|---------|--------|
 | `otel`  | off     | Compiles in the OpenTelemetry OTLP trace exporter |
 
-`otel` is off because the OTLP exporter pulls a full HTTP client (reqwest and
-friends) into the binary — roughly 700 KB — for a path that is inert unless
-`OTEL_ENABLED` is set at runtime. Build with `--features otel` to enable it.
+`otel` is off by default because the OTLP exporter pulls a full HTTP client
+(reqwest and friends) into the binary — roughly 700 KB — for a path that is
+inert unless `OTEL_ENABLED` is set at runtime.
+
+**Release builds enable it explicitly.** `release.yml` and the `justfile`
+both pass `--features otel` to `cross build`, so the published container
+images keep the exporter. Only plain `cargo build` omits it.
 
 Note the split: the `opentelemetry` **API** crate is an unconditional
 dependency because `src/metrics.rs` builds every counter and histogram on it.
@@ -352,6 +356,22 @@ paths are invisible to `--all-features`:
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+### SQLite Build Flags
+
+`.cargo/config.toml` sets `LIBSQLITE3_FLAGS` to strip the bundled SQLite
+amalgamation down to what the service uses — no FTS, R-tree, STAT4, JSON1,
+soundex, deprecated shims or extension loading. That is ~332 KB of binary
+for six query shapes that touch none of it. `SQLITE_DQS=0` additionally
+rejects double-quoted string literals, so a mistyped identifier errors
+instead of silently becoming a string.
+
+**Every workspace member must depend on sqlx with `sqlite-bundled`, never
+`sqlite`.** The latter enables sqlx's `sqlite-load-extension` feature, whose
+bindings reference `sqlite3_load_extension` — a symbol that does not exist in
+a library built with `SQLITE_OMIT_LOAD_EXTENSION`. Cargo unifies features
+across the workspace, so a single member requesting `sqlite` breaks the
+entire build with `undefined symbol: sqlite3_load_extension`.
 
 ### Vendored CAPTCHA Renderer
 

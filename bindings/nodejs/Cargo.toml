@@ -24,7 +24,7 @@ tracing = "0.1"
 tokio = { version = "1", features = ["full"] }
 
 # Database
-sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite-bundled", "migrate"] }
 
 [build-dependencies]
 napi-build = "2"

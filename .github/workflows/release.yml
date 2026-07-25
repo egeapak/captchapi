@@ -105,13 +105,13 @@ jobs:
       - name: Build AMD64 binary
         run: |
           echo "🔨 Building AMD64 binary..."
-          cross build --release --target x86_64-unknown-linux-musl --bin captchapi
+          cross build --release --features otel --target x86_64-unknown-linux-musl --bin captchapi
           ls -lh target/x86_64-unknown-linux-musl/release/captchapi
 
       - name: Build ARM64 binary
         run: |
           echo "🔨 Building ARM64 binary..."
-          cross build --release --target aarch64-unknown-linux-musl --bin captchapi
+          cross build --release --features otel --target aarch64-unknown-linux-musl --bin captchapi
           ls -lh target/aarch64-unknown-linux-musl/release/captchapi
 
       - name: Prepare Docker build context

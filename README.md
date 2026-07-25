@@ -262,17 +262,18 @@ All configuration is via environment variables. Create a `.env` file based on `.
 
 ### OpenTelemetry (optional)
 
-OpenTelemetry trace export is **not compiled in by default**. The OTLP exporter
-pulls in a full HTTP client worth roughly 700 KB of binary, so it sits behind
-the `otel` cargo feature:
+OpenTelemetry trace export sits behind the `otel` cargo feature, because the
+OTLP exporter pulls in a full HTTP client worth roughly 700 KB of binary:
 
 ```bash
 cargo build --release --features otel
 ```
 
-The variables below apply to a binary built with that feature. A binary built
-without it warns on startup if `OTEL_ENABLED` is set, rather than ignoring it
-silently. Prometheus-style metrics are unaffected and always available.
+**The published Docker images are built with `otel` enabled**, so
+`OTEL_ENABLED` works out of the box there. A plain `cargo build` does not
+include it; such a binary warns on startup if `OTEL_ENABLED` is set, rather
+than ignoring it silently. Prometheus-style metrics are unaffected and
+always available in every build.
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|

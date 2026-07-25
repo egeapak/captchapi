@@ -30,7 +30,7 @@ tower_governor = { version = "0.8", default-features = false, features = ["axum"
 governor = "0.10"
 
 # Database
-sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite-bundled", "migrate"] }
 
 # CAPTCHA generation
 # Kept to the minimum feature set: only JPEG is encoded and only text/shape
