@@ -16,7 +16,7 @@ use super::drawing::{
     composite_mask, draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, gaussian_noise_mut,
     rasterize_char, salt_and_pepper_noise_mut,
 };
-use ab_glyph::{FontArc, PxScale};
+use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use rand::{rng, RngExt};
 use std::sync::OnceLock;
@@ -59,6 +59,42 @@ const SCALE_LG: f32 = 50.0;
 const INTERFERENCE_LINES: usize = 2;
 const INTERFERENCE_ELLIPSES: usize = 2;
 
+/// At full intensity, a letter shifts by up to this fraction of its font size,
+/// independently in x and y.
+const MAX_JITTER: f32 = 0.16;
+
+/// At full intensity, a letter's width and height each vary by up to this
+/// fraction, drawn independently so letters stretch as well as grow.
+const MAX_SCALE_VARIANCE: f32 = 0.30;
+
+/// How strongly each per-letter deformation is applied.
+///
+/// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
+/// deformation entirely — [`Deformations::none()`] renders exactly what the
+/// renderer produced before any of this existed, which is what lets the
+/// existing output tests keep their meaning.
+///
+/// These are runtime values rather than cargo features on purpose: the
+/// intensities are driven by a per-request difficulty, so a compile-time
+/// switch could not express them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Deformations {
+    /// Random displacement of each letter from its laid-out position.
+    pub jitter: f32,
+    /// Random per-letter scale, drawn separately for width and height.
+    pub scale: f32,
+}
+
+impl Deformations {
+    /// No deformation — the pre-existing rendering.
+    pub const fn none() -> Self {
+        Self {
+            jitter: 0.0,
+            scale: 0.0,
+        }
+    }
+}
+
 /// Roboto Bold subset to exactly [`BASIC_CHAR`], SIL OFL 1.1 — see
 /// assets/fonts/ and scripts/subset-font.py.
 ///
@@ -79,6 +115,18 @@ fn font() -> &'static FontArc {
 /// Random number in `0..=num`.
 fn get_rnd(num: usize) -> usize {
     rng().random_range(0..=num)
+}
+
+/// Uniform random in `-magnitude..magnitude`, exactly zero when disabled.
+///
+/// The zero check is what makes an intensity of `0.0` a true skip rather than
+/// a very small deformation, and it keeps the rng untouched so disabling one
+/// deformation does not shift the others' random draws.
+fn spread(magnitude: f32) -> f32 {
+    if magnitude <= 0.0 {
+        return 0.0;
+    }
+    rng().random_range(-magnitude..magnitude)
 }
 
 /// Random float in `min..=max`, saturating when the range is empty.
@@ -112,7 +160,12 @@ fn background(width: u32, height: u32, dark_mode: bool) -> ImageBuffer<Rgb<u8>, 
 }
 
 /// Lay the solution characters out across the canvas.
-fn write_characters(text: &str, image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dark_mode: bool) {
+fn write_characters(
+    text: &str,
+    image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+    dark_mode: bool,
+    deform: Deformations,
+) {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return;
@@ -129,13 +182,32 @@ fn write_characters(text: &str, image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dark_
     };
 
     let font = font();
+    let nominal_ascent = font.as_scaled(PxScale::from(scale)).ascent();
+
     for (i, ch) in chars.iter().enumerate() {
         let x = 5 + (i as u32 * step) as i32;
         // Drawn unconditionally so the colour draw count does not depend on
         // whether a glyph happens to be outlined.
         let color = get_color(dark_mode);
-        if let Some(mask) = rasterize_char(font, *ch, PxScale::from(scale)) {
-            composite_mask(image, &mask, x, y, color);
+
+        // Scale is applied when the outline is rasterized, not by resampling a
+        // finished bitmap, so a stretched letter stays as crisp as a plain one.
+        let px = PxScale {
+            x: scale * (1.0 + spread(MAX_SCALE_VARIANCE * deform.scale)),
+            y: scale * (1.0 + spread(MAX_SCALE_VARIANCE * deform.scale)),
+        };
+
+        // A larger vertical scale pushes the glyph's ascent down, which would
+        // slide big letters toward the bottom of the canvas. Compensating by
+        // the ascent difference pins the baseline, so letters grow about a
+        // shared line instead of drifting.
+        let baseline_shift = (font.as_scaled(px).ascent() - nominal_ascent).round() as i32;
+
+        let dx = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
+        let dy = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
+
+        if let Some(mask) = rasterize_char(font, *ch, px) {
+            composite_mask(image, &mask, x + dx, y + dy - baseline_shift, color);
         }
     }
 }
@@ -198,15 +270,37 @@ pub fn generate(
     height: u32,
     dark_mode: bool,
 ) -> (String, DynamicImage) {
-    let length = length.clamp(1, 32);
+    let text = random_text(length.clamp(1, 32));
+    let image = render(
+        &text,
+        difficulty,
+        width,
+        height,
+        dark_mode,
+        Deformations::none(),
+    );
+    (text, image)
+}
+
+/// Renders `text` onto a fresh canvas with the given deformations.
+///
+/// Split out from [`generate`] so a caller can hold the string fixed. Comparing
+/// two deformation intensities is meaningless if the letters change in between.
+pub fn render(
+    text: &str,
+    difficulty: u32,
+    width: u32,
+    height: u32,
+    dark_mode: bool,
+    deform: Deformations,
+) -> DynamicImage {
     let difficulty = difficulty.clamp(1, 10);
     let width = width.clamp(30, 2000);
     let height = height.clamp(20, 2000);
 
-    let text = random_text(length);
     let mut image = background(width, height, dark_mode);
 
-    write_characters(&text, &mut image, dark_mode);
+    write_characters(text, &mut image, dark_mode, deform);
 
     for _ in 0..INTERFERENCE_LINES {
         draw_interference_line(&mut image, dark_mode);
@@ -228,12 +322,224 @@ pub fn generate(
         );
     }
 
-    (text, DynamicImage::ImageRgb8(image))
+    DynamicImage::ImageRgb8(image)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::collections::BTreeSet;
+
+    const SAMPLE_TEXT: &str = "Kb7mQ";
+    const SAMPLE_W: u32 = 220;
+    const SAMPLE_H: u32 = 120;
+
+    fn paste(
+        sheet: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+        tile: &ImageBuffer<Rgb<u8>, Vec<u8>>,
+        ox: u32,
+        oy: u32,
+    ) {
+        for (x, y, pixel) in tile.enumerate_pixels() {
+            sheet.put_pixel(ox + x, oy + y, *pixel);
+        }
+    }
+
+    /// One row per intensity, `cols` independent draws per row, so both the
+    /// strength and the spread of the randomness are visible at a glance.
+    fn contact_sheet(rows: &[Deformations], cols: u32, difficulty: u32) -> DynamicImage {
+        let gap = 4;
+        let width = cols * SAMPLE_W + (cols + 1) * gap;
+        let height = rows.len() as u32 * SAMPLE_H + (rows.len() as u32 + 1) * gap;
+        let mut sheet = ImageBuffer::from_pixel(width, height, Rgb([70, 70, 78]));
+
+        for (r, deform) in rows.iter().enumerate() {
+            for c in 0..cols {
+                let tile =
+                    render(SAMPLE_TEXT, difficulty, SAMPLE_W, SAMPLE_H, false, *deform).to_rgb8();
+                let ox = gap + c * (SAMPLE_W + gap);
+                let oy = gap + r as u32 * (SAMPLE_H + gap);
+                paste(&mut sheet, &tile, ox, oy);
+            }
+        }
+        DynamicImage::ImageRgb8(sheet)
+    }
+
+    fn write_jpeg(image: &DynamicImage, name: &str) {
+        use image::codecs::jpeg::JpegEncoder;
+        let dir = std::env::var("CAPTCHA_SAMPLE_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        let mut bytes = Vec::new();
+        JpegEncoder::new_with_quality(&mut bytes, 92)
+            .encode_image(image)
+            .expect("sample encodes");
+        std::fs::write(format!("{dir}/{name}"), bytes).expect("sample writes");
+    }
+
+    /// Renders contact sheets for visual review. Not an assertion, so it is
+    /// ignored by default:
+    ///
+    /// ```text
+    /// CAPTCHA_SAMPLE_DIR=/tmp/samples \
+    ///   cargo nextest run -E 'test(visual_samples)' --run-ignored all
+    /// ```
+    #[test]
+    #[ignore = "writes sample images for human review, asserts nothing"]
+    fn visual_samples() {
+        let levels = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+        let jitter: Vec<_> = levels
+            .iter()
+            .map(|i| Deformations {
+                jitter: *i,
+                ..Deformations::none()
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&jitter, 3, 1), "01-offset-jitter.jpg");
+
+        let scale: Vec<_> = levels
+            .iter()
+            .map(|i| Deformations {
+                scale: *i,
+                ..Deformations::none()
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&scale, 3, 1), "02-scale-variance.jpg");
+
+        let both: Vec<_> = levels
+            .iter()
+            .map(|i| Deformations {
+                jitter: *i,
+                scale: *i,
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&both, 3, 1), "03-offset-and-scale.jpg");
+    }
+
+    /// Letters only, on a bare canvas — no interference lines, ellipses or
+    /// noise — so a deformation can be observed without random clutter on top.
+    fn glyph_pixels(text: &str, deform: Deformations) -> BTreeSet<(u32, u32)> {
+        let mut image = background(220, 120, false);
+        write_characters(text, &mut image, false, deform);
+        image
+            .enumerate_pixels()
+            .filter(|(_, _, p)| p.0 != LIGHT)
+            .map(|(x, y, _)| (x, y))
+            .collect()
+    }
+
+    /// (left, top, right, bottom) of the inked pixels.
+    fn bbox(pixels: &BTreeSet<(u32, u32)>) -> (u32, u32, u32, u32) {
+        let left = pixels.iter().map(|p| p.0).min().unwrap();
+        let right = pixels.iter().map(|p| p.0).max().unwrap();
+        let top = pixels.iter().map(|p| p.1).min().unwrap();
+        let bottom = pixels.iter().map(|p| p.1).max().unwrap();
+        (left, top, right, bottom)
+    }
+
+    #[test]
+    fn test_spread_is_a_true_skip_when_disabled_and_bounded_otherwise() {
+        for _ in 0..500 {
+            assert_eq!(spread(0.0), 0.0, "zero intensity must not deform");
+            assert_eq!(spread(-3.0), 0.0, "a negative magnitude must not deform");
+            let value = spread(5.0);
+            assert!((-5.0..5.0).contains(&value), "{value} escaped its bound");
+        }
+    }
+
+    /// Placement is compared by bounding box with a one-pixel tolerance rather
+    /// than by exact pixel set, because the faintest antialiased edge pixels
+    /// are colour-dependent: `weighted_sum` truncates, so `224 + 16*gv` floors
+    /// back to the background for a low coverage under one glyph colour but
+    /// not under another, and the colour is drawn at random. A pixel-exact
+    /// comparison would flake on that, not on placement.
+    #[test]
+    fn test_no_deformation_places_letters_identically_every_time() {
+        let first = glyph_pixels("Kb7mQ", Deformations::none());
+        assert!(!first.is_empty(), "the letters should have drawn something");
+        let (l0, t0, r0, b0) = bbox(&first);
+
+        for _ in 0..8 {
+            let again = glyph_pixels("Kb7mQ", Deformations::none());
+            let (l, t, r, b) = bbox(&again);
+            assert!(
+                l.abs_diff(l0) <= 1
+                    && t.abs_diff(t0) <= 1
+                    && r.abs_diff(r0) <= 1
+                    && b.abs_diff(b0) <= 1,
+                "placement moved with every intensity at zero: \
+                 ({l},{t},{r},{b}) vs ({l0},{t0},{r0},{b0})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jitter_moves_letters_and_respects_its_bound() {
+        let base = glyph_pixels("Kb7mQ", Deformations::none());
+        let (bl, bt, br, bb) = bbox(&base);
+
+        // 5 characters render at SCALE_MD, so this is the largest shift a
+        // full-intensity jitter can produce, plus one pixel for rounding.
+        let limit = (MAX_JITTER * SCALE_MD).round() as u32 + 1;
+
+        let deform = Deformations {
+            jitter: 1.0,
+            ..Deformations::none()
+        };
+
+        let mut moved = false;
+        for _ in 0..24 {
+            let jittered = glyph_pixels("Kb7mQ", deform);
+            if jittered != base {
+                moved = true;
+            }
+            let (l, t, r, b) = bbox(&jittered);
+            assert!(
+                l + limit >= bl && t + limit >= bt && r <= br + limit && b <= bb + limit,
+                "jittered bbox ({l},{t},{r},{b}) escaped ({bl},{bt},{br},{bb}) by more than {limit}px"
+            );
+        }
+        assert!(
+            moved,
+            "full-intensity jitter should move at least one letter"
+        );
+    }
+
+    #[test]
+    fn test_scale_variance_resizes_letters_while_pinning_the_baseline() {
+        // No descenders, so the bottom of the ink *is* the baseline.
+        let base = glyph_pixels("KBMX", Deformations::none());
+        let (_, base_top, _, base_bottom) = bbox(&base);
+
+        let deform = Deformations {
+            scale: 1.0,
+            ..Deformations::none()
+        };
+
+        let mut tops = BTreeSet::new();
+        for _ in 0..24 {
+            let scaled = glyph_pixels("KBMX", deform);
+            let (_, top, _, bottom) = bbox(&scaled);
+            tops.insert(top);
+            assert!(
+                bottom.abs_diff(base_bottom) <= 3,
+                "baseline drifted: bottom {bottom} vs {base_bottom}"
+            );
+        }
+
+        // Full intensity varies cap height by up to 30% of roughly 30px, so a
+        // real spread is several pixels — comfortably above the one-pixel
+        // wobble the colour-dependent edges can produce on their own.
+        let spread_px = tops.last().unwrap() - tops.first().unwrap();
+        assert!(
+            spread_px >= 3,
+            "scale variance barely changed letter height ({spread_px}px); tops {tops:?}"
+        );
+        assert!(
+            tops.iter().any(|t| t.abs_diff(base_top) >= 2),
+            "no render differed meaningfully in height from the undeformed one"
+        );
+    }
 
     #[test]
     fn test_font_parses_and_is_cached() {
@@ -247,8 +553,6 @@ mod tests {
     /// .notdef (glyph 0) and renders as a blank or a box.
     #[test]
     fn test_every_basic_char_has_a_glyph() {
-        use ab_glyph::Font;
-
         let font = font();
         let missing: Vec<char> = BASIC_CHAR
             .iter()
