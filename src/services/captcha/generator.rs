@@ -14,7 +14,7 @@
 
 use super::drawing::{
     composite_mask, draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, gaussian_noise_mut,
-    rasterize_char, salt_and_pepper_noise_mut,
+    hsl_to_rgb, rasterize_char, salt_and_pepper_noise_mut,
 };
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -34,21 +34,16 @@ const BASIC_CHAR: [char; 54] = [
 const LIGHT: [u8; 3] = [224, 238, 253];
 const DARK: [u8; 3] = [18, 18, 18];
 
-/// Glyph colours, picked at random per character.
-const LIGHT_BASIC_COLOR: [[u8; 3]; 5] = [
-    [214, 14, 50],
-    [240, 181, 41],
-    [176, 203, 40],
-    [105, 137, 194],
-    [242, 140, 71],
-];
-const DARK_BASIC_COLOR: [[u8; 3]; 5] = [
-    [251, 188, 5],
-    [116, 192, 255],
-    [255, 224, 133],
-    [198, 215, 97],
-    [247, 185, 168],
-];
+/// Glyph lightness, chosen to stay legible against each background.
+///
+/// The light background sits near 93% lightness and the dark one near 7%, so
+/// these ranges keep every glyph well clear of its ground whatever hue it draws.
+const LIGHT_MODE_LIGHTNESS: std::ops::Range<f32> = 0.32..0.52;
+const DARK_MODE_LIGHTNESS: std::ops::Range<f32> = 0.55..0.80;
+
+/// Glyph saturation. The floor keeps colours from washing out toward grey,
+/// where they would blend into the noise rather than stand against it.
+const GLYPH_SATURATION: std::ops::Range<f32> = 0.50..0.95;
 
 /// Font sizes, selected by solution length.
 const SCALE_SM: f32 = 35.0;
@@ -83,8 +78,8 @@ const WAVE_PERIOD: std::ops::Range<f32> = 0.7..1.6;
 /// width they would otherwise occupy.
 ///
 /// Letters keep their size and only the gaps between them close, so glyphs
-/// crowd into each other and overlap. At 0.55 with five characters the step
-/// drops from roughly 42px to 23px against glyphs 25-30px wide, so neighbours
+/// crowd into each other and overlap. At 0.45 with five characters the step
+/// drops from roughly 42px to 19px against glyphs 25-30px wide, so neighbours
 /// genuinely intersect rather than merely sitting close.
 const MAX_CLUSTERING: f32 = 0.45;
 
@@ -201,13 +196,28 @@ fn random_text(len: usize) -> String {
 }
 
 /// Random glyph colour for the current mode.
+///
+/// The hue is unconstrained; only lightness and saturation are bounded, and
+/// only enough to keep the glyph legible against its background.
+///
+/// This replaced a fixed palette of five colours per mode, which was a
+/// segmentation key. An attacker who read the source — the renderer is open —
+/// could separate glyph pixels from noise by testing membership in five known
+/// RGB values, which is exactly how one solver approached these images before
+/// template-matching against the bundled font. A continuous hue leaves nothing
+/// to enumerate.
 fn get_color(dark_mode: bool) -> Rgb<u8> {
-    let rnd = get_rnd(4);
-    if dark_mode {
-        Rgb(DARK_BASIC_COLOR[rnd])
+    let lightness = if dark_mode {
+        DARK_MODE_LIGHTNESS
     } else {
-        Rgb(LIGHT_BASIC_COLOR[rnd])
-    }
+        LIGHT_MODE_LIGHTNESS
+    };
+    let mut rng = rng();
+    hsl_to_rgb(
+        rng.random_range(0.0..1.0),
+        rng.random_range(GLYPH_SATURATION),
+        rng.random_range(lightness),
+    )
 }
 
 /// Background canvas.

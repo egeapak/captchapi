@@ -352,7 +352,18 @@ cargo nextest run
    `HMAC-SHA256(master_key, info || session_id)`, with the master key from `IMAGE_ENCRYPTION_SECRET`
    (default `API_KEY_SALT`). Per-session keys make cross-row reuse and nonce reuse impossible; the
    session ID is also passed as associated data for defence in depth.
-7. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
+7. **No enumerable rendering constants**: glyph, interference and noise colours are drawn from a
+   continuous hue, never a fixed palette, and salt-and-pepper specks are no longer pure black and
+   white. The renderer is open source, so any fixed set of RGB values is a segmentation key: a
+   solver can separate glyphs from background by testing membership in a handful of known colours.
+   That is not hypothetical — it is how a vision model attacked these images in testing before
+   template-matching against the bundled font. Only lightness and saturation are bounded, and only
+   enough to keep glyphs legible. Do not reintroduce a fixed palette for the sake of consistent
+   branding.
+8. **Low JPEG quality is deliberate**: `CAPTCHA_COMPRESSION` defaults to 40. Measured against the
+   same pixels encoded losslessly, the compression artifacts cost a frontier vision model a full
+   solve — raising the quality for nicer-looking images measurably weakens the CAPTCHA.
+9. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
 ### Best Practices

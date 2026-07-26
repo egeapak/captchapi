@@ -54,6 +54,34 @@ fn clamp_u8_f64(x: f64) -> u8 {
     }
 }
 
+/// Converts HSL to RGB. `hue` is in turns (`0.0..1.0`), the rest in `0.0..=1.0`.
+///
+/// Hue in turns rather than degrees so a caller can draw one straight from a
+/// uniform distribution without scaling, which is how every colour in the
+/// renderer is now chosen.
+pub fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Rgb<u8> {
+    let hue = hue.rem_euclid(1.0);
+    let saturation = saturation.clamp(0.0, 1.0);
+    let lightness = lightness.clamp(0.0, 1.0);
+
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue * 6.0;
+    let second = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
+
+    let (r, g, b) = match sector as u32 {
+        0 => (chroma, second, 0.0),
+        1 => (second, chroma, 0.0),
+        2 => (0.0, chroma, second),
+        3 => (0.0, second, chroma),
+        4 => (second, 0.0, chroma),
+        _ => (chroma, 0.0, second),
+    };
+
+    let base = lightness - chroma / 2.0;
+    let to_byte = |v: f32| ((v + base) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Rgb([to_byte(r), to_byte(g), to_byte(b)])
+}
+
 /// `imageproc::pixelops::weighted_sum`, specialised to `Rgb<u8>`.
 fn weighted_sum(left: Rgb<u8>, right: Rgb<u8>, left_weight: f32, right_weight: f32) -> Rgb<u8> {
     let mut out = [0u8; 3];
@@ -507,10 +535,18 @@ pub fn gaussian_noise_mut(image: &mut RgbImage, mean: f64, stddev: f64, seed: u6
     }
 }
 
-/// Converts pixels to black or white at the given `rate`, with equal probability.
+/// Speckles pixels at the given `rate`, alternating between very light and
+/// very dark, at a random hue each time.
+///
+/// Upstream — and this port until the palette was randomised — set the speck to
+/// pure black or pure white. That was a segmentation key: a solver could
+/// identify every speck by testing for exactly `[0,0,0]` or `[255,255,255]` and
+/// drop them all before looking at the glyphs. Randomising the hue keeps the
+/// high-contrast character that makes the noise worth having while leaving
+/// nothing exact to test for.
 ///
 /// Samples from `rand` 0.10 rather than `rand_distr`, for the reason given on
-/// [`gaussian_noise_mut`]; the draw order and comparisons are otherwise upstream's.
+/// [`gaussian_noise_mut`].
 pub fn salt_and_pepper_noise_mut(image: &mut RgbImage, rate: f64, seed: u64) {
     let mut rng = SmallRng::seed_from_u64(seed);
 
@@ -518,12 +554,16 @@ pub fn salt_and_pepper_noise_mut(image: &mut RgbImage, rate: f64, seed: u64) {
         if rng.random_range(0.0..1.0) > rate {
             continue;
         }
-        let r: f64 = rng.random_range(0.0..1.0);
-        *pixel = if r >= 0.5 {
-            Rgb([u8::MAX; 3])
+        let hue: f32 = rng.random_range(0.0..1.0);
+        let saturation: f32 = rng.random_range(0.35..1.0);
+        // Still salt *and* pepper: an even split between the light and dark
+        // ends, just no longer at the exact extremes of the range.
+        let lightness: f32 = if rng.random_range(0.0..1.0) >= 0.5 {
+            rng.random_range(0.82..1.0)
         } else {
-            Rgb([u8::MIN; 3])
+            rng.random_range(0.0..0.18)
         };
+        *pixel = hsl_to_rgb(hue, saturation, lightness);
     }
 }
 
@@ -807,6 +847,41 @@ mod tests {
     }
 
     #[test]
+    fn test_hsl_to_rgb_matches_known_colours() {
+        // Primaries at full saturation and mid lightness.
+        assert_eq!(hsl_to_rgb(0.0, 1.0, 0.5), Rgb([255, 0, 0]));
+        assert_eq!(hsl_to_rgb(1.0 / 3.0, 1.0, 0.5), Rgb([0, 255, 0]));
+        assert_eq!(hsl_to_rgb(2.0 / 3.0, 1.0, 0.5), Rgb([0, 0, 255]));
+
+        // Zero saturation is grey whatever the hue, and the extremes of
+        // lightness are black and white.
+        for hue in [0.0, 0.25, 0.5, 0.9] {
+            assert_eq!(hsl_to_rgb(hue, 0.0, 0.5), Rgb([128, 128, 128]));
+            assert_eq!(hsl_to_rgb(hue, 1.0, 0.0), Rgb([0, 0, 0]));
+            assert_eq!(hsl_to_rgb(hue, 1.0, 1.0), Rgb([255, 255, 255]));
+        }
+
+        // Hue wraps rather than clipping, so a caller can pass any turn count.
+        assert_eq!(hsl_to_rgb(1.0, 1.0, 0.5), hsl_to_rgb(0.0, 1.0, 0.5));
+        assert_eq!(hsl_to_rgb(-0.25, 0.8, 0.4), hsl_to_rgb(0.75, 0.8, 0.4));
+    }
+
+    /// Sweeping the hue must produce a genuinely continuous range of colours,
+    /// not cluster on a few values — that continuity is what removed the
+    /// palette as a segmentation key.
+    #[test]
+    fn test_hue_sweep_covers_the_colour_wheel() {
+        let colours: std::collections::HashSet<[u8; 3]> = (0..360)
+            .map(|d| hsl_to_rgb(d as f32 / 360.0, 0.8, 0.45).0)
+            .collect();
+        assert!(
+            colours.len() > 300,
+            "a 360-step hue sweep should give hundreds of distinct colours, got {}",
+            colours.len()
+        );
+    }
+
+    #[test]
     fn test_clamp_truncates_and_saturates() {
         assert_eq!(clamp_u8_f32(37.999), 37, "clamp truncates, never rounds");
         assert_eq!(clamp_u8_f32(-4.0), 0);
@@ -871,24 +946,44 @@ mod tests {
         );
     }
 
+    /// Identifies specks by "not the background" rather than by exact value,
+    /// which is the whole point of the change: there is no longer an exact
+    /// value to test for. Lightness still splits evenly between the light and
+    /// dark ends, so it remains salt *and* pepper.
     #[test]
-    fn test_salt_and_pepper_hits_the_requested_rate_with_both_colours() {
-        let mut image = RgbImage::from_pixel(200, 200, Rgb([128, 128, 128]));
+    fn test_salt_and_pepper_hits_the_requested_rate_at_both_ends() {
+        let ground = Rgb([128, 128, 128]);
+        let mut image = RgbImage::from_pixel(200, 200, ground);
         salt_and_pepper_noise_mut(&mut image, 0.05, 7);
 
-        let salt = image.pixels().filter(|p| p.0 == [255; 3]).count();
-        let pepper = image.pixels().filter(|p| p.0 == [0; 3]).count();
-        let rate = (salt + pepper) as f64 / 40_000.0;
-
+        let specks: Vec<&Rgb<u8>> = image.pixels().filter(|p| **p != ground).collect();
+        let rate = specks.len() as f64 / 40_000.0;
         assert!(
             (rate - 0.05).abs() < 0.01,
             "rate was {rate}, expected ~0.05"
         );
-        assert!(salt > 0 && pepper > 0, "both colours should appear");
-        let skew = (salt as f64 - pepper as f64).abs() / (salt + pepper) as f64;
+
+        let luma = |p: &Rgb<u8>| {
+            0.2126 * f64::from(p.0[0]) + 0.7152 * f64::from(p.0[1]) + 0.0722 * f64::from(p.0[2])
+        };
+        let salt = specks.iter().filter(|p| luma(p) > 128.0).count();
+        let pepper = specks.len() - salt;
+        assert!(salt > 0 && pepper > 0, "both ends should appear");
+        let skew = (salt as f64 - pepper as f64).abs() / specks.len() as f64;
         assert!(
             skew < 0.2,
-            "salt and pepper should be near-equally likely, skew {skew}"
+            "the two ends should be near-equally likely, skew {skew}"
+        );
+
+        // The key that was removed: specks must not all sit on a handful of
+        // exact values a solver could enumerate.
+        let distinct: std::collections::HashSet<[u8; 3]> = specks.iter().map(|p| p.0).collect();
+        assert!(
+            distinct.len() > specks.len() / 2,
+            "specks should be individually coloured, not drawn from a small set: \
+             {} distinct across {} specks",
+            distinct.len(),
+            specks.len()
         );
     }
 
