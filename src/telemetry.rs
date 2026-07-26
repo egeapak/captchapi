@@ -85,6 +85,7 @@ use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 #[cfg(feature = "otel")]
 use opentelemetry_sdk::{
+    metrics::{exporter::PushMetricExporter, PeriodicReader, SdkMeterProvider},
     trace::{
         BatchSpanProcessor, RandomIdGenerator, Sampler, SdkTracerProvider, SimpleSpanProcessor,
         SpanExporter, SpanProcessor, Tracer,
@@ -106,6 +107,19 @@ static PROVIDER: OnceLock<Mutex<Option<SdkTracerProvider>>> = OnceLock::new();
 #[cfg(feature = "otel")]
 fn provider_slot() -> &'static Mutex<Option<SdkTracerProvider>> {
     PROVIDER.get_or_init(|| Mutex::new(None))
+}
+
+/// Holds the active SDK meter provider, for the same reason as [`PROVIDER`].
+///
+/// Metrics are pushed on an interval rather than per-event, so without an
+/// explicit shutdown the final period is simply lost — the process exits
+/// between ticks and the last batch never leaves.
+#[cfg(feature = "otel")]
+static METER: OnceLock<Mutex<Option<SdkMeterProvider>>> = OnceLock::new();
+
+#[cfg(feature = "otel")]
+fn meter_slot() -> &'static Mutex<Option<SdkMeterProvider>> {
+    METER.get_or_init(|| Mutex::new(None))
 }
 
 /// Configuration for OpenTelemetry telemetry
@@ -143,15 +157,14 @@ where
     build_tracer_provider_with_processor(config, SimpleSpanProcessor::new(exporter))
 }
 
+/// The resource attributes both signals are tagged with.
+///
+/// Shared deliberately: traces and metrics only line up in a backend if they
+/// carry identical `service.name` and `service.version`, and duplicating the
+/// construction is how they drift apart.
 #[cfg(feature = "otel")]
-fn build_tracer_provider_with_processor<P>(
-    config: &TelemetryConfig,
-    processor: P,
-) -> SdkTracerProvider
-where
-    P: SpanProcessor + 'static,
-{
-    let resource = Resource::builder_empty()
+fn build_resource(config: &TelemetryConfig) -> Resource {
+    Resource::builder_empty()
         .with_attributes([
             KeyValue::new(
                 opentelemetry_semantic_conventions::resource::SERVICE_NAME,
@@ -162,7 +175,37 @@ where
                 env!("CARGO_PKG_VERSION"),
             ),
         ])
-        .build();
+        .build()
+}
+
+/// Build a MeterProvider from a config and any push exporter.
+///
+/// Takes the exporter rather than a reader, mirroring [`build_tracer_provider`]
+/// — `MetricReader` is only public behind an experimental feature, and wrapping
+/// in a `PeriodicReader` here keeps the collection strategy in one place.
+///
+/// Pure: it touches no global state, so a test can drive it with an in-memory
+/// exporter and assert on what actually came out.
+#[cfg(feature = "otel")]
+pub fn build_meter_provider<E>(config: &TelemetryConfig, exporter: E) -> SdkMeterProvider
+where
+    E: PushMetricExporter,
+{
+    SdkMeterProvider::builder()
+        .with_reader(PeriodicReader::builder(exporter).build())
+        .with_resource(build_resource(config))
+        .build()
+}
+
+#[cfg(feature = "otel")]
+fn build_tracer_provider_with_processor<P>(
+    config: &TelemetryConfig,
+    processor: P,
+) -> SdkTracerProvider
+where
+    P: SpanProcessor + 'static,
+{
+    let resource = build_resource(config);
 
     SdkTracerProvider::builder()
         .with_span_processor(processor)
@@ -198,10 +241,19 @@ pub fn is_telemetry_enabled(config: &Config) -> bool {
     false
 }
 
-/// Initialize OpenTelemetry with OTLP exporter
+/// Initialize OpenTelemetry with OTLP exporters for traces and metrics.
 ///
-/// This sets up both tracing and metrics exporters that send data to an OTLP-compatible backend
-/// (e.g., Jaeger, Grafana Tempo, OpenTelemetry Collector)
+/// Both signals are pushed over OTLP/HTTP to an OTLP-compatible backend
+/// (e.g. Jaeger, Grafana Tempo, an OpenTelemetry Collector). Nothing scrapes
+/// this service — there is no metrics endpoint to poll.
+///
+/// **Call this before any instrument is created.** `global::meter()` binds to
+/// whichever provider is installed at the moment it is called, so a `Meter`
+/// obtained before this function runs stays attached to the default no-op
+/// provider and silently discards everything recorded through it. `main`
+/// therefore calls `init_tracing` (which lands here) well before
+/// `init_metrics`. That ordering is not incidental — it is the whole reason
+/// the counters in `crate::metrics` reach a collector at all.
 ///
 /// Endpoint and service name come from the resolved [`Config`](crate::config::Config), so they
 /// honour the command line and the config file, not just the process environment.
@@ -238,7 +290,21 @@ pub fn init_telemetry(config: &Config) -> anyhow::Result<Tracer> {
     *provider_slot().lock().unwrap() = Some(tracer_provider.clone());
     global::set_tracer_provider(tracer_provider);
 
-    tracing::info!("OpenTelemetry initialized successfully");
+    // Metrics travel the same transport to the same endpoint. `PeriodicReader`
+    // collects on its own background interval, so nothing here is on a request
+    // path; the cost of an instrument at runtime stays an atomic add.
+    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(&config.otlp_endpoint)
+        .with_timeout(Duration::from_secs(3))
+        .build()?;
+
+    let meter_provider = build_meter_provider(&config, metric_exporter);
+
+    *meter_slot().lock().unwrap() = Some(meter_provider.clone());
+    global::set_meter_provider(meter_provider);
+
+    tracing::info!("OpenTelemetry initialized successfully (traces and metrics)");
 
     Ok(tracer)
 }
@@ -255,6 +321,103 @@ pub fn shutdown_telemetry() {
         if let Err(e) = provider.shutdown() {
             tracing::warn!("Error shutting down tracer provider: {e}");
         }
+    }
+
+    // The meter provider flushes on shutdown. Skipping this loses everything
+    // recorded since the last periodic tick, which for a short-lived process
+    // can be every metric it ever produced.
+    if let Some(provider) = meter_slot().lock().unwrap().take() {
+        if let Err(e) = provider.shutdown() {
+            tracing::warn!("Error shutting down meter provider: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod metrics_export_tests {
+    #[cfg(feature = "otel")]
+    use super::*;
+
+    /// The regression this pipeline exists to prevent.
+    ///
+    /// Before it was wired up, `crate::metrics` built every counter on
+    /// `global::meter()` while nothing ever installed a `MeterProvider`, so the
+    /// global default — a no-op — swallowed every measurement. The code looked
+    /// instrumented, compiled, ran, and emitted nothing. The old
+    /// `test_metrics_new` asserted only that incrementing "does not panic",
+    /// which a no-op satisfies perfectly.
+    ///
+    /// This drives a provider built exactly the way `init_telemetry` builds it
+    /// and asserts a recorded value comes out the far end.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_a_recorded_instrument_reaches_the_exporter() {
+        use opentelemetry::metrics::MeterProvider as _;
+        use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+
+        let exporter = InMemoryMetricExporter::default();
+        let config = TelemetryConfig {
+            otlp_endpoint: "http://localhost:4318".to_string(),
+            service_name: "captchapi-test".to_string(),
+        };
+        let provider = build_meter_provider(&config, exporter.clone());
+
+        let counter = provider
+            .meter("captchapi")
+            .u64_counter("sessions.created")
+            .build();
+        counter.add(7, &[]);
+
+        provider.force_flush().expect("flush succeeds");
+
+        let exported = exporter.get_finished_metrics().expect("metrics readable");
+        assert!(
+            !exported.is_empty(),
+            "nothing was exported; the meter provider is not collecting"
+        );
+
+        let names: Vec<String> = exported
+            .iter()
+            .flat_map(|rm| rm.scope_metrics())
+            .flat_map(|sm| sm.metrics())
+            .map(|m| m.name().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "sessions.created"),
+            "recorded instrument missing from export; got {names:?}"
+        );
+    }
+
+    /// Traces and metrics only correlate in a backend if they agree on who
+    /// emitted them, so both providers are built from one `build_resource`.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_metrics_carry_the_same_service_identity_as_traces() {
+        use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+
+        let config = TelemetryConfig {
+            otlp_endpoint: "http://localhost:4318".to_string(),
+            service_name: "captchapi-identity".to_string(),
+        };
+        let exporter = InMemoryMetricExporter::default();
+        let provider = build_meter_provider(&config, exporter.clone());
+        provider.force_flush().expect("flush succeeds");
+
+        let resource = build_resource(&config);
+        let service_name = resource
+            .get(&opentelemetry::Key::from_static_str(
+                opentelemetry_semantic_conventions::resource::SERVICE_NAME,
+            ))
+            .map(|v| v.to_string());
+        assert_eq!(service_name.as_deref(), Some("captchapi-identity"));
+        assert!(
+            resource
+                .get(&opentelemetry::Key::from_static_str(
+                    opentelemetry_semantic_conventions::resource::SERVICE_VERSION,
+                ))
+                .is_some(),
+            "service.version must be present so builds are distinguishable"
+        );
     }
 }
 

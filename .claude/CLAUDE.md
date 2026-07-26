@@ -19,7 +19,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
 - **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) with in-tree drawing primitives (`drawing.rs`), on `image` with the JPEG feature only
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (6.60 MB unpacked / 2.48 MB pulled)
+- **Deployment**: Static musl binary in distroless container (6.90 MB unpacked / 2.59 MB pulled)
 
 ### Key Features
 
@@ -425,8 +425,28 @@ images keep the exporter. Only plain `cargo build` omits it.
 
 Note the split: the `opentelemetry` **API** crate is an unconditional
 dependency because `src/metrics.rs` builds every counter and histogram on it.
-Only the SDK, the OTLP exporter and `tracing-opentelemetry` are gated, so
-metrics work in every build.
+Only the SDK, the OTLP exporter and `tracing-opentelemetry` are gated, so the
+instruments compile and run in every build.
+
+**They only reach a collector in an `otel` build with `OTEL_ENABLED=true`**,
+and that is worth stating plainly because the failure is silent. Instruments
+are created from `global::meter()`, which binds to whatever `MeterProvider` is
+installed when it is called; with none installed the global default is a no-op
+that accepts every measurement and discards it. For a long time nothing
+installed one, so every counter in the service was dead — compiling, running,
+recording nothing. `init_telemetry` now installs a `MeterProvider` alongside
+the tracer provider, and `test_a_recorded_instrument_reaches_the_exporter`
+holds it: it drives a provider built the same way and asserts a recorded value
+comes out of the exporter.
+
+**Order matters and is load-bearing.** `main` calls `init_tracing` (which
+lands in `init_telemetry`) at startup, well before `init_metrics`. Reversing
+those two would hand every instrument the no-op meter and silently restore the
+original bug — no test outside telemetry would notice.
+
+Metrics are **pushed** over OTLP, exactly like traces; nothing scrapes this
+service and there is no metrics endpoint to poll. If you want Prometheus, have
+the collector re-expose them.
 
 A binary built without `otel` warns on stderr at startup if `OTEL_ENABLED` is
 set, rather than dropping traces silently.
@@ -446,10 +466,10 @@ builds it (`--release --features otel`, musl target):
 
 | layer | unpacked | compressed |
 |-------|----------|------------|
-| captchapi binary | 3.59 MB | 1.80 MB |
+| captchapi binary | 3.89 MB | 1.93 MB |
 | distroless base, of which tzdata is 2.42 MB | 3.00 MB | 0.67 MB |
 | migrations + /data + WORKDIR | 0.01 MB | 0.00 MB |
-| **total** | **6.60 MB** | **2.48 MB** |
+| **total** | **6.90 MB** | **2.59 MB** |
 
 The compressed column is what a registry stores and a pull downloads; the
 unpacked column is the sum of the layer tars. `docker images` reports ~11.8 MB
@@ -464,16 +484,19 @@ binary is static-pie with no libc dependency.
 
 | | unpacked | pulled |
 |---|----------|--------|
-| `Dockerfile.static` (distroless) | 6.60 MB | 2.48 MB |
-| `Dockerfile.scratch` | 3.61 MB | 1.80 MB |
+| `Dockerfile.static` (distroless) | 6.90 MB | 2.59 MB |
+| `Dockerfile.scratch` | 4.08 MB | 2.02 MB |
 
-That is 45% off unpacked and 27% off the pull, essentially all of it tzdata.
+That is 41% off unpacked and 22% off the pull, essentially all of it tzdata.
+The CA bundle is staged in — alpine already ships it, so no `apk add` and no
+network is needed at build time — because the OTLP exporter cannot verify TLS
+against an https collector without it.
+
 It is not the default because of what has to be hand-staged to replace what
-distroless provides: `/data` and `/tmp` have to be created in a builder stage
-since there is no shell, `USER` must be numeric because there is no
-`/etc/passwd` to resolve a name against, and there is no CA bundle — so an
-`OTEL_ENABLED=true` deployment exporting over https needs the commented-out
-`ca-certificates` line, which gives ~270 KB of the saving straight back.
+distroless provides: `/data` and `/tmp` created in a builder stage since there
+is no shell, and a numeric `USER` because there is no `/etc/passwd` to resolve
+a name against. Verified end to end with `OTEL_ENABLED=true` — health, session
+creation and image retrieval all succeed.
 
 Two things worth knowing before trying to shrink it further. The binary is
 already 73% of the *pull* size, so the base is not where the remaining win is.

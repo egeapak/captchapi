@@ -15,10 +15,12 @@
 #   * No /etc/passwd or /etc/group. `USER nonroot` cannot resolve a name, so
 #     the numeric UID:GID is mandatory. The files are copied anyway so that
 #     anything calling getpwuid() gets an answer instead of an error.
-#   * No CA bundle. The OTLP exporter cannot verify TLS without it, so an
-#     `OTEL_ENABLED=true` deployment shipping to an https endpoint needs
-#     ca-certificates copied in as well — uncomment the line below. It costs
-#     ~270 KB unpacked and is the single reason to prefer distroless.
+#   * No CA bundle by default, so one is copied in below. The service pushes
+#     both traces and metrics over OTLP; against an https collector the
+#     exporter cannot verify TLS without it. The stock endpoint is
+#     `http://localhost:4318` — a plain-HTTP sidecar, which needs no certs at
+#     all — but a remote collector is common enough that shipping them beats
+#     debugging a TLS error inside a container with no shell.
 #   * No /tmp. Nothing in the service writes there today, but a dependency
 #     that wants a scratch file would fail with ENOENT rather than EACCES,
 #     which is a confusing way to find out.
@@ -27,6 +29,9 @@
 # dependency, so it runs on an empty filesystem.
 
 FROM alpine:latest AS staging
+# No `apk add` here on purpose: the alpine base already ships
+# ca-certificates-bundle, and installing would need network the build may not
+# have. Staging from the base keeps this buildable offline.
 RUN mkdir -p /staged/data && chown 65532:65532 /staged/data && \
     mkdir -p /staged/tmp && chmod 1777 /staged/tmp && \
     printf 'nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin\n' > /staged/passwd && \
@@ -41,8 +46,8 @@ COPY --from=staging /staged/tmp /tmp
 COPY --from=staging /staged/passwd /etc/passwd
 COPY --from=staging /staged/group /etc/group
 
-# Uncomment for OTEL_ENABLED=true against an https collector.
-# COPY --from=staging /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+# Needed by the OTLP exporter when the collector is reached over https.
+COPY --from=staging /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY --chown=65532:65532 migrations /app/migrations
 COPY --chown=65532:65532 docker/bin/captchapi-musl /app/captchapi
