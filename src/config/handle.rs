@@ -500,36 +500,49 @@ mod tests {
         );
     }
 
+    /// Ask a handle's environment source for a key, by the same trait method `resolve_with_carry`
+    /// calls. Asserting on what the source *answers* rather than on which variant it is keeps the
+    /// test honest if the seam is ever reshaped.
+    fn env_get(h: &ConfigHandle, key: &str) -> Result<String, std::env::VarError> {
+        use crate::config::EnvProvider;
+        h.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .env
+            .get(key)
+    }
+
     /// The invariant the two tests above exist to support: a static handle is wired to an empty
     /// environment, so a developer or CI job that happens to export `CAPTCHA_COMPRESSION` cannot
     /// fail unrelated reload tests. Production keeps the process environment.
+    ///
+    /// `PATH` is the discriminator. It is set in every environment this suite can run in, and no
+    /// config parameter reads it, so it distinguishes the two wirings without any test needing to
+    /// export a variable — reading the environment is safe, only writing it is banned. Using a
+    /// real, already-present variable is also the only way to cover `EnvSource::Process`'s
+    /// passthrough to `RealEnv` end-to-end.
     #[test]
     fn test_static_handles_ignore_the_process_environment() {
+        let in_process = std::env::var("PATH").expect("this test presumes PATH is set");
+
         let statik = ConfigHandle::from_static(Config::for_test());
-        assert!(
-            matches!(
-                statik
-                    .inner
-                    .state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .env,
-                EnvSource::Empty
-            ),
-            "from_static must not read the process environment"
+        assert_eq!(
+            env_get(&statik, "PATH"),
+            Err(std::env::VarError::NotPresent),
+            "from_static must not read the process environment, but it answered for PATH"
         );
 
         let live = ConfigHandle::new(Config::for_test(), Cli::default());
-        assert!(
-            matches!(
-                live.inner
-                    .state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .env,
-                EnvSource::Process
-            ),
+        assert_eq!(
+            env_get(&live, "PATH").as_deref(),
+            Ok(in_process.as_str()),
             "a production handle must read the process environment"
+        );
+        assert_eq!(
+            env_get(&live, "CAPTCHAPI_DEFINITELY_NOT_SET_IN_ANY_ENVIRONMENT"),
+            Err(std::env::VarError::NotPresent),
+            "a production handle must report a genuinely absent variable as absent"
         );
     }
 
