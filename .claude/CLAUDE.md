@@ -457,6 +457,24 @@ for the same image — that is the overlayfs on-disk footprint with block
 rounding, not layer content, so the two will never agree. Reproduce with
 `docker save`, summing the gzip blobs listed in `manifest.json`.
 
+`docker/Dockerfile.scratch` is the same binary on `scratch` instead, and it
+works — verified end to end: health, session creation (render, encrypt, SQLite
+write) and image retrieval all succeed on an empty filesystem, because the
+binary is static-pie with no libc dependency.
+
+| | unpacked | pulled |
+|---|----------|--------|
+| `Dockerfile.static` (distroless) | 6.60 MB | 2.48 MB |
+| `Dockerfile.scratch` | 3.61 MB | 1.80 MB |
+
+That is 45% off unpacked and 27% off the pull, essentially all of it tzdata.
+It is not the default because of what has to be hand-staged to replace what
+distroless provides: `/data` and `/tmp` have to be created in a builder stage
+since there is no shell, `USER` must be numeric because there is no
+`/etc/passwd` to resolve a name against, and there is no CA bundle — so an
+`OTEL_ENABLED=true` deployment exporting over https needs the commented-out
+`ca-certificates` line, which gives ~270 KB of the saving straight back.
+
 Two things worth knowing before trying to shrink it further. The binary is
 already 73% of the *pull* size, so the base is not where the remaining win is.
 And `tzdata` alone is 2.42 MB unpacked — 35% of the image — for a service that

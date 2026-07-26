@@ -1,0 +1,58 @@
+# ============================================================
+# CaptchAPI - scratch build (experimental)
+# ============================================================
+# Same expectation as Dockerfile.static: a pre-built musl binary at
+# docker/bin/captchapi-musl.
+#
+# This exists to answer "how small can it get". `distroless/static` is 3.00 MB
+# unpacked, of which tzdata alone is 2.42 MB — dead weight for a service that
+# stores unix timestamps. Starting from scratch drops all of it.
+#
+# WHAT YOU GIVE UP, and why each line below exists:
+#
+#   * No shell, no mkdir, no chown. `/data` has to be staged in a builder and
+#     copied in with ownership already set.
+#   * No /etc/passwd or /etc/group. `USER nonroot` cannot resolve a name, so
+#     the numeric UID:GID is mandatory. The files are copied anyway so that
+#     anything calling getpwuid() gets an answer instead of an error.
+#   * No CA bundle. The OTLP exporter cannot verify TLS without it, so an
+#     `OTEL_ENABLED=true` deployment shipping to an https endpoint needs
+#     ca-certificates copied in as well — uncomment the line below. It costs
+#     ~270 KB unpacked and is the single reason to prefer distroless.
+#   * No /tmp. Nothing in the service writes there today, but a dependency
+#     that wants a scratch file would fail with ENOENT rather than EACCES,
+#     which is a confusing way to find out.
+#
+# The binary itself needs none of this: it is static-pie linked with no libc
+# dependency, so it runs on an empty filesystem.
+
+FROM alpine:latest AS staging
+RUN mkdir -p /staged/data && chown 65532:65532 /staged/data && \
+    mkdir -p /staged/tmp && chmod 1777 /staged/tmp && \
+    printf 'nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin\n' > /staged/passwd && \
+    printf 'nonroot:x:65532:\n' > /staged/group
+
+FROM scratch
+
+WORKDIR /app
+
+COPY --from=staging --chown=65532:65532 /staged/data /data
+COPY --from=staging /staged/tmp /tmp
+COPY --from=staging /staged/passwd /etc/passwd
+COPY --from=staging /staged/group /etc/group
+
+# Uncomment for OTEL_ENABLED=true against an https collector.
+# COPY --from=staging /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+COPY --chown=65532:65532 migrations /app/migrations
+COPY --chown=65532:65532 docker/bin/captchapi-musl /app/captchapi
+
+ENV DATABASE_URL=sqlite:/data/captchapi.db
+ENV PID_FILE=/data/captchapi.pid
+
+EXPOSE 3000
+
+# Numeric, because there is no name resolution here.
+USER 65532:65532
+
+ENTRYPOINT ["/app/captchapi"]
