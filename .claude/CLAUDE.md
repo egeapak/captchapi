@@ -19,7 +19,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
 - **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) with in-tree drawing primitives (`drawing.rs`), on `image` with the JPEG feature only
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (8.49 MB unpacked / 3.36 MB compressed)
+- **Deployment**: Static musl binary in distroless container (6.60 MB unpacked / 2.48 MB pulled)
 
 ### Key Features
 
@@ -438,6 +438,31 @@ paths are invisible to `--all-features`:
 cargo clippy --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+### Image Size
+
+Measured from `docker/Dockerfile.static` with the binary built as `release.yml`
+builds it (`--release --features otel`, musl target):
+
+| layer | unpacked | compressed |
+|-------|----------|------------|
+| captchapi binary | 3.59 MB | 1.80 MB |
+| distroless base, of which tzdata is 2.42 MB | 3.00 MB | 0.67 MB |
+| migrations + /data + WORKDIR | 0.01 MB | 0.00 MB |
+| **total** | **6.60 MB** | **2.48 MB** |
+
+The compressed column is what a registry stores and a pull downloads; the
+unpacked column is the sum of the layer tars. `docker images` reports ~11.8 MB
+for the same image — that is the overlayfs on-disk footprint with block
+rounding, not layer content, so the two will never agree. Reproduce with
+`docker save`, summing the gzip blobs listed in `manifest.json`.
+
+Two things worth knowing before trying to shrink it further. The binary is
+already 73% of the *pull* size, so the base is not where the remaining win is.
+And `tzdata` alone is 2.42 MB unpacked — 35% of the image — for a service that
+stores unix timestamps; moving to `scratch` would recover it, at the cost of
+the CA bundle the OTLP exporter needs and the passwd/group entries that make
+the `nonroot` user resolvable.
 
 ### SQLite Build Flags
 
