@@ -6,11 +6,12 @@ use captchapi::cli::{self, Handled, EXIT_USAGE};
 use captchapi::config::ConfigHandle;
 use captchapi::metrics::init_metrics;
 use captchapi::tasks::start_cleanup_task;
-use captchapi::telemetry::{init_telemetry, shutdown_telemetry};
+#[cfg(feature = "otel")]
+use captchapi::telemetry::shutdown_telemetry;
+use captchapi::telemetry::{init_tracing, is_telemetry_enabled};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -32,33 +33,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let otel_enabled = config.otel_enabled;
+    let otel_enabled = is_telemetry_enabled(&config);
 
-    // Initialize tracing with conditional OpenTelemetry support
-    if otel_enabled {
-        // Initialize OpenTelemetry and get tracer
-        let tracer = init_telemetry(&config)?;
-
-        // Create OpenTelemetry tracing layer
-        let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-        // Initialize tracing with OpenTelemetry
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(&config.log_level))
-            .with(tracing_subscriber::fmt::layer())
-            .with(telemetry_layer)
-            .init();
-
-        tracing::info!("OpenTelemetry enabled");
-    } else {
-        // Initialize tracing without OpenTelemetry
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(&config.log_level))
-            .with(tracing_subscriber::fmt::layer())
-            .init();
-
-        tracing::info!("OpenTelemetry disabled");
-    }
+    // Initialize tracing, with OpenTelemetry export when it is available
+    init_tracing(&config, otel_enabled)?;
 
     // The handle owns the running configuration from here on, and retains the parsed arguments
     // so a reload resolves from exactly the same sources as this boot did.
@@ -188,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
     cli::remove_pid_file(&pid_file);
 
     // Shutdown OpenTelemetry gracefully if it was enabled
+    #[cfg(feature = "otel")]
     if otel_enabled {
         shutdown_telemetry();
     }

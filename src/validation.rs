@@ -20,7 +20,19 @@ pub const COMPRESSION_MAX: i64 = 100;
 pub const SOLUTION_MAX_LEN: usize = 100;
 
 // Default values
-pub const DEFAULT_DIFFICULTY: i64 = 5;
+/// Difficulty applied when a request does not name one.
+///
+/// Raised from 5 to 8 on measured evidence. Three vision models were given 27
+/// challenges each across lengths 4-6; at difficulty 5 they solved 13 of 27
+/// outright — Sonnet alone took 8 of 9, including every 5- and 6-character
+/// image. At difficulty 8 and above, no model solved a single challenge longer
+/// than four characters in 36 attempts.
+///
+/// The deformations all scale with this value (see
+/// `services::captcha::generator::Deformations::for_difficulty`), so the
+/// default was landing in the one band where they barely applied. Costs about
+/// 20% more render time and 20% more stored bytes per session.
+pub const DEFAULT_DIFFICULTY: i64 = 8;
 pub const DEFAULT_LENGTH: i64 = 5;
 pub const DEFAULT_WIDTH: i64 = 220;
 pub const DEFAULT_HEIGHT: i64 = 120;

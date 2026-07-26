@@ -22,7 +22,7 @@ build platform="amd64":
         exit 1
     fi
     echo "🔨 Building {{platform}} binary (target: $target)..."
-    cross build --release --target "$target" --bin {{binary}}
+    cross build --release --features otel --target "$target" --bin {{binary}}
     echo "✅ Binary built: target/$target/release/{{binary}}"
 
 # Build Docker image for specific platform

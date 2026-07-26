@@ -1,0 +1,41 @@
+version: 2
+
+updates:
+  # Rust dependencies (root crate + bindings/nodejs workspace member)
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Patch/minor bumps are the ones that carry the RustSec fixes; batch them
+      # into a single PR so the lockfile does not drift again.
+      rust-minor-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions pins used by ci.yml / nodejs.yml / release.yml
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci(deps)"
+
+  # npm packages for the native bindings and the TypeScript wrapper
+  - package-ecosystem: npm
+    directory: "/bindings/nodejs"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: "/packages/captchapi"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"

@@ -17,9 +17,9 @@ This file provides project overview, architecture, and development workflow. For
 - **Language**: Rust (Edition 2021)
 - **Web Framework**: Axum 0.8 (async-first, built on Tokio)
 - **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
-- **CAPTCHA Generation**: captcha-rs 0.5
+- **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) with in-tree drawing primitives (`drawing.rs`), on `image` with the JPEG feature only
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (8.49 MB unpacked / 3.36 MB compressed)
+- **Deployment**: Static musl binary in distroless container (6.90 MB unpacked / 2.59 MB pulled)
 
 ### Key Features
 
@@ -67,7 +67,10 @@ captchapi/
     │   └── api_key.rs           # API key models
     ├── services/                # Business logic layer
     │   ├── mod.rs
-    │   ├── captcha.rs           # CAPTCHA generation
+    │   ├── captcha/             # CAPTCHA generation
+    │   │   ├── mod.rs           # CaptchaService (JPEG encoding)
+    │   │   ├── generator.rs     # In-tree renderer (vendored from captcha-rs)
+    │   │   └── drawing.rs       # In-tree drawing/noise (vendored from imageproc)
     │   ├── auth.rs              # API key hashing
     │   ├── storage.rs           # Database operations
     │   ├── session_ops.rs       # Session orchestration
@@ -179,7 +182,7 @@ RATE_LIMIT_REVERSE_PROXY=false    # Set true when behind nginx/Cloudflare
 # Background Tasks
 CLEANUP_INTERVAL_SECONDS=60
 
-# OpenTelemetry (optional)
+# OpenTelemetry (optional; requires a build with --features otel)
 OTEL_ENABLED=false
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 OTEL_SERVICE_NAME=captchapi
@@ -349,7 +352,26 @@ cargo nextest run
    `HMAC-SHA256(master_key, info || session_id)`, with the master key from `IMAGE_ENCRYPTION_SECRET`
    (default `API_KEY_SALT`). Per-session keys make cross-row reuse and nonce reuse impossible; the
    session ID is also passed as associated data for defence in depth.
-7. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
+7. **No enumerable rendering constants**: glyph, interference and noise colours are drawn from a
+   continuous hue, never a fixed palette, and salt-and-pepper specks are no longer pure black and
+   white. The renderer is open source, so any fixed set of RGB values is a segmentation key: a
+   solver can separate glyphs from background by testing membership in a handful of known colours.
+   That is not hypothetical — it is how a vision model attacked these images in testing before
+   template-matching against the bundled font. Only lightness and saturation are bounded, and only
+   enough to keep glyphs legible. Do not reintroduce a fixed palette for the sake of consistent
+   branding.
+8. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
+   An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
+   compression artifacts costing a frontier vision model a full solve, but that was on the
+   renderer *before* hue randomisation and clustering, and it no longer reproduces. Re-measured on
+   the current renderer at difficulty 10, quality 20/40/70/95 over identical pixels gave 3-4 of 15
+   characters and zero solves at every level, across a 10x range in encoded size. The likely reason
+   is that artifacts mattered while glyphs were cleanly separable by a fixed palette; now that
+   colour is continuous and letters overlap, the rendering dominates and the encoder is not the
+   marginal factor. Keep 40 for bandwidth and storage. Do not raise it expecting harm, or lower it
+   expecting benefit, without measuring at a difficulty where solve rates are non-zero — the
+   difficulty-10 test floors every model regardless of quality, so it cannot detect an effect.
+9. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
 ### Best Practices
@@ -366,17 +388,219 @@ cargo nextest run
 
 ```toml
 axum = "0.8"                    # Web framework
-tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
-captcha-rs = "0.2"              # CAPTCHA generation
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+
+# CAPTCHA rendering. Deliberately minimal features: only JPEG is encoded.
+# `image`'s defaults would add every codec (AVIF, EXR, TIFF, PNG, WebP, ...)
+# and ~76 transitive crates. The drawing and noise routines are vendored in
+# `src/services/captcha/drawing.rs`, so there is no `imageproc` dependency.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+ab_glyph = "0.2"
+
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-sha2 = "0.10"                   # Hashing
-chacha20poly1305 = "0.11"       # Image encryption at rest
+sha2 = "0.11"                   # Hashing
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "getrandom"] }
+pico-args = { version = "0.5", features = ["eq-separator"] }
+toml = { version = "1", default-features = false, features = ["std", "parse", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"                 # Logging
-rand = "0.8"                    # Random generation
+rand = "0.10"                   # Random generation
 ```
+
+### Cargo Features
+
+| Feature | Default | Effect |
+|---------|---------|--------|
+| `otel`  | off     | Compiles in the OpenTelemetry OTLP trace exporter |
+
+`otel` is off by default because the OTLP exporter pulls a full HTTP client
+(reqwest and friends) into the binary — roughly 700 KB — for a path that is
+inert unless `OTEL_ENABLED` is set at runtime.
+
+**Release builds enable it explicitly.** `release.yml` and the `justfile`
+both pass `--features otel` to `cross build`, so the published container
+images keep the exporter. Only plain `cargo build` omits it.
+
+Note the split: the `opentelemetry` **API** crate is an unconditional
+dependency because `src/metrics.rs` builds every counter and histogram on it.
+Only the SDK, the OTLP exporter and `tracing-opentelemetry` are gated, so the
+instruments compile and run in every build.
+
+**They only reach a collector in an `otel` build with `OTEL_ENABLED=true`**,
+and that is worth stating plainly because the failure is silent. Instruments
+are created from `global::meter()`, which binds to whatever `MeterProvider` is
+installed when it is called; with none installed the global default is a no-op
+that accepts every measurement and discards it. For a long time nothing
+installed one, so every counter in the service was dead — compiling, running,
+recording nothing. `init_telemetry` now installs a `MeterProvider` alongside
+the tracer provider, and `test_a_recorded_instrument_reaches_the_exporter`
+holds it: it drives a provider built the same way and asserts a recorded value
+comes out of the exporter.
+
+**Order matters and is load-bearing.** `main` calls `init_tracing` (which
+lands in `init_telemetry`) at startup, well before `init_metrics`. Reversing
+those two would hand every instrument the no-op meter and silently restore the
+original bug — no test outside telemetry would notice.
+
+Metrics are **pushed** over OTLP, exactly like traces; nothing scrapes this
+service and there is no metrics endpoint to poll. If you want Prometheus, have
+the collector re-expose them.
+
+A binary built without `otel` warns on stderr at startup if `OTEL_ENABLED` is
+set, rather than dropping traces silently.
+
+**Both configurations must be linted**, since `cfg(not(feature = "otel"))`
+paths are invisible to `--all-features`:
+
+```bash
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+### Image Size
+
+Measured from `docker/Dockerfile.static` with the binary built as `release.yml`
+builds it (`--release --features otel`, musl target):
+
+| layer | unpacked | compressed |
+|-------|----------|------------|
+| captchapi binary | 3.89 MB | 1.93 MB |
+| distroless base, of which tzdata is 2.42 MB | 3.00 MB | 0.67 MB |
+| migrations + /data + WORKDIR | 0.01 MB | 0.00 MB |
+| **total** | **6.90 MB** | **2.59 MB** |
+
+The compressed column is what a registry stores and a pull downloads; the
+unpacked column is the sum of the layer tars. `docker images` reports ~11.8 MB
+for the same image — that is the overlayfs on-disk footprint with block
+rounding, not layer content, so the two will never agree. Reproduce with
+`docker save`, summing the gzip blobs listed in `manifest.json`.
+
+`docker/Dockerfile.scratch` is the same binary on `scratch` instead, and it
+works — verified end to end: health, session creation (render, encrypt, SQLite
+write) and image retrieval all succeed on an empty filesystem, because the
+binary is static-pie with no libc dependency.
+
+| | unpacked | pulled |
+|---|----------|--------|
+| `Dockerfile.static` (distroless) | 6.90 MB | 2.59 MB |
+| `Dockerfile.scratch` | 4.08 MB | 2.02 MB |
+
+That is 41% off unpacked and 22% off the pull, essentially all of it tzdata.
+The CA bundle is staged in — alpine already ships it, so no `apk add` and no
+network is needed at build time — because the OTLP exporter cannot verify TLS
+against an https collector without it.
+
+It is not the default because of what has to be hand-staged to replace what
+distroless provides: `/data` and `/tmp` created in a builder stage since there
+is no shell, and a numeric `USER` because there is no `/etc/passwd` to resolve
+a name against. Verified end to end with `OTEL_ENABLED=true` — health, session
+creation and image retrieval all succeed.
+
+Two things worth knowing before trying to shrink it further. The binary is
+already 73% of the *pull* size, so the base is not where the remaining win is.
+And `tzdata` alone is 2.42 MB unpacked — 35% of the image — for a service that
+stores unix timestamps; moving to `scratch` would recover it, at the cost of
+the CA bundle the OTLP exporter needs and the passwd/group entries that make
+the `nonroot` user resolvable.
+
+### SQLite Build Flags
+
+`.cargo/config.toml` sets `LIBSQLITE3_FLAGS` to strip the bundled SQLite
+amalgamation down to what the service uses — no FTS, R-tree, STAT4, JSON1,
+soundex, deprecated shims or extension loading. That is ~332 KB of binary
+for six query shapes that touch none of it. `SQLITE_DQS=0` additionally
+rejects double-quoted string literals, so a mistyped identifier errors
+instead of silently becoming a string.
+
+**`.cargo/config.toml` is tracked on purpose, against a `.gitignore` rule that
+would otherwise swallow it.** napi-rs generates its own `.cargo/config.toml`
+when cross-compiling, so `.cargo/` is ignored; for a while that silently caught
+this hand-written file too, and because `git add -A` reports nothing for an
+ignored path, the trim above existed only on one developer's disk. Every clone,
+CI run and `cross` release build compiled the full amalgamation while this
+section claimed otherwise. Re-including one file from an ignored directory takes
+four lines, because git does not descend into an excluded directory and a lone
+negation cannot bring it back:
+
+```gitignore
+.cargo/                 # any .cargo dir, at any depth
+!/.cargo/               # except the root one, so git descends into it
+/.cargo/*               # but ignore what is inside it
+!/.cargo/config.toml    # except this file
+```
+
+Do not "simplify" those four lines. Verify with `git check-ignore -q <path>`
+(exit 0 means ignored) that the root config stays tracked while nested
+`bindings/*/.cargo/` stays ignored. Confirm the flags actually reach the build
+with `nm target/debug/captchapi | grep -c sqlite3_load_extension` — 0 with the
+config present, 1 without it.
+
+**Every workspace member must depend on sqlx with `sqlite-bundled`, never
+`sqlite`.** The latter enables sqlx's `sqlite-load-extension` feature, whose
+bindings reference `sqlite3_load_extension` — a symbol that does not exist in
+a library built with `SQLITE_OMIT_LOAD_EXTENSION`. Cargo unifies features
+across the workspace, so a single member requesting `sqlite` breaks the
+entire build with `undefined symbol: sqlite3_load_extension`.
+
+### Vendored CAPTCHA Renderer
+
+Two files are vendored rather than depended on. Both exist because a crate in
+the chain forces feature or dependency choices this project cannot override.
+
+**`src/services/captcha/generator.rs`** — from `captcha-rs` v0.5.0 (MIT):
+
+1. Upstream depends on `imageproc` with default features, whose `default`
+   list includes `image/default`. Because Cargo features are additive, that
+   re-enables every image codec no matter what this crate declares. Vendoring
+   is the only way to hold the feature set down.
+2. Upstream embeds Monotype Arial, whose license forbids redistribution. The
+   renderer uses Roboto Bold (SIL OFL 1.1) instead.
+
+**`src/services/captcha/drawing.rs`** — from `imageproc` v0.26.2 (MIT): the
+text, Bézier, line, circle and noise routines, specialised to `RgbImage`.
+`imageproc` declares `nalgebra` non-optionally, with no feature to switch it
+off, so depending on it meant carrying `simba`, `paste` (RUSTSEC-2024-0436,
+unmaintained), `matrixmultiply`, `num-complex`, `approx`, `safe_arch`,
+`typenum`, `wide`, `rawpointer` and a second major version of `rand` (via
+`rand_distr`) — 29 crates, none reachable from the six functions used.
+
+Specialising to `RgbImage` is behaviour-preserving rather than approximate:
+upstream's blanket `impl<I: GenericImage> Canvas for I` defines `draw_pixel`
+as `put_pixel`, and the renderer never used the `Blend` wrapper that makes the
+trait interesting. Only the noise generators diverge, and only in their RNG —
+they sample Box-Muller from `rand` 0.10 instead of `rand_distr` over `rand`
+0.9. Seeds are drawn freshly per CAPTCHA, so no output was ever reproducible
+across calls and nothing observable changed.
+
+**The geometry is pinned by digests** in `drawing.rs`'s tests, captured while
+the port still ran side by side with `imageproc` under a differential test
+asserting byte-identical buffers. Those digests are the only remaining record
+of upstream's behaviour — the comparison cannot be re-run once the dependency
+is gone, so treat a digest change as a regression until proven otherwise.
+
+Attribution for all of it lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep
+them in sync when touching either renderer or the bundled font.
+
+### Embedded Font
+
+`assets/fonts/Roboto-Bold-subset.ttf` is Roboto Bold subset to the 54
+characters in `BASIC_CHAR` — 8,196 bytes instead of 33,864.
+
+**The subset locks the character set.** Adding a character to `BASIC_CHAR`
+without regenerating the font makes it render as `.notdef`. The
+`test_every_basic_char_has_a_glyph` unit test fails when the two drift, so
+follow it up with:
+
+```bash
+pip install fonttools
+python3 scripts/subset-font.py path/to/Roboto-Bold.ttf
+```
+
+Roboto declares no Reserved Font Name, so the subset keeps the family name
+and needs no renaming. Swapping to a font that *does* reserve its name (most
+OFL fonts, including Liberation) would reintroduce that obligation.
 
 ## Background Tasks
 
@@ -544,6 +768,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-03-03
-**Version**: 1.0.0
+**Last Updated**: 2026-07-26
+**Version**: 1.0.1
 **Rust Edition**: 2021

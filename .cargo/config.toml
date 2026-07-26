@@ -1,0 +1,48 @@
+# Build configuration shared by every cargo invocation in this workspace,
+# including `cross` (which mounts the project directory into its container)
+# and CI.
+
+[env]
+# Trim the bundled SQLite amalgamation down to what CaptchAPI actually uses.
+#
+# libsqlite3-sys hardcodes a broad set of -DSQLITE_ENABLE_* flags in its
+# build script and then appends LIBSQLITE3_FLAGS afterwards, so `-U` here
+# undefines them. The service runs six simple query shapes against two
+# tables; none of the features below are reachable from it.
+#
+#   FTS3 / FTS3_PARENTHESIS / FTS5  full-text search
+#   RTREE                          spatial index
+#   STAT4                          query-planner histograms
+#   DBSTAT_VTAB                    database statistics virtual table
+#   SOUNDEX                        phonetic matching function
+#   OMIT_JSON                      JSON1 SQL functions
+#   OMIT_DEPRECATED                pre-3.x compatibility shims
+#   OMIT_LOAD_EXTENSION            runtime loading of .so extensions
+#   DQS=0                          reject double-quoted string literals
+#
+# OMIT_LOAD_EXTENSION also removes an attack surface: without it a SQL
+# injection could in principle load an arbitrary shared object. DQS=0 turns
+# SQLite's double-quoted-string misfeature off, so a mistyped identifier is
+# an error instead of silently becoming a string literal.
+#
+# IMPORTANT: OMIT_LOAD_EXTENSION is coupled to sqlx's feature selection.
+# Every workspace member must depend on sqlx with `sqlite-bundled`, not
+# `sqlite` -- the latter pulls sqlx's `sqlite-load-extension` feature, whose
+# Rust bindings reference sqlite3_load_extension and fail to link against a
+# C library compiled without it. Cargo unifies features across the
+# workspace, so one member requesting `sqlite` breaks the whole build with
+# an "undefined symbol: sqlite3_load_extension" error.
+LIBSQLITE3_FLAGS = """
+-USQLITE_ENABLE_FTS3 \
+-USQLITE_ENABLE_FTS3_PARENTHESIS \
+-USQLITE_ENABLE_FTS5 \
+-USQLITE_ENABLE_RTREE \
+-USQLITE_ENABLE_STAT4 \
+-USQLITE_ENABLE_DBSTAT_VTAB \
+-USQLITE_SOUNDEX \
+-USQLITE_ENABLE_LOAD_EXTENSION \
+-DSQLITE_OMIT_JSON \
+-DSQLITE_OMIT_DEPRECATED \
+-DSQLITE_OMIT_LOAD_EXTENSION \
+-DSQLITE_DQS=0 \
+"""

@@ -6,7 +6,7 @@
 
 A secure, high-performance REST API for CAPTCHA generation and validation. Built with Rust, featuring async/await architecture, SQLite persistence, and distroless Docker containers.
 
-CAPTCHA images are generated using [captcha-rs](https://github.com/samirdjelal/captcha-rs) with configurable difficulty and dark mode support:
+CAPTCHA images are rendered in-process with configurable difficulty and dark mode support:
 
 | Easy (difficulty 2) | Hard + dark mode (difficulty 8) |
 |:---:|:---:|
@@ -352,9 +352,22 @@ All four are reloadable — a reload applies them without a restart.
 
 ### OpenTelemetry (optional)
 
+OpenTelemetry trace export sits behind the `otel` cargo feature, because the
+OTLP exporter pulls in a full HTTP client worth roughly 700 KB of binary:
+
+```bash
+cargo build --release --features otel
+```
+
+**The published Docker images are built with `otel` enabled**, so the settings
+below work out of the box there. A plain `cargo build` does not include it;
+such a binary warns on startup if telemetry is enabled in the configuration,
+rather than ignoring it silently. Prometheus-style metrics are unaffected and
+always available in every build.
+
 | Variable | Flag | Description | Default | Required |
 |----------|------|-------------|---------|----------|
-| `OTEL_ENABLED` | `--otel` | Enable OpenTelemetry tracing | `false` | No |
+| `OTEL_ENABLED` | `--otel` | Enable OpenTelemetry tracing (requires the `otel` feature) | `false` | No |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `--otel-endpoint` | OTLP HTTP endpoint | `http://localhost:4318` | No |
 | `OTEL_SERVICE_NAME` | `--otel-service-name` | Service name for traces | `captchapi` | No |
 
@@ -363,6 +376,12 @@ All four are reloadable — a reload applies them without a restart.
 | Variable | Flag | Description | Default | Required |
 |----------|------|-------------|---------|----------|
 | `RUST_LOG` | `--log-level` | Tracing filter directives | `captchapi=debug,tower_http=debug` | No |
+
+Directives are `target=level` pairs or a bare level, comma separated — for
+example `captchapi=info,tower_http=warn` or just `debug`. Per-span field
+filtering (`[span{field=value}]=level`) is not supported; the filter is built
+on `tracing_subscriber::filter::Targets` rather than `EnvFilter` to keep the
+`regex` engine out of the binary.
 
 ### Admin
 

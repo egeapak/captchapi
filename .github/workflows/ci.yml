@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -94,8 +94,30 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Run Clippy
+      # Both feature configurations are linted: `--all-features` covers the
+      # OpenTelemetry code, and the default build covers the cfg(not(otel))
+      # paths that would otherwise never be compiled in CI.
+      - name: Run Clippy (default features)
+        run: cargo clippy --all-targets --workspace -- -D warnings
+
+      - name: Run Clippy (all features)
         run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      # Fails the build on RustSec vulnerabilities and yanked crates.
+      # Informational advisories (unmaintained/unsound) are reported as
+      # warnings and do not fail the build.
+      - name: Audit dependencies
+        run: cargo audit
 
   test:
     name: Test Suite
@@ -103,7 +125,7 @@ jobs:
     needs: [sqlx-check, format, clippy]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -125,7 +147,7 @@ jobs:
     needs: test
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -142,7 +164,7 @@ jobs:
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false
@@ -169,7 +191,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -226,12 +248,12 @@ jobs:
           echo "Server is ready!"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
       - name: Cache global npm packages
-        uses: actions/cache@v3
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: ${{ runner.os }}-npm-global-${{ hashFiles('.github/workflows/ci.yml') }}
@@ -239,7 +261,7 @@ jobs:
             ${{ runner.os }}-npm-global-
 
       - name: Install Bruno CLI
-        run: npm install -g @usebruno/cli
+        run: npm install -g @usebruno/cli@4.0.0
 
       - name: Run API tests
         env:
@@ -259,7 +281,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: api-test-results
           path: |

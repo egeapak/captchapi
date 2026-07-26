@@ -23,12 +23,13 @@ struct ReloadState {
     /// The command-line arguments this process started with, retained so a reload resolves
     /// from exactly the same sources as boot.
     cli: Cli,
-    /// Whether re-resolution reads the process environment.
+    /// Where re-resolution reads environment variables from.
     ///
-    /// Always true in production. `from_static` sets it false so a test handle resolves against
-    /// the layers it was given and nothing else — otherwise a developer or CI job that happens
-    /// to export `CAPTCHA_COMPRESSION` would fail unrelated reload tests.
-    read_process_env: bool,
+    /// Always [`EnvSource::Process`] in production. `from_static` uses [`EnvSource::Empty`] so a
+    /// test handle resolves against the layers it was given and nothing else — otherwise a
+    /// developer or CI job that happens to export `CAPTCHA_COMPRESSION` would fail unrelated
+    /// reload tests.
+    env: EnvSource,
     /// Values set through the admin API, keyed by canonical environment key.
     ///
     /// Ephemeral by design: a reload means "re-read the sources of truth", so it clears these.
@@ -66,7 +67,7 @@ impl ConfigHandle {
                 tx,
                 state: Mutex::new(ReloadState {
                     cli,
-                    read_process_env: true,
+                    env: EnvSource::Process,
                     overlay: Layer::new(),
                 }),
             }),
@@ -90,7 +91,7 @@ impl ConfigHandle {
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .read_process_env = false;
+            .env = EnvSource::Empty;
         handle
     }
 
@@ -127,8 +128,7 @@ impl ConfigHandle {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let current = self.rx.borrow().clone();
-        let resolved =
-            resolve_with_carry(&state.cli, &current, &Layer::new(), state.read_process_env)?;
+        let resolved = resolve_with_carry(&state.cli, &current, &Layer::new(), &state.env)?;
 
         let drift = current.boot_drift(&resolved);
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
@@ -174,7 +174,7 @@ impl ConfigHandle {
         }
 
         let current = self.rx.borrow().clone();
-        let resolved = resolve_with_carry(&state.cli, &current, &overlay, state.read_process_env)?;
+        let resolved = resolve_with_carry(&state.cli, &current, &overlay, &state.env)?;
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay = overlay;
@@ -210,7 +210,7 @@ fn resolve_with_carry(
     cli: &Cli,
     current: &Config,
     overlay: &Layer,
-    read_process_env: bool,
+    env: &EnvSource,
 ) -> Result<Config, String> {
     let mut layers = load_layers(cli)?;
     for (key, value) in overlay {
@@ -218,19 +218,39 @@ fn resolve_with_carry(
     }
     layers.carried = current.boot_layer();
 
-    if read_process_env {
-        Config::from_env_provider(&layers.stack(&RealEnv))
-    } else {
-        Config::from_env_provider(&layers.stack(&EmptyEnv))
-    }
+    Config::from_env_provider(&layers.stack(env))
 }
 
-/// An environment with nothing in it, for handles that must not read the process environment.
-struct EmptyEnv;
+/// Where a handle's reload reads environment variables from.
+///
+/// This is a value rather than a `bool` so the environment is a seam the tests can drive,
+/// upholding the rule stated in `sources.rs`: tests must never call `std::env::set_var`.
+/// `cargo llvm-cov` runs the threaded `cargo test` harness rather than nextest's
+/// process-per-test, so a test that exports a variable and restores it afterwards is a data
+/// race against every concurrent `env::var` in the same binary — and skips the restore
+/// entirely if anything between the two panics.
+enum EnvSource {
+    /// The process environment. Always this in production.
+    Process,
+    /// Nothing at all, for handles that must resolve from their own layers only.
+    Empty,
+    /// A fixed set, so a test can prove the environment layer is consulted without touching
+    /// the real one.
+    #[cfg(test)]
+    Fixed(std::collections::HashMap<String, String>),
+}
 
-impl crate::config::EnvProvider for EmptyEnv {
-    fn get(&self, _key: &str) -> Result<String, std::env::VarError> {
-        Err(std::env::VarError::NotPresent)
+impl crate::config::EnvProvider for EnvSource {
+    fn get(&self, key: &str) -> Result<String, std::env::VarError> {
+        match self {
+            Self::Process => RealEnv.get(key),
+            Self::Empty => Err(std::env::VarError::NotPresent),
+            #[cfg(test)]
+            Self::Fixed(values) => values
+                .get(key)
+                .cloned()
+                .ok_or(std::env::VarError::NotPresent),
+        }
     }
 }
 
@@ -438,29 +458,103 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_static_handles_ignore_the_process_environment() {
-        // Otherwise a developer (or CI job) with CAPTCHA_COMPRESSION exported would fail every
-        // reload test in this module for reasons that have nothing to do with the code.
-        //
-        // Safety: this is the only test that touches process env, and it restores it. The
-        // assertion is precisely that the handle does not observe it.
-        let key = "CAPTCHA_COMPRESSION";
-        let previous = std::env::var(key).ok();
-        std::env::set_var(key, "7");
+    /// Replace a handle's environment with a fixed set, as `from_static` replaces it with none.
+    fn with_env(h: &ConfigHandle, pairs: &[(&str, &str)]) {
+        h.inner.state.lock().unwrap_or_else(|e| e.into_inner()).env = EnvSource::Fixed(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+    }
 
+    /// Positive control for the two tests below.
+    ///
+    /// Without this, "the environment was ignored" could equally mean the environment layer is
+    /// not wired into a reload at all, or that 7 is not a value that can take effect.
+    #[test]
+    fn test_reload_reads_the_environment_layer() {
         let h = handle();
+        with_env(&h, &[("CAPTCHA_COMPRESSION", "7")]);
+
         let outcome = h.reload().unwrap();
 
-        match previous {
-            Some(value) => std::env::set_var(key, value),
-            None => std::env::remove_var(key),
-        }
+        assert_eq!(
+            outcome.config.captcha_compression, 7,
+            "a reload must consult its environment source"
+        );
+    }
+
+    #[test]
+    fn test_an_empty_environment_leaves_the_layers_to_answer() {
+        let h = handle();
+        with_env(&h, &[("CAPTCHA_COMPRESSION", "7")]);
+        // Back to what `from_static` installs.
+        h.inner.state.lock().unwrap_or_else(|e| e.into_inner()).env = EnvSource::Empty;
+
+        let outcome = h.reload().unwrap();
 
         assert_eq!(
             outcome.config.captcha_compression, 40,
-            "a static handle must resolve from its own layers only"
+            "an empty environment must not answer for CAPTCHA_COMPRESSION"
         );
+    }
+
+    /// Ask a handle's environment source for a key, by the same trait method `resolve_with_carry`
+    /// calls. Asserting on what the source *answers* rather than on which variant it is keeps the
+    /// test honest if the seam is ever reshaped.
+    fn env_get(h: &ConfigHandle, key: &str) -> Result<String, std::env::VarError> {
+        use crate::config::EnvProvider;
+        h.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .env
+            .get(key)
+    }
+
+    /// The invariant the two tests above exist to support: a static handle is wired to an empty
+    /// environment, so a developer or CI job that happens to export `CAPTCHA_COMPRESSION` cannot
+    /// fail unrelated reload tests. Production keeps the process environment.
+    ///
+    /// `PATH` is the discriminator. It is set in every environment this suite can run in, and no
+    /// config parameter reads it, so it distinguishes the two wirings without any test needing to
+    /// export a variable — reading the environment is safe, only writing it is banned. Using a
+    /// real, already-present variable is also the only way to cover `EnvSource::Process`'s
+    /// passthrough to `RealEnv` end-to-end.
+    #[test]
+    fn test_static_handles_ignore_the_process_environment() {
+        let in_process = std::env::var("PATH").expect("this test presumes PATH is set");
+
+        let statik = ConfigHandle::from_static(Config::for_test());
+        assert_eq!(
+            env_get(&statik, "PATH"),
+            Err(std::env::VarError::NotPresent),
+            "from_static must not read the process environment, but it answered for PATH"
+        );
+
+        let live = ConfigHandle::new(Config::for_test(), Cli::default());
+        assert_eq!(
+            env_get(&live, "PATH").as_deref(),
+            Ok(in_process.as_str()),
+            "a production handle must read the process environment"
+        );
+        assert_eq!(
+            env_get(&live, "CAPTCHAPI_DEFINITELY_NOT_SET_IN_ANY_ENVIRONMENT"),
+            Err(std::env::VarError::NotPresent),
+            "a production handle must report a genuinely absent variable as absent"
+        );
+    }
+
+    #[test]
+    fn test_empty_env_source_answers_nothing() {
+        use crate::config::EnvProvider;
+        for key in ["CAPTCHA_COMPRESSION", "SERVER_PORT", "PATH"] {
+            assert!(
+                EnvSource::Empty.get(key).is_err(),
+                "{key} should be absent from an empty environment"
+            );
+        }
     }
 
     #[test]
