@@ -86,9 +86,12 @@ function render(data) {
     rows.appendChild(tr);
   }
 
+  // Only say something when there is something to say — "no overrides active" is the
+  // normal state and does not need a line of its own.
   $("ovr").textContent = data.overrides.length
-    ? "Runtime overrides active (cleared by a reload): " + data.overrides.join(", ")
-    : "No runtime overrides active.";
+    ? "Overrides active until the next reload: " + data.overrides.join(", ")
+    : "";
+  $("ovr").classList.toggle("hide", !data.overrides.length);
   syncButtons();
 }
 
@@ -108,8 +111,9 @@ $("gate").addEventListener("submit", async (e) => {
   e.preventDefault();
   key = $("key").value;
   try {
+    // No success message: the table appearing is the confirmation.
     await load();
-    say("Connected.", "ok");
+    $("msg").className = "msg";
   } catch (err) {
     key = "";
     say(String(err.message || err), "err");

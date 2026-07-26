@@ -14,6 +14,9 @@ color-scheme:light dark;
 --line:#e0e4ec;--hair:#eef0f5;--fg:#161a22;--dim:#5f6878;--faint:#98a0b0;
 --accent:#4a5fd0;--on-accent:#fff;--accent-soft:#eceffd;
 --ok:#0e7a4d;--ok-soft:#e6f4ec;--warn:#8a5300;--warn-soft:#fbf0dc;--err:#b32318;--err-soft:#fdeceb;
+/* Boot fields. A cooler, greyer blue than --accent on purpose: it has to read as
+   "not editable" next to the accent that marks the rows that are. */
+--info:#2f6795;--info-soft:#e7eff6;
 --ring:rgba(74,95,208,.28);
 --shadow:0 1px 2px rgba(16,20,35,.05),0 10px 28px -14px rgba(16,20,35,.25)
 }
@@ -22,6 +25,7 @@ color-scheme:light dark;
 --line:#252b38;--hair:#1d222d;--fg:#e6eaf2;--dim:#909aab;--faint:#69727f;
 --accent:#8098ff;--on-accent:#0a0d16;--accent-soft:#1a2138;
 --ok:#4fcb92;--ok-soft:#10251d;--warn:#e0b163;--warn-soft:#282013;--err:#f2867d;--err-soft:#2a1618;
+--info:#6fb2de;--info-soft:#111d2a;
 --ring:rgba(128,152,255,.3);
 --shadow:0 1px 2px rgba(0,0,0,.5),0 14px 34px -18px #000
 }}
@@ -53,16 +57,10 @@ button:focus-visible{outline:0;box-shadow:0 0 0 3px var(--ring)}
 button:disabled{opacity:.4;cursor:not-allowed}
 .primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .primary:hover:not(:disabled){color:var(--on-accent);filter:brightness(1.08)}
-.lab{display:block;font:600 .7rem/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;
-color:var(--dim);margin:0 0 .45rem}
-
 /* gate */
-.gate{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.5rem;box-shadow:var(--shadow)}
-.gate h2{font-size:.95rem;font-weight:600;margin:0 0 .3rem}
-.gate .sub{margin-bottom:1.25rem}
-.gate button{width:100%;margin-top:.9rem;padding:.6rem}
-.foot{display:flex;gap:.45rem;align-items:center;justify-content:center;margin-top:1rem;
-font-size:.75rem;color:var(--faint)}
+.gate{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.4rem;box-shadow:var(--shadow)}
+.gate button{width:100%;margin-top:.7rem;padding:.6rem}
+.foot{text-align:center;margin-top:.9rem;font-size:.75rem;color:var(--faint)}
 
 /* status */
 .msg{display:none;gap:.55rem;align-items:baseline;font-size:.85rem;margin:0 0 1rem;padding:.65rem .85rem;
@@ -75,7 +73,6 @@ background:var(--panel);color:var(--dim);overflow-wrap:anywhere}
 
 /* legend + table */
 .legend{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .5rem;font-size:.78rem;color:var(--dim);margin:0 0 .85rem}
-.legend b{font-weight:400;margin-right:.5rem}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
 table{width:100%;border-collapse:collapse;table-layout:fixed}
 th{font:600 .68rem/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
@@ -104,6 +101,7 @@ text-transform:uppercase;padding:.3rem .5rem;border-radius:999px;border:1px soli
 color:var(--faint);background:var(--sunk)}
 .tag::before{content:"";width:.36rem;height:.36rem;border-radius:50%;background:currentColor}
 .tag.live{color:var(--ok);background:var(--ok-soft)}
+.tag.boot{color:var(--info);background:var(--info-soft)}
 .tag.dirty{color:var(--warn);background:var(--warn-soft)}
 .tag.secret{color:var(--faint);background:0 0;border-color:var(--line);border-style:dashed}
 
@@ -145,20 +143,17 @@ td.v input{padding:.35rem .5rem;margin-top:.3rem}
   <div id="msg" class="msg"></div>
 
   <form id="gate" class="gate">
-    <h2>Administrator access</h2>
-    <p class="sub">Enter the master key to inspect and adjust the running configuration.</p>
-    <label class="lab" for="key">Master API key</label>
-    <input id="key" type="password" autocomplete="current-password" placeholder="••••••••••••••••" autofocus required>
+    <input id="key" type="password" autocomplete="current-password" aria-label="Master API key"
+           placeholder="Master API key" autofocus required>
     <button class="primary">Unlock</button>
-    <p class="foot"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Held in memory for this tab only — never stored.</p>
+    <p class="foot">Held in memory for this tab only.</p>
   </form>
 
   <section id="panel" class="hide">
     <p class="legend">
-      <b>Scope</b>
-      <span class="tag live">live</span> applies at once
-      <span class="tag boot">boot</span> needs a restart
-      <span class="tag secret">secret</span> redacted
+      <span class="tag live">live</span> editable now
+      <span class="tag boot">boot</span> restart to change
+      <span class="tag secret">secret</span> hidden
     </p>
     <div class="card">
       <table>

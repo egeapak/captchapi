@@ -46,20 +46,20 @@ three actions — written once per framework.
 | build | bytes | vs baseline |
 |-------|-------:|------------:|
 | baseline `captchapi` (rustc 1.94.1) | 3,930,328 | — |
-| **+ hand-written console** (`--features admin-ui`) | **3,952,792** | **+22,464 (+0.57%)** |
+| **+ hand-written console** (`--features admin-ui`) | **3,952,472** | **+22,144 (+0.56%)** |
 | baseline, rustc 1.95 (control) | 3,916,664 | −13,664 |
 | **+ Topcoat page**, rustc 1.95 | **5,750,808** | **+1,834,144 (+46.8%)** |
 
 The Topcoat row is measured against the 1.95 control, not the 1.94 baseline, so the
 compiler bump is not counted against it.
 
-Of the hand-written console's 22,464 bytes, 14,059 are the HTML and JS themselves and
+Of the hand-written console's 22,144 bytes, 13,778 are the HTML and JS themselves and
 ~8,400 are the Rust that serves them (three routes, the CSP headers). Gzipped — the proxy
-for what a registry stores and a `docker pull` moves — the binary grows 8,078 bytes.
+for what a registry stores and a `docker pull` moves — the binary grows 8,174 bytes.
 
 The assets were 7,952 bytes before a design pass added light/dark theming, a narrow-viewport
 layout, and visual separation between live, boot and secret fields. That is the honest price
-of the polish: +6,107 bytes of CSS and markup, still an order of magnitude under any
+of the polish: +5,826 bytes of CSS and markup, still an order of magnitude under any
 framework option below.
 
 Standalone probes, to separate framework cost from the tokio/hyper floor:
@@ -75,7 +75,7 @@ What lands in the binary, since assets are embedded:
 
 | stack | raw | gzipped |
 |-------|----:|--------:|
-| **hand-written, no dependencies** | **14,059** | **5,189** |
+| **hand-written, no dependencies** | **13,778** | **5,078** |
 | hand-written + water.css | 30,520 | 6,623 |
 | preact/compat SPA (Vite) | 21,533 | 8,702 |
 | hand-written + pico.css (classless) | 78,892 | 13,380 |
