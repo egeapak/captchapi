@@ -50,7 +50,18 @@ pnpm-lock.yaml
 # NAPI-RS build artifacts
 *.node
 npm/
+# napi-rs writes a .cargo/config.toml when cross-compiling, which is why any
+# .cargo directory is ignored. The workspace's own /.cargo/config.toml is not
+# generated: it carries LIBSQLITE3_FLAGS and must be in source control, or CI,
+# `cross` and every fresh clone silently build an untrimmed SQLite.
+#
+# Git will not descend into an excluded directory, so re-including one file
+# takes all four lines: un-ignore the root directory, re-ignore its contents,
+# then carve out the one tracked file. Nested .cargo/ directories stay ignored.
 .cargo/
+!/.cargo/
+/.cargo/*
+!/.cargo/config.toml
 
 # Coverage and runtime artifacts
 lcov.info
