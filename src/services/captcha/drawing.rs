@@ -20,7 +20,7 @@
 //! The geometry is a line-for-line port. Only the noise generators differ, and
 //! only in their source of randomness — see [`gaussian_noise_mut`].
 
-use ab_glyph::{point, Font, GlyphId, PxScale, ScaleFont};
+use ab_glyph::{point, Font, PxScale, ScaleFont};
 use image::{Rgb, RgbImage};
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -244,6 +244,7 @@ pub fn draw_cubic_bezier_curve_mut(
 ///
 /// Upstream also returned the laid-out size, for a `text_size` helper the
 /// renderer does not use; the advance accumulator it needs is kept.
+#[cfg(test)]
 fn layout_glyphs(
     scale: PxScale,
     font: &impl Font,
@@ -256,7 +257,7 @@ fn layout_glyphs(
     let scaled = font.as_scaled(scale);
 
     let mut w = 0.0;
-    let mut prev: Option<GlyphId> = None;
+    let mut prev: Option<ab_glyph::GlyphId> = None;
 
     for c in text.chars() {
         let glyph_id = scaled.glyph_id(c);
@@ -277,6 +278,16 @@ fn layout_glyphs(
 ///
 /// `Rgb<u8>` has no alpha channel, so upstream's `HAS_ALPHA` branch is dead
 /// here and only the `weighted_sum` path is ported.
+///
+/// **Test-only, and deliberately kept.** The renderer draws through
+/// [`rasterize_char`] + [`composite_mask`] instead, so it can deform letters
+/// individually. This is the implementation that was verified byte-identical
+/// against `imageproc` and is still pinned by
+/// `test_geometry_matches_the_digests_verified_against_imageproc`; keeping it
+/// gives the mask path an independent oracle to be checked against, which is
+/// what `test_the_mask_path_matches_draw_text_mut` does. Deleting it would
+/// leave the production path pinned only to itself.
+#[cfg(test)]
 pub fn draw_text_mut(
     image: &mut RgbImage,
     color: Rgb<u8>,
@@ -304,6 +315,93 @@ pub fn draw_text_mut(
             }
         })
     });
+}
+
+/// A rasterized glyph held as coverage rather than colour.
+///
+/// [`draw_text_mut`] blends each glyph onto the canvas as it rasterizes, which
+/// makes a letter impossible to deform without dragging its background along
+/// with it. Rendering to a standalone coverage buffer separates the two: the
+/// mask can be warped, moved and scaled on its own, and only then composited.
+///
+/// Warping coverage rather than rendered pixels also avoids pulling background
+/// colour into the glyph edges, and keeps the blend itself on exactly the
+/// [`weighted_sum`] path the digests already pin.
+///
+/// `left` and `top` are the offset of the buffer's top-left corner from the
+/// pen position, matching the `x_shift`/`y_shift` [`draw_text_mut`] applies.
+#[derive(Clone, Debug)]
+pub struct GlyphMask {
+    pub width: u32,
+    pub height: u32,
+    pub left: i32,
+    pub top: i32,
+    /// Row-major, `width * height` entries, each in `0.0..=1.0`.
+    pub coverage: Vec<f32>,
+}
+
+/// Rasterizes a single character into its own coverage buffer.
+///
+/// Returns `None` for a character with no outline — whitespace, or a glyph
+/// missing from the subset font.
+pub fn rasterize_char(font: &impl Font, ch: char, scale: PxScale) -> Option<GlyphMask> {
+    let scaled = font.as_scaled(scale);
+    let glyph_id = scaled.glyph_id(ch);
+    let glyph = glyph_id.with_scale_and_position(scale, point(0.0, scaled.ascent()));
+    let outlined = scaled.outline_glyph(glyph)?;
+
+    let bounds = outlined.px_bounds();
+    let width = (bounds.max.x - bounds.min.x).ceil().max(0.0) as u32;
+    let height = (bounds.max.y - bounds.min.y).ceil().max(0.0) as u32;
+    if width == 0 || height == 0 {
+        return None;
+    }
+
+    let mut coverage = vec![0.0f32; (width * height) as usize];
+    outlined.draw(|gx, gy, gv| {
+        if gx < width && gy < height {
+            coverage[(gy * width + gx) as usize] = gv.clamp(0.0, 1.0);
+        }
+    });
+
+    Some(GlyphMask {
+        width,
+        height,
+        left: bounds.min.x.round() as i32,
+        top: bounds.min.y.round() as i32,
+        coverage,
+    })
+}
+
+/// Blends a coverage mask onto the canvas at `(x, y)` in `color`.
+///
+/// Equivalent to [`draw_text_mut`] for a single character when the mask comes
+/// straight from [`rasterize_char`] — `test_the_mask_path_matches_draw_text_mut`
+/// holds the two together.
+pub fn composite_mask(image: &mut RgbImage, mask: &GlyphMask, x: i32, y: i32, color: Rgb<u8>) {
+    let image_width = image.width() as i32;
+    let image_height = image.height() as i32;
+
+    for gy in 0..mask.height {
+        for gx in 0..mask.width {
+            let gv = mask.coverage[(gy * mask.width + gx) as usize];
+            // Zero coverage is a no-op: weighted_sum(p, c, 1.0, 0.0) returns p
+            // exactly, so skipping it is identical, not merely close.
+            if gv <= 0.0 {
+                continue;
+            }
+
+            let image_x = gx as i32 + x + mask.left;
+            let image_y = gy as i32 + y + mask.top;
+
+            if (0..image_width).contains(&image_x) && (0..image_height).contains(&image_y) {
+                let (image_x, image_y) = (image_x as u32, image_y as u32);
+                let pixel = *image.get_pixel(image_x, image_y);
+                let gv = gv.clamp(0.0, 1.0);
+                image.put_pixel(image_x, image_y, weighted_sum(pixel, color, 1.0 - gv, gv));
+            }
+        }
+    }
 }
 
 /// A standard normal sample, via the Box-Muller transform.
@@ -419,6 +517,73 @@ mod tests {
         let mut circle = canvas();
         draw_hollow_circle_mut(&mut circle, (50, 50), 12, Rgb([176, 203, 40]));
         assert_eq!(digest(&circle), "e8c8641ca34e34b8", "circle output changed");
+    }
+
+    /// The mask path must be a drop-in for `draw_text_mut` before any
+    /// deformation is applied, or the digests above stop meaning anything for
+    /// the renderer that now goes through masks.
+    ///
+    /// Covers descenders, round glyphs, the widest and narrowest letters in the
+    /// subset, three scales, and positions that clip on every edge.
+    #[test]
+    fn test_the_mask_path_matches_draw_text_mut() {
+        let font = font();
+        let color = Rgb([214, 14, 50]);
+
+        for ch in ['g', 'j', 'Q', 'W', 'm', 'z', '2', '9', 'x'] {
+            for scale in [35.0f32, 42.0, 50.0] {
+                for (x, y) in [(5, 45), (0, 0), (200, 100), (-12, -12), (215, 115)] {
+                    let mut direct = canvas();
+                    let mut viamask = canvas();
+
+                    let mut buf = [0u8; 4];
+                    draw_text_mut(
+                        &mut direct,
+                        color,
+                        x,
+                        y,
+                        scale,
+                        &font,
+                        ch.encode_utf8(&mut buf),
+                    );
+
+                    let mask = rasterize_char(&font, ch, PxScale::from(scale))
+                        .expect("subset glyphs all have outlines");
+                    composite_mask(&mut viamask, &mask, x, y, color);
+
+                    assert_eq!(
+                        direct, viamask,
+                        "mask path diverges for {ch:?} at scale {scale} pos ({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A character missing from the subset does not vanish — it maps to
+    /// `.notdef`, which in this font is a visible box. That is precisely what
+    /// makes the generator's `test_every_basic_char_has_a_glyph` worth having:
+    /// a stale subset would show boxes to users, not blanks.
+    #[test]
+    fn test_a_missing_glyph_rasterizes_to_the_notdef_box() {
+        let font = font();
+        let scale = PxScale::from(40.0);
+
+        let notdef = rasterize_char(&font, '1', scale).expect(".notdef is outlined in this font");
+        assert!(notdef.width > 0 && notdef.height > 0);
+
+        for ch in ['O', '@', ' '] {
+            let other = rasterize_char(&font, ch, scale).expect("also .notdef");
+            assert_eq!(
+                (other.width, other.height),
+                (notdef.width, notdef.height),
+                "{ch:?} should resolve to the same .notdef box"
+            );
+        }
+
+        // A real glyph must differ, or the equality above proves nothing.
+        let real = rasterize_char(&font, 'Q', scale).expect("Q is in the subset");
+        assert_ne!((real.width, real.height), (notdef.width, notdef.height));
     }
 
     /// `imageproc::pixelops::weighted_sum`'s own documented example. Independent

@@ -13,10 +13,10 @@
 //! [`super::drawing`] — `imageproc` is no longer a dependency at all.
 
 use super::drawing::{
-    draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, draw_text_mut, gaussian_noise_mut,
-    salt_and_pepper_noise_mut,
+    composite_mask, draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, gaussian_noise_mut,
+    rasterize_char, salt_and_pepper_noise_mut,
 };
-use ab_glyph::FontArc;
+use ab_glyph::{FontArc, PxScale};
 use image::{DynamicImage, ImageBuffer, Rgb};
 use rand::{rng, RngExt};
 use std::sync::OnceLock;
@@ -131,16 +131,12 @@ fn write_characters(text: &str, image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dark_
     let font = font();
     for (i, ch) in chars.iter().enumerate() {
         let x = 5 + (i as u32 * step) as i32;
-        let mut buf = [0u8; 4];
-        draw_text_mut(
-            image,
-            get_color(dark_mode),
-            x,
-            y,
-            scale,
-            font,
-            ch.encode_utf8(&mut buf),
-        );
+        // Drawn unconditionally so the colour draw count does not depend on
+        // whether a glyph happens to be outlined.
+        let color = get_color(dark_mode);
+        if let Some(mask) = rasterize_char(font, *ch, PxScale::from(scale)) {
+            composite_mask(image, &mask, x, y, color);
+        }
     }
 }
 
