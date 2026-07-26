@@ -360,9 +360,17 @@ cargo nextest run
    template-matching against the bundled font. Only lightness and saturation are bounded, and only
    enough to keep glyphs legible. Do not reintroduce a fixed palette for the sake of consistent
    branding.
-8. **Low JPEG quality is deliberate**: `CAPTCHA_COMPRESSION` defaults to 40. Measured against the
-   same pixels encoded losslessly, the compression artifacts cost a frontier vision model a full
-   solve — raising the quality for nicer-looking images measurably weakens the CAPTCHA.
+8. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
+   An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
+   compression artifacts costing a frontier vision model a full solve, but that was on the
+   renderer *before* hue randomisation and clustering, and it no longer reproduces. Re-measured on
+   the current renderer at difficulty 10, quality 20/40/70/95 over identical pixels gave 3-4 of 15
+   characters and zero solves at every level, across a 10x range in encoded size. The likely reason
+   is that artifacts mattered while glyphs were cleanly separable by a fixed palette; now that
+   colour is continuous and letters overlap, the rendering dominates and the encoder is not the
+   marginal factor. Keep 40 for bandwidth and storage. Do not raise it expecting harm, or lower it
+   expecting benefit, without measuring at a difficulty where solve rates are non-zero — the
+   difficulty-10 test floors every model regardless of quality, so it cannot detect an effect.
 9. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
