@@ -111,6 +111,31 @@ impl Deformations {
             wave: 0.0,
         }
     }
+
+    /// The intensities a difficulty level implies.
+    ///
+    /// Linear from nothing at the easiest level to full intensity at the
+    /// hardest, which is how the rest of the renderer already reads the level:
+    /// both noise generators are scaled by `difficulty - 1`, so they contribute
+    /// nothing at the bottom of the range either. An easy CAPTCHA therefore
+    /// stays upright and evenly spaced, and the deformations arrive together
+    /// with the noise rather than on their own schedule.
+    ///
+    /// Each deformation has its own cap — `MAX_JITTER`, `MAX_SCALE_VARIANCE`,
+    /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE` — so retuning how strong one gets at a
+    /// given level is a change to that constant, not to this ramp.
+    pub fn for_difficulty(difficulty: u32) -> Self {
+        let intensity = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
+        if intensity == 0.0 {
+            return Self::none();
+        }
+        Self {
+            jitter: intensity,
+            scale: intensity,
+            skew: intensity,
+            wave: intensity,
+        }
+    }
 }
 
 /// Roboto Bold subset to exactly [`BASIC_CHAR`], SIL OFL 1.1 — see
@@ -327,7 +352,7 @@ pub fn generate(
         width,
         height,
         dark_mode,
-        Deformations::none(),
+        Deformations::for_difficulty(difficulty),
     );
     (text, image)
 }
@@ -398,16 +423,16 @@ mod tests {
 
     /// One row per intensity, `cols` independent draws per row, so both the
     /// strength and the spread of the randomness are visible at a glance.
-    fn contact_sheet(rows: &[Deformations], cols: u32, difficulty: u32) -> DynamicImage {
+    fn contact_sheet(rows: &[(u32, Deformations)], cols: u32) -> DynamicImage {
         let gap = 4;
         let width = cols * SAMPLE_W + (cols + 1) * gap;
         let height = rows.len() as u32 * SAMPLE_H + (rows.len() as u32 + 1) * gap;
         let mut sheet = ImageBuffer::from_pixel(width, height, Rgb([70, 70, 78]));
 
-        for (r, deform) in rows.iter().enumerate() {
+        for (r, (difficulty, deform)) in rows.iter().enumerate() {
             for c in 0..cols {
                 let tile =
-                    render(SAMPLE_TEXT, difficulty, SAMPLE_W, SAMPLE_H, false, *deform).to_rgb8();
+                    render(SAMPLE_TEXT, *difficulty, SAMPLE_W, SAMPLE_H, false, *deform).to_rgb8();
                 let ox = gap + c * (SAMPLE_W + gap);
                 let oy = gap + r as u32 * (SAMPLE_H + gap);
                 paste(&mut sheet, &tile, ox, oy);
@@ -440,49 +465,82 @@ mod tests {
 
         let jitter: Vec<_> = levels
             .iter()
-            .map(|i| Deformations {
-                jitter: *i,
-                ..Deformations::none()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        jitter: *i,
+                        ..Deformations::none()
+                    },
+                )
             })
             .collect();
-        write_jpeg(&contact_sheet(&jitter, 3, 1), "01-offset-jitter.jpg");
+        write_jpeg(&contact_sheet(&jitter, 3), "01-offset-jitter.jpg");
 
         let scale: Vec<_> = levels
             .iter()
-            .map(|i| Deformations {
-                scale: *i,
-                ..Deformations::none()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        scale: *i,
+                        ..Deformations::none()
+                    },
+                )
             })
             .collect();
-        write_jpeg(&contact_sheet(&scale, 3, 1), "02-scale-variance.jpg");
+        write_jpeg(&contact_sheet(&scale, 3), "02-scale-variance.jpg");
 
         let both: Vec<_> = levels
             .iter()
-            .map(|i| Deformations {
-                jitter: *i,
-                scale: *i,
-                ..Deformations::none()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        jitter: *i,
+                        scale: *i,
+                        ..Deformations::none()
+                    },
+                )
             })
             .collect();
-        write_jpeg(&contact_sheet(&both, 3, 1), "03-offset-and-scale.jpg");
+        write_jpeg(&contact_sheet(&both, 3), "03-offset-and-scale.jpg");
 
         let skew: Vec<_> = levels
             .iter()
-            .map(|i| Deformations {
-                skew: *i,
-                ..Deformations::none()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        skew: *i,
+                        ..Deformations::none()
+                    },
+                )
             })
             .collect();
-        write_jpeg(&contact_sheet(&skew, 3, 1), "04-skew.jpg");
+        write_jpeg(&contact_sheet(&skew, 3), "04-skew.jpg");
 
         let wave: Vec<_> = levels
             .iter()
-            .map(|i| Deformations {
-                wave: *i,
-                ..Deformations::none()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        wave: *i,
+                        ..Deformations::none()
+                    },
+                )
             })
             .collect();
-        write_jpeg(&contact_sheet(&wave, 3, 1), "05-sine-wave.jpg");
+        write_jpeg(&contact_sheet(&wave, 3), "05-sine-wave.jpg");
+
+        // Everything on, at the difficulty levels a caller actually asks for,
+        // so the noise and the deformations ramp together.
+        let by_difficulty: Vec<_> = [1u32, 3, 5, 7, 10]
+            .iter()
+            .map(|d| (*d, Deformations::for_difficulty(*d)))
+            .collect();
+        write_jpeg(&contact_sheet(&by_difficulty, 3), "06-by-difficulty.jpg");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
@@ -638,6 +696,62 @@ mod tests {
         assert!(
             widened >= 20,
             "a leaning letter is wider than an upright one; only {widened}/24 were"
+        );
+    }
+
+    #[test]
+    fn test_difficulty_one_deforms_nothing_and_ten_is_full_intensity() {
+        assert_eq!(
+            Deformations::for_difficulty(1),
+            Deformations::none(),
+            "the easiest level must render as it always did"
+        );
+
+        let hardest = Deformations::for_difficulty(10);
+        for value in [hardest.jitter, hardest.scale, hardest.skew, hardest.wave] {
+            assert!(
+                (value - 1.0).abs() < 1e-6,
+                "level 10 should be full: {value}"
+            );
+        }
+
+        // Monotonic in between, and every deformation moves together.
+        let mut previous = Deformations::none();
+        for level in 2..=10 {
+            let current = Deformations::for_difficulty(level);
+            assert!(
+                current.jitter > previous.jitter
+                    && current.scale > previous.scale
+                    && current.skew > previous.skew
+                    && current.wave > previous.wave,
+                "intensity should rise at every level; stalled at {level}"
+            );
+            previous = current;
+        }
+
+        assert_eq!(Deformations::for_difficulty(0), Deformations::none());
+        assert_eq!(Deformations::for_difficulty(999), hardest);
+    }
+
+    #[test]
+    fn test_a_harder_captcha_disturbs_its_letters_more() {
+        let easy = glyph_pixels("KBMX", Deformations::for_difficulty(1));
+        let (el, _, er, _) = bbox(&easy);
+        let easy_width = er - el;
+
+        // Jitter, scale and skew all widen the inked area, so the hardest
+        // level should reliably spread letters further than the easiest.
+        let mut wider = 0;
+        for _ in 0..24 {
+            let hard = glyph_pixels("KBMX", Deformations::for_difficulty(10));
+            let (hl, _, hr, _) = bbox(&hard);
+            if hr - hl > easy_width {
+                wider += 1;
+            }
+        }
+        assert!(
+            wider >= 20,
+            "difficulty 10 should disturb letters more than difficulty 1; only {wider}/24 did"
         );
     }
 
