@@ -16,8 +16,9 @@
 //! requested, which is churn and shows how hard the allocator is worked.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use captchapi::services::CaptchaService;
 
@@ -92,6 +93,34 @@ fn summarise(label: &str, mut samples: Vec<Sample>) {
     );
 }
 
+/// Sustained renders per second with `threads` workers going flat out.
+///
+/// Measured rather than derived from the single-shot median, because the
+/// per-image figure hides allocator contention and memory bandwidth effects
+/// that only appear once every core is rendering at once.
+fn throughput(service: &CaptchaService, difficulty: i64, length: i64, threads: usize) -> f64 {
+    let completed = AtomicU64::new(0);
+    let stop = AtomicBool::new(false);
+    let start = Instant::now();
+
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = service
+                        .generate(length, difficulty, 220, 120, false, 40)
+                        .expect("render succeeds");
+                    completed.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        std::thread::sleep(Duration::from_secs(4));
+        stop.store(true, Ordering::Relaxed);
+    });
+
+    completed.load(Ordering::Relaxed) as f64 / start.elapsed().as_secs_f64()
+}
+
 fn main() {
     let service = CaptchaService::new();
     let runs = 200;
@@ -128,5 +157,23 @@ fn main() {
             .map(|_| measure(&service, 10, 220, 120, len))
             .collect();
         summarise(&format!("  length {len}"), samples);
+    }
+
+    println!();
+    println!("sustained throughput, 220x120, quality 40, every deformation active");
+    println!(
+        "{:<22} {:>10} {:>12} {:>12}",
+        "", "renders/s", "per core", "ms/render"
+    );
+    for difficulty in [5i64, 8, 10] {
+        for threads in [1usize, 2, 4] {
+            let rate = throughput(&service, difficulty, 5, threads);
+            println!(
+                "  difficulty {difficulty}, {threads} thread{:<3} {rate:>10.1} {:>12.1} {:>12.2}",
+                if threads == 1 { "" } else { "s" },
+                rate / threads as f64,
+                1000.0 / (rate / threads as f64)
+            );
+        }
     }
 }
