@@ -340,6 +340,75 @@ pub struct GlyphMask {
     pub coverage: Vec<f32>,
 }
 
+impl GlyphMask {
+    /// Coverage at integer coordinates, treating everything outside as empty.
+    fn at(&self, x: i32, y: i32) -> f32 {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return 0.0;
+        }
+        self.coverage[y as usize * self.width as usize + x as usize]
+    }
+
+    /// Coverage at a fractional `x` on an exact row, linearly interpolated.
+    ///
+    /// Only `x` needs resampling: every deformation here displaces pixels
+    /// horizontally as a function of the row, so `y` stays an exact integer
+    /// and a full bilinear filter would only add blur.
+    fn sample_row(&self, x: f32, y: i32) -> f32 {
+        let floor = x.floor();
+        let frac = x - floor;
+        let x0 = floor as i32;
+        self.at(x0, y) * (1.0 - frac) + self.at(x0 + 1, y) * frac
+    }
+
+    /// Slides each row sideways by `displacement(row)`, resampling as it goes.
+    ///
+    /// The buffer grows to fit the result rather than clipping it, and `left`
+    /// moves to match, so the caller composites at the same pen position and
+    /// the glyph simply occupies more room.
+    ///
+    /// Every deformation in the renderer is a horizontal displacement that
+    /// depends only on the row — a shear is linear in `y`, a wave is
+    /// sinusoidal in `y` — so they share this one function, and a caller that
+    /// wants both should sum them into a single closure. Applying two passes
+    /// would resample twice and visibly soften the glyph.
+    pub fn displace_rows(&self, displacement: impl Fn(f32) -> f32) -> GlyphMask {
+        if self.height == 0 || self.width == 0 {
+            return self.clone();
+        }
+
+        let offsets: Vec<f32> = (0..self.height).map(|y| displacement(y as f32)).collect();
+        let min = offsets.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = offsets.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+        // A row moving left needs room on the left, and vice versa. One extra
+        // column on each side absorbs the interpolation reaching past the
+        // integer offset.
+        let pad_left = (-min).max(0.0).ceil() as u32 + 1;
+        let pad_right = max.max(0.0).ceil() as u32 + 1;
+        let width = self.width + pad_left + pad_right;
+
+        let mut coverage = vec![0.0f32; (width * self.height) as usize];
+        for y in 0..self.height {
+            let shift = offsets[y as usize];
+            for x in 0..width {
+                let value = self.sample_row(x as f32 - pad_left as f32 - shift, y as i32);
+                if value > 0.0 {
+                    coverage[(y * width + x) as usize] = value;
+                }
+            }
+        }
+
+        GlyphMask {
+            width,
+            height: self.height,
+            left: self.left - pad_left as i32,
+            top: self.top,
+            coverage,
+        }
+    }
+}
+
 /// Rasterizes a single character into its own coverage buffer.
 ///
 /// Returns `None` for a character with no outline — whitespace, or a glyph
@@ -558,6 +627,107 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn glyph() -> GlyphMask {
+        rasterize_char(&font(), 'K', PxScale::from(50.0)).expect("K is in the subset")
+    }
+
+    /// Total coverage — the glyph's "ink". Displacement moves ink around but
+    /// must not create or destroy much of it.
+    fn ink(mask: &GlyphMask) -> f32 {
+        mask.coverage.iter().sum()
+    }
+
+    #[test]
+    fn test_zero_displacement_leaves_the_glyph_where_it_was() {
+        let original = glyph();
+        let same = original.displace_rows(|_| 0.0);
+
+        // The buffer gains its one-column interpolation margin on each side,
+        // and `left` moves to match, so the glyph lands in the same place.
+        assert_eq!(same.width, original.width + 2);
+        assert_eq!(same.left, original.left - 1);
+        assert_eq!(same.height, original.height);
+
+        for y in 0..original.height as i32 {
+            for x in 0..original.width as i32 {
+                assert!(
+                    (same.at(x + 1, y) - original.at(x, y)).abs() < 1e-5,
+                    "coverage changed at ({x},{y}) under a zero displacement"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_constant_displacement_is_a_pure_translation() {
+        let original = glyph();
+        let moved = original.displace_rows(|_| 4.0);
+
+        for y in 0..original.height as i32 {
+            for x in 0..original.width as i32 {
+                assert!(
+                    (moved.at(x + 1 + 4, y) - original.at(x, y)).abs() < 1e-5,
+                    "a constant shift should move ink without reshaping it, at ({x},{y})"
+                );
+            }
+        }
+        assert!(
+            (ink(&moved) - ink(&original)).abs() < 0.5,
+            "translation should conserve ink: {} vs {}",
+            ink(&moved),
+            ink(&original)
+        );
+    }
+
+    #[test]
+    fn test_a_shear_leans_the_glyph_without_losing_ink() {
+        let original = glyph();
+        let centre = original.height as f32 / 2.0;
+        let sheared = original.displace_rows(|y| 0.4 * (y - centre));
+
+        assert!(
+            sheared.width > original.width,
+            "a shear must widen the buffer: {} vs {}",
+            sheared.width,
+            original.width
+        );
+
+        // Interpolation redistributes coverage but should not consume it.
+        let (before, after) = (ink(&original), ink(&sheared));
+        assert!(
+            (after - before).abs() / before < 0.02,
+            "shear lost or invented ink: {before} -> {after}"
+        );
+
+        // Top and bottom rows must end up displaced in opposite directions.
+        let row_centroid = |mask: &GlyphMask, y: i32| -> Option<f32> {
+            let mut weight = 0.0;
+            let mut moment = 0.0;
+            for x in 0..mask.width as i32 {
+                let v = mask.at(x, y);
+                weight += v;
+                moment += v * (x as f32 + mask.left as f32);
+            }
+            (weight > 0.1).then(|| moment / weight)
+        };
+
+        let top = 1;
+        let bottom = original.height as i32 - 2;
+        let (ot, ob) = (
+            row_centroid(&original, top).unwrap(),
+            row_centroid(&original, bottom).unwrap(),
+        );
+        let (st, sb) = (
+            row_centroid(&sheared, top).unwrap(),
+            row_centroid(&sheared, bottom).unwrap(),
+        );
+        assert!(
+            st < ot && sb > ob,
+            "shear should pull the top left and the bottom right: \
+             top {ot}->{st}, bottom {ob}->{sb}"
+        );
     }
 
     /// A character missing from the subset does not vanish — it maps to

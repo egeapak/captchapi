@@ -67,6 +67,10 @@ const MAX_JITTER: f32 = 0.16;
 /// fraction, drawn independently so letters stretch as well as grow.
 const MAX_SCALE_VARIANCE: f32 = 0.30;
 
+/// At full intensity, a letter leans by up to this shear factor — the
+/// horizontal shift per pixel of height, so 0.40 is roughly 22 degrees.
+const MAX_SKEW: f32 = 0.40;
+
 /// How strongly each per-letter deformation is applied.
 ///
 /// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
@@ -83,6 +87,8 @@ pub struct Deformations {
     pub jitter: f32,
     /// Random per-letter scale, drawn separately for width and height.
     pub scale: f32,
+    /// Random per-letter lean, as a horizontal shear about the letter's middle.
+    pub skew: f32,
 }
 
 impl Deformations {
@@ -91,6 +97,7 @@ impl Deformations {
         Self {
             jitter: 0.0,
             scale: 0.0,
+            skew: 0.0,
         }
     }
 }
@@ -206,7 +213,20 @@ fn write_characters(
         let dx = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
         let dy = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
 
+        // Drawn outside the `if let` for the same reason as the colour: the
+        // number of random draws must not depend on whether this particular
+        // glyph turned out to have an outline.
+        let lean = spread(MAX_SKEW * deform.skew);
+
         if let Some(mask) = rasterize_char(font, *ch, px) {
+            let mask = if lean != 0.0 {
+                // Shear about the letter's middle, so it leans rather than
+                // sliding sideways as it tilts.
+                let centre = mask.height as f32 / 2.0;
+                mask.displace_rows(|row| lean * (row - centre))
+            } else {
+                mask
+            };
             composite_mask(image, &mask, x + dx, y + dy - baseline_shift, color);
         }
     }
@@ -411,9 +431,19 @@ mod tests {
             .map(|i| Deformations {
                 jitter: *i,
                 scale: *i,
+                ..Deformations::none()
             })
             .collect();
         write_jpeg(&contact_sheet(&both, 3, 1), "03-offset-and-scale.jpg");
+
+        let skew: Vec<_> = levels
+            .iter()
+            .map(|i| Deformations {
+                skew: *i,
+                ..Deformations::none()
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&skew, 3, 1), "04-skew.jpg");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
@@ -538,6 +568,37 @@ mod tests {
         assert!(
             tops.iter().any(|t| t.abs_diff(base_top) >= 2),
             "no render differed meaningfully in height from the undeformed one"
+        );
+    }
+
+    #[test]
+    fn test_skew_leans_letters_without_changing_their_height() {
+        let base = glyph_pixels("KBMX", Deformations::none());
+        let (base_left, base_top, base_right, base_bottom) = bbox(&base);
+        let base_width = base_right - base_left;
+
+        let deform = Deformations {
+            skew: 1.0,
+            ..Deformations::none()
+        };
+
+        let mut widened = 0;
+        for _ in 0..24 {
+            let leaned = glyph_pixels("KBMX", deform);
+            let (l, t, r, b) = bbox(&leaned);
+            if r - l > base_width {
+                widened += 1;
+            }
+            // Shearing about the letter's middle tilts it without moving it up
+            // or down, so the vertical extent should be untouched.
+            assert!(
+                t.abs_diff(base_top) <= 2 && b.abs_diff(base_bottom) <= 2,
+                "skew changed the vertical extent: ({t},{b}) vs ({base_top},{base_bottom})"
+            );
+        }
+        assert!(
+            widened >= 20,
+            "a leaning letter is wider than an upright one; only {widened}/24 were"
         );
     }
 
