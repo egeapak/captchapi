@@ -79,6 +79,15 @@ const MAX_WAVE_AMPLITUDE: f32 = 0.14;
 /// shows more than a full cycle, which reads as a wobble rather than a bend.
 const WAVE_PERIOD: std::ops::Range<f32> = 0.7..1.6;
 
+/// At full intensity, the letters are laid out across this fraction of the
+/// width they would otherwise occupy.
+///
+/// Letters keep their size and only the gaps between them close, so glyphs
+/// crowd into each other and overlap. At 0.55 with five characters the step
+/// drops from roughly 42px to 23px against glyphs 25-30px wide, so neighbours
+/// genuinely intersect rather than merely sitting close.
+const MAX_CLUSTERING: f32 = 0.45;
+
 /// How strongly each per-letter deformation is applied.
 ///
 /// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
@@ -99,6 +108,9 @@ pub struct Deformations {
     pub skew: f32,
     /// Sine displacement down each letter, at a random amplitude and phase.
     pub wave: f32,
+    /// How tightly the letters are packed. Higher values shrink the span they
+    /// are laid out across, without shrinking the letters, so they overlap.
+    pub clustering: f32,
 }
 
 impl Deformations {
@@ -109,6 +121,7 @@ impl Deformations {
             scale: 0.0,
             skew: 0.0,
             wave: 0.0,
+            clustering: 0.0,
         }
     }
 
@@ -134,6 +147,7 @@ impl Deformations {
             scale: intensity,
             skew: intensity,
             wave: intensity,
+            clustering: intensity,
         }
     }
 }
@@ -215,7 +229,23 @@ fn write_characters(
     }
 
     let usable_width = image.width().saturating_sub(10);
-    let step = usable_width / chars.len() as u32;
+
+    // Clustering shrinks the span the letters are laid out across and recentres
+    // it, so glyphs crowd toward the middle and overlap. The letters themselves
+    // are untouched — only the gaps close — which is what turns segmentation
+    // into a guess rather than just making each glyph harder to recognise.
+    //
+    // At zero this reproduces the original integer stepping exactly, rather
+    // than merely closely: `usable_width / n` truncates, and a float span would
+    // place letters a pixel or two off for lengths that do not divide evenly.
+    let (origin, step) = if deform.clustering > 0.0 {
+        let full = usable_width as f32;
+        let span = full * (1.0 - (1.0 - MAX_CLUSTERING) * deform.clustering.clamp(0.0, 1.0));
+        (5.0 + (full - span) / 2.0, span / chars.len() as f32)
+    } else {
+        (5.0, (usable_width / chars.len() as u32) as f32)
+    };
+
     let y = (image.height() / 2).saturating_sub(15) as i32;
 
     let scale = match chars.len() {
@@ -228,7 +258,7 @@ fn write_characters(
     let nominal_ascent = font.as_scaled(PxScale::from(scale)).ascent();
 
     for (i, ch) in chars.iter().enumerate() {
-        let x = 5 + (i as u32 * step) as i32;
+        let x = (origin + i as f32 * step).round() as i32;
         // Drawn unconditionally so the colour draw count does not depend on
         // whether a glyph happens to be outlined.
         let color = get_color(dark_mode);
@@ -534,13 +564,27 @@ mod tests {
             .collect();
         write_jpeg(&contact_sheet(&wave, 3), "05-sine-wave.jpg");
 
+        let cluster: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        clustering: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&cluster, 3), "06-clustering.jpg");
+
         // Everything on, at the difficulty levels a caller actually asks for,
         // so the noise and the deformations ramp together.
         let by_difficulty: Vec<_> = [1u32, 3, 5, 7, 10]
             .iter()
             .map(|d| (*d, Deformations::for_difficulty(*d)))
             .collect();
-        write_jpeg(&contact_sheet(&by_difficulty, 3), "06-by-difficulty.jpg");
+        write_jpeg(&contact_sheet(&by_difficulty, 3), "07-by-difficulty.jpg");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
@@ -733,16 +777,18 @@ mod tests {
         assert_eq!(Deformations::for_difficulty(999), hardest);
     }
 
-    /// Compares medians rather than counting how many individual draws come
-    /// out wider, because a per-draw count is the wrong statistic here: jitter
-    /// is symmetric and scale can shrink a letter, so roughly 15% of
-    /// full-intensity draws are actually *narrower* than the undeformed
-    /// baseline. A threshold on that count sits on top of its own mean and
-    /// flakes; the median over the same draws is stable, and the gap it has to
-    /// clear (median 184 against a baseline of 176, with the lower quartile at
-    /// 180) leaves real margin.
+    /// Clustering inverted what this test used to assert. Before it existed,
+    /// a harder CAPTCHA spread letters *wider* — jitter, scale and skew all
+    /// push ink outward. Clustering pulls the whole layout in, and it
+    /// dominates: measured over 300 draws, difficulty 10 spans a median of
+    /// 101px against the easiest level's 176px.
+    ///
+    /// Medians rather than a per-draw count, for the reason that made the
+    /// previous version of this test 32% flaky: jitter is symmetric, so
+    /// individual draws scatter either side of the trend and a threshold on
+    /// how many land the right way sits on its own mean.
     #[test]
-    fn test_a_harder_captcha_disturbs_its_letters_more() {
+    fn test_a_harder_captcha_packs_its_letters_tighter() {
         let easy = glyph_pixels("KBMX", Deformations::for_difficulty(1));
         let (easy_left, _, easy_right, _) = bbox(&easy);
         let easy_width = easy_right - easy_left;
@@ -758,10 +804,92 @@ mod tests {
         let median = widths[widths.len() / 2];
 
         assert!(
-            median > easy_width,
-            "difficulty 10 should spread letters wider than difficulty 1: \
+            median + 30 < easy_width,
+            "difficulty 10 should pack letters much tighter than difficulty 1: \
              median {median} vs {easy_width} (widths {widths:?})"
         );
+    }
+
+    /// Clustering uses no randomness at all, so the layout is deterministic
+    /// given the text; only the faint antialiased edges move with the random
+    /// glyph colour, which is why the margins below are a few pixels rather
+    /// than exact.
+    ///
+    /// Measured for "Kb7mQ": 189px wide spread out, narrowing through
+    /// 166 / 143 / 120 to 96 at full intensity.
+    #[test]
+    fn test_clustering_packs_letters_until_they_overlap() {
+        let widths: Vec<u32> = [0.0f32, 0.25, 0.5, 0.75, 1.0]
+            .iter()
+            .map(|level| {
+                let packed = glyph_pixels(
+                    "Kb7mQ",
+                    Deformations {
+                        clustering: *level,
+                        ..Deformations::none()
+                    },
+                );
+                let (l, _, r, _) = bbox(&packed);
+                r - l
+            })
+            .collect();
+
+        for pair in widths.windows(2) {
+            assert!(
+                pair[1] + 2 < pair[0],
+                "each step of clustering should visibly tighten the layout: {widths:?}"
+            );
+        }
+        assert!(
+            (widths[4] as f64) < widths[0] as f64 * 0.55,
+            "full clustering should pull the layout under 55% of its width: {widths:?}"
+        );
+
+        // The union of inked pixels shrinking is the direct evidence of
+        // overlap: the letters themselves never change size, so the only way
+        // to cover fewer pixels is for glyphs to sit on top of one another.
+        let spread_out = glyph_pixels("Kb7mQ", Deformations::none()).len();
+        let packed = glyph_pixels(
+            "Kb7mQ",
+            Deformations {
+                clustering: 1.0,
+                ..Deformations::none()
+            },
+        )
+        .len();
+        assert!(
+            (packed as f64) < spread_out as f64 * 0.97,
+            "packed letters should cover fewer pixels than separated ones \
+             ({packed} vs {spread_out}); if they are equal they are merely adjacent"
+        );
+    }
+
+    /// Zero clustering must reproduce the original integer stepping exactly,
+    /// not merely closely. `usable_width / n` truncates, so a naive float span
+    /// shifts letters by a pixel or two whenever the character count does not
+    /// divide the canvas evenly.
+    ///
+    /// These figures were measured from the commit before clustering existed
+    /// and matched exactly afterwards, across every length, so they pin the
+    /// old layout rather than just describing the new one.
+    #[test]
+    fn test_zero_clustering_preserves_the_original_layout() {
+        for (text, left, width) in [
+            ("KB", 7u32, 128u32),
+            ("KBM", 7, 172),
+            ("KBMX", 7, 176),
+            ("Kb7mQ", 7, 189),
+            ("KBMXQ7", 6, 189),
+            ("KBMXQ7gh", 6, 196),
+        ] {
+            let px = glyph_pixels(text, Deformations::none());
+            let (l, _, r, _) = bbox(&px);
+            assert!(
+                l.abs_diff(left) <= 1 && (r - l).abs_diff(width) <= 1,
+                "layout drifted for {text:?}: left {l} (want {left}), width {} (want {width})",
+                r - l
+            );
+        }
     }
 
     #[test]
