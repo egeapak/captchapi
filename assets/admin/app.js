@@ -58,7 +58,14 @@ function render(data) {
 
     const k = document.createElement("td");
     k.className = "k";
-    k.textContent = field;
+    k.appendChild(document.createTextNode(field));
+    // The server owns the wording, so the console cannot drift from what the binary does.
+    if (entry.description) {
+        const about = document.createElement("span");
+        about.className = "about";
+        about.textContent = entry.description;
+        k.appendChild(about);
+    }
 
     const s = document.createElement("td");
     s.className = "s";

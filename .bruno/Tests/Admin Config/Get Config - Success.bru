@@ -22,6 +22,16 @@ tests {
     expect(res.body.config.server_port.reloadable).to.equal(false);
   });
 
+  test("should describe every parameter in a sentence", function() {
+    const fields = Object.keys(res.body.config);
+    expect(fields.length).to.be.above(0);
+    fields.forEach(function(field) {
+      const description = res.body.config[field].description;
+      expect(description, field).to.be.a("string");
+      expect(description, field).to.match(/\.$/);
+    });
+  });
+
   test("should redact secrets", function() {
     expect(res.body.config.api_key_salt.value).to.contain("redacted");
     expect(res.body.config.master_api_key.value).to.contain("redacted");

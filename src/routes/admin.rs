@@ -81,6 +81,9 @@ pub struct ConfigEntry {
     pub reloadable: bool,
     /// Whether the value is hidden because it is a secret.
     pub secret: bool,
+    /// One sentence on what this parameter does, so a client does not have to ship its own
+    /// copy of the documentation and let it drift from the server's.
+    pub description: &'static str,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +128,7 @@ fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
                     value: redact(param, &value),
                     reloadable: param.reload == Reload::Live,
                     secret: param.secret,
+                    description: param.about,
                 },
             ))
         })

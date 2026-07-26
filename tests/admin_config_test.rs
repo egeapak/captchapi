@@ -55,6 +55,41 @@ async fn test_get_config_returns_values_and_reloadability() {
 }
 
 #[tokio::test]
+async fn test_get_config_describes_every_parameter() {
+    // The console renders these, so a client never ships its own copy of the documentation
+    // and lets it drift from what the binary actually does.
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let config = body["config"].as_object().unwrap();
+
+    assert!(!config.is_empty());
+    for (field, entry) in config {
+        let description = entry["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} has no description"));
+        assert!(
+            description.ends_with('.'),
+            "{field}: expected a sentence, got {description:?}"
+        );
+    }
+
+    // Secrets are described too — the description says what the parameter is for, which is
+    // exactly what an operator needs when the value itself is redacted.
+    assert!(config["master_api_key"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("administrative access"));
+}
+
+#[tokio::test]
 async fn test_get_config_never_discloses_secrets() {
     // The master key holder can already act as an admin, but this endpoint exists to explain
     // the server's behaviour — not to read credentials back out of it.

@@ -46,20 +46,21 @@ three actions — written once per framework.
 | build | bytes | vs baseline |
 |-------|-------:|------------:|
 | baseline `captchapi` (rustc 1.94.1) | 3,930,328 | — |
-| **+ hand-written console** (`--features admin-ui`) | **3,952,472** | **+22,144 (+0.56%)** |
+| **+ hand-written console** (`--features admin-ui`) | **3,957,016** | **+26,688 (+0.68%)** |
 | baseline, rustc 1.95 (control) | 3,916,664 | −13,664 |
 | **+ Topcoat page**, rustc 1.95 | **5,750,808** | **+1,834,144 (+46.8%)** |
 
 The Topcoat row is measured against the 1.95 control, not the 1.94 baseline, so the
 compiler bump is not counted against it.
 
-Of the hand-written console's 22,144 bytes, 13,778 are the HTML and JS themselves and
-~8,400 are the Rust that serves them (three routes, the CSP headers). Gzipped — the proxy
-for what a registry stores and a `docker pull` moves — the binary grows 8,174 bytes.
+Of the hand-written console's 26,688 bytes, 14,266 are the HTML and JS themselves, ~2,400 are
+the per-parameter descriptions added to `PARAMS`, and the rest is the Rust that serves the page
+(three routes, the CSP headers). Gzipped — the proxy for what a registry stores and a
+`docker pull` moves — the binary grows 9,866 bytes.
 
 The assets were 7,952 bytes before a design pass added light/dark theming, a narrow-viewport
 layout, and visual separation between live, boot and secret fields. That is the honest price
-of the polish: +5,826 bytes of CSS and markup, still an order of magnitude under any
+of the polish: +6,314 bytes of CSS and markup, still an order of magnitude under any
 framework option below.
 
 Standalone probes, to separate framework cost from the tokio/hyper floor:
@@ -75,7 +76,7 @@ What lands in the binary, since assets are embedded:
 
 | stack | raw | gzipped |
 |-------|----:|--------:|
-| **hand-written, no dependencies** | **13,778** | **5,078** |
+| **hand-written, no dependencies** | **14,266** | **5,226** |
 | hand-written + water.css | 30,520 | 6,623 |
 | preact/compat SPA (Vite) | 21,533 | 8,702 |
 | hand-written + pico.css (classless) | 78,892 | 13,380 |
@@ -162,6 +163,18 @@ Add Tailwind for styling when that happens; it prices well.
   asserts the page ships no third-party script and no CDN reference.
 - **`include_bytes!`, not `ServeDir`.** The deployment target is a single static binary on
   distroless or scratch; files on disk would need staging and would add `tower-http/fs`.
+
+### Verifying the page itself
+
+`.playwright/admin-console.mjs` drives the console in a real browser: unlock, edit, apply,
+revert, reload, cleanup, lock, both themes, 420px. It exists because nothing else in the suite
+runs the page's JavaScript — the Rust tests cover the routes, headers and CSP, and Bruno covers
+the API the page calls, but neither catches the page and the server disagreeing. Its assertions
+check the server through a separate API call rather than reading the DOM back.
+
+It is not one of the five verification steps in `CLAUDE.md`, because it needs Node and a
+browser that the Rust and Bruno suites do not. Run it when changing `assets/admin/*` or the
+shape of `GET /api/v1/admin/config`.
 
 ### Not done in the prototype
 
