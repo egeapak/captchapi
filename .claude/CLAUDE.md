@@ -428,6 +428,29 @@ for six query shapes that touch none of it. `SQLITE_DQS=0` additionally
 rejects double-quoted string literals, so a mistyped identifier errors
 instead of silently becoming a string.
 
+**`.cargo/config.toml` is tracked on purpose, against a `.gitignore` rule that
+would otherwise swallow it.** napi-rs generates its own `.cargo/config.toml`
+when cross-compiling, so `.cargo/` is ignored; for a while that silently caught
+this hand-written file too, and because `git add -A` reports nothing for an
+ignored path, the trim above existed only on one developer's disk. Every clone,
+CI run and `cross` release build compiled the full amalgamation while this
+section claimed otherwise. Re-including one file from an ignored directory takes
+four lines, because git does not descend into an excluded directory and a lone
+negation cannot bring it back:
+
+```gitignore
+.cargo/                 # any .cargo dir, at any depth
+!/.cargo/               # except the root one, so git descends into it
+/.cargo/*               # but ignore what is inside it
+!/.cargo/config.toml    # except this file
+```
+
+Do not "simplify" those four lines. Verify with `git check-ignore -q <path>`
+(exit 0 means ignored) that the root config stays tracked while nested
+`bindings/*/.cargo/` stays ignored. Confirm the flags actually reach the build
+with `nm target/debug/captchapi | grep -c sqlite3_load_extension` — 0 with the
+config present, 1 without it.
+
 **Every workspace member must depend on sqlx with `sqlite-bundled`, never
 `sqlite`.** The latter enables sqlx's `sqlite-load-extension` feature, whose
 bindings reference `sqlite3_load_extension` — a symbol that does not exist in
@@ -635,6 +658,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-03-03
-**Version**: 1.0.0
+**Last Updated**: 2026-07-26
+**Version**: 1.0.1
 **Rust Edition**: 2021
