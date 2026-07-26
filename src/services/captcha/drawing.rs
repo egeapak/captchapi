@@ -82,6 +82,94 @@ pub fn hsl_to_rgb(hue: f32, saturation: f32, lightness: f32) -> Rgb<u8> {
     Rgb([to_byte(r), to_byte(g), to_byte(b)])
 }
 
+/// A colour in HSL, hue in turns — the space every colour in the renderer is
+/// drawn in.
+///
+/// Carried as HSL rather than converted straight to RGB so that a gradient can
+/// be interpolated in the space its endpoints were chosen in. Interpolating in
+/// RGB instead sags through grey whenever the two hues sit far apart on the
+/// wheel — red to cyan passes through `[128,128,128]` at the midpoint — which
+/// would drop the middle of a letter to roughly the lightness of the background
+/// it is meant to stand against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hsl {
+    pub hue: f32,
+    pub saturation: f32,
+    pub lightness: f32,
+}
+
+impl Hsl {
+    pub fn to_rgb(self) -> Rgb<u8> {
+        hsl_to_rgb(self.hue, self.saturation, self.lightness)
+    }
+
+    /// Interpolates towards `other`, taking the shorter way round the hue wheel.
+    ///
+    /// Hue is periodic, so the arithmetic difference is the wrong distance: from
+    /// 0.9 to 0.1 the short arc is `+0.2` through 1.0, not `-0.8` back across
+    /// the middle of the wheel. Going the long way would sweep a letter through
+    /// every hue between its two ends, which reads as a rainbow rather than a
+    /// gradient.
+    pub fn lerp(self, other: Hsl, t: f32) -> Hsl {
+        let t = t.clamp(0.0, 1.0);
+        let mut delta = (other.hue - self.hue).rem_euclid(1.0);
+        if delta > 0.5 {
+            delta -= 1.0;
+        }
+        Hsl {
+            hue: (self.hue + delta * t).rem_euclid(1.0),
+            saturation: self.saturation + (other.saturation - self.saturation) * t,
+            lightness: self.lightness + (other.lightness - self.lightness) * t,
+        }
+    }
+}
+
+/// A ramp from 0.0 to 1.0 across a rectangle, running along an arbitrary angle.
+///
+/// Shared by the opacity fade and the colour gradient so neither has to derive
+/// its own geometry, and so the two can be given deliberately different axes.
+#[derive(Clone, Copy, Debug)]
+pub struct LinearRamp {
+    cos: f32,
+    sin: f32,
+    origin: f32,
+    span: f32,
+}
+
+impl LinearRamp {
+    /// A ramp across a `width` x `height` box, along `angle` in radians.
+    ///
+    /// Anchored to the box's own extent rather than to a fixed distance, so the
+    /// whole range of the ramp lands on a letter of any size — a 25px glyph and
+    /// a 50px one both fade from end to end.
+    pub fn across(width: u32, height: u32, angle: f32) -> Self {
+        let (sin, cos) = angle.sin_cos();
+        let w = width.saturating_sub(1) as f32;
+        let h = height.saturating_sub(1) as f32;
+
+        // The extreme projections of an axis-aligned box fall on two opposite
+        // corners, which pair depending on the direction's signs. Taking the
+        // absolute value of each contribution picks them without enumerating
+        // the corners, and the negative parts give the lower one's projection.
+        Self {
+            cos,
+            sin,
+            origin: cos.min(0.0) * w + sin.min(0.0) * h,
+            span: cos.abs() * w + sin.abs() * h,
+        }
+    }
+
+    /// Position of `(x, y)` along the ramp, in `0.0..=1.0`.
+    pub fn at(&self, x: u32, y: u32) -> f32 {
+        if self.span <= 0.0 {
+            // A single pixel, or a mask one pixel wide along the ramp's axis:
+            // there is nowhere to ramp to, so it takes the near end.
+            return 0.0;
+        }
+        (((x as f32 * self.cos + y as f32 * self.sin) - self.origin) / self.span).clamp(0.0, 1.0)
+    }
+}
+
 /// `imageproc::pixelops::weighted_sum`, specialised to `Rgb<u8>`.
 fn weighted_sum(left: Rgb<u8>, right: Rgb<u8>, left_weight: f32, right_weight: f32) -> Rgb<u8> {
     let mut out = [0u8; 3];
@@ -435,6 +523,116 @@ impl GlyphMask {
             coverage,
         }
     }
+
+    /// Hollows the glyph out, leaving a stroke roughly `stroke` pixels wide
+    /// along its edge and nothing inside.
+    ///
+    /// The interior is eroded away rather than the edge traced: coverage minus
+    /// its own minimum over a disc of radius `stroke` leaves exactly the band
+    /// lying within `stroke` pixels of the outside. Two things fall out of that
+    /// which a traced contour would not give. The outer antialiased edge is
+    /// untouched, because out there the minimum is zero and the subtraction is a
+    /// no-op, so a hollow letter has the same smooth silhouette as a filled one.
+    /// And the new inner edge inherits a graded falloff from the coverage it was
+    /// subtracted from, instead of the hard 1-pixel jaggies a threshold would
+    /// leave.
+    ///
+    /// Erosion also handles the self-intersecting parts of a glyph correctly for
+    /// free: where two strokes of a `K` or an `X` meet, the join is interior, so
+    /// it opens up rather than being crossed by a seam.
+    ///
+    /// The stroke width is honoured to a fraction of a pixel by eroding with the
+    /// two integer discs it falls between and mixing the results. A single disc
+    /// of radius `stroke` would not: the set of integer offsets inside it only
+    /// changes at a handful of radii, so every width from 1.0 to 1.41 would give
+    /// the identical four-neighbour erosion and the caller's continuous range
+    /// would collapse onto four or five distinct outputs — an enumerable
+    /// property, and visibly a stepped one.
+    pub fn outline(&self, stroke: f32) -> GlyphMask {
+        if stroke <= 0.0 || self.width == 0 || self.height == 0 {
+            return self.clone();
+        }
+
+        // A disc reaching further than the mask is as wide as it can usefully
+        // be — it already finds an outside pixel from anywhere — so this caps
+        // the work without changing the result.
+        let stroke = stroke.min(self.width.max(self.height) as f32);
+        let inner = stroke.floor();
+        let blend = stroke - inner;
+        let inner_squared = inner * inner;
+        let outer_squared = (inner + 1.0) * (inner + 1.0);
+        let reach = inner as i32 + 1;
+
+        let mut coverage = vec![0.0f32; self.coverage.len()];
+
+        for y in 0..self.height as i32 {
+            for x in 0..self.width as i32 {
+                let here = self.at(x, y);
+                if here <= 0.0 {
+                    continue;
+                }
+
+                // Everything outside the buffer reads as zero coverage, which is
+                // what it is, so glyph edges flush against the border are still
+                // recognised as edges.
+                let mut min_inner = here;
+                let mut min_outer = here;
+                'disc: for dy in -reach..=reach {
+                    for dx in -reach..=reach {
+                        let distance_squared = (dx * dx + dy * dy) as f32;
+                        if distance_squared > outer_squared {
+                            continue;
+                        }
+                        let there = self.at(x + dx, y + dy);
+                        min_outer = min_outer.min(there);
+                        if distance_squared <= inner_squared {
+                            min_inner = min_inner.min(there);
+                            // The inner disc is contained in the outer one, so
+                            // an empty inner minimum makes both zero and the
+                            // mix below cannot move off `here`.
+                            if min_inner <= 0.0 {
+                                min_outer = 0.0;
+                                break 'disc;
+                            }
+                        }
+                    }
+                }
+
+                let interior = min_inner + (min_outer - min_inner) * blend;
+                coverage[(y as u32 * self.width + x as u32) as usize] = here - interior;
+            }
+        }
+
+        GlyphMask {
+            coverage,
+            ..self.clone()
+        }
+    }
+
+    /// Scales coverage by an opacity ramping from `from` to `to` along `angle`.
+    ///
+    /// Coverage *is* the blend weight [`composite_mask`] applies, so scaling it
+    /// is exactly a partial transparency — no alpha channel is needed, and none
+    /// exists on an `Rgb<u8>` canvas. A faded letter mixes with whatever the
+    /// canvas already holds, which under tight clustering means the letter
+    /// beneath it: two overlapping glyphs both stay visible through each other
+    /// rather than one simply winning.
+    ///
+    /// Consumes the mask because the scaling is per-pixel and independent, so
+    /// there is nothing to gain from a second buffer.
+    pub fn fade(mut self, from: f32, to: f32, angle: f32) -> GlyphMask {
+        let ramp = LinearRamp::across(self.width, self.height, angle);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let index = (y * self.width + x) as usize;
+                if self.coverage[index] <= 0.0 {
+                    continue;
+                }
+                self.coverage[index] *= from + (to - from) * ramp.at(x, y);
+            }
+        }
+        self
+    }
 }
 
 /// Rasterizes a single character into its own coverage buffer.
@@ -476,6 +674,45 @@ pub fn rasterize_char(font: &impl Font, ch: char, scale: PxScale) -> Option<Glyp
 /// straight from [`rasterize_char`] — `test_the_mask_path_matches_draw_text_mut`
 /// holds the two together.
 pub fn composite_mask(image: &mut RgbImage, mask: &GlyphMask, x: i32, y: i32, color: Rgb<u8>) {
+    composite_shaded(image, mask, x, y, |_, _| color)
+}
+
+/// Blends a coverage mask onto the canvas in a colour ramping from `near` to
+/// `far` along `angle`.
+///
+/// A letter painted in one flat colour is a gift to a solver: every pixel of it
+/// answers the same membership test, so finding one glyph pixel finds them all.
+/// Ramping the colour across each letter — independently per letter, in hue and
+/// lightness at once — means no single colour describes a glyph, and no
+/// threshold separates glyph from ground everywhere on the same glyph.
+///
+/// With both ends equal this is [`composite_mask`] exactly, which is what
+/// `test_a_gradient_with_equal_ends_is_a_flat_fill` holds it to; the flat path
+/// is the one the digests pin, so the gradient must reduce to it.
+pub fn composite_mask_gradient(
+    image: &mut RgbImage,
+    mask: &GlyphMask,
+    x: i32,
+    y: i32,
+    near: Hsl,
+    far: Hsl,
+    angle: f32,
+) {
+    let ramp = LinearRamp::across(mask.width, mask.height, angle);
+    composite_shaded(image, mask, x, y, |gx, gy| {
+        near.lerp(far, ramp.at(gx, gy)).to_rgb()
+    })
+}
+
+/// The shared body of the two composites: `color_at` is asked for the colour of
+/// each inked pixel, in mask coordinates.
+fn composite_shaded(
+    image: &mut RgbImage,
+    mask: &GlyphMask,
+    x: i32,
+    y: i32,
+    color_at: impl Fn(u32, u32) -> Rgb<u8>,
+) {
     let image_width = image.width() as i32;
     let image_height = image.height() as i32;
 
@@ -495,6 +732,7 @@ pub fn composite_mask(image: &mut RgbImage, mask: &GlyphMask, x: i32, y: i32, co
                 let (image_x, image_y) = (image_x as u32, image_y as u32);
                 let pixel = *image.get_pixel(image_x, image_y);
                 let gv = gv.clamp(0.0, 1.0);
+                let color = color_at(gx, gy);
                 image.put_pixel(image_x, image_y, weighted_sum(pixel, color, 1.0 - gv, gv));
             }
         }
@@ -807,6 +1045,325 @@ mod tests {
         assert!(
             shifts.iter().any(|s| *s > 1.0) && shifts.iter().any(|s| *s < -1.0),
             "a sine must displace rows both left and right; shifts were {shifts:?}"
+        );
+    }
+
+    /// Coverage strictly inside the glyph — pixels whose whole 4-neighbourhood
+    /// is fully inked, so they cannot belong to any edge band.
+    fn interior_ink(mask: &GlyphMask) -> f32 {
+        let mut total = 0.0;
+        for y in 0..mask.height as i32 {
+            for x in 0..mask.width as i32 {
+                let solid = |dx, dy| mask.at(x + dx, y + dy) >= 0.999;
+                if solid(0, 0) && solid(-1, 0) && solid(1, 0) && solid(0, -1) && solid(0, 1) {
+                    total += mask.at(x, y);
+                }
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn test_outline_empties_the_interior_and_keeps_the_silhouette() {
+        let filled = glyph();
+        let hollow = filled.outline(2.0);
+
+        // Same buffer, same offsets: hollowing must not move the letter, or the
+        // outline would not line up with what it replaced.
+        assert_eq!(
+            (hollow.width, hollow.height, hollow.left, hollow.top),
+            (filled.width, filled.height, filled.left, filled.top)
+        );
+
+        assert!(
+            interior_ink(&filled) > 100.0,
+            "a 50px bold K should have a solid interior to hollow out"
+        );
+        assert!(
+            interior_ink(&hollow) < interior_ink(&filled) * 0.02,
+            "the interior should be gone: {} left of {}",
+            interior_ink(&hollow),
+            interior_ink(&filled)
+        );
+
+        // The outer edge is untouched: out there the erosion minimum is zero, so
+        // the subtraction is a no-op and the antialiasing survives intact.
+        let mut checked = 0;
+        for y in 0..filled.height as i32 {
+            for x in 0..filled.width as i32 {
+                let here = filled.at(x, y);
+                let touches_outside = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                    .iter()
+                    .any(|(dx, dy)| filled.at(x + dx, y + dy) <= 0.0);
+                if here > 0.0 && touches_outside {
+                    assert!(
+                        (hollow.at(x, y) - here).abs() < 1e-6,
+                        "outline changed the silhouette at ({x},{y}): {here} -> {}",
+                        hollow.at(x, y)
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 20, "only {checked} boundary pixels were examined");
+    }
+
+    #[test]
+    fn test_a_thicker_stroke_leaves_more_ink_and_zero_leaves_the_glyph_alone() {
+        let filled = glyph();
+        assert_eq!(
+            ink(&filled.outline(0.0)),
+            ink(&filled),
+            "a zero stroke must not hollow anything"
+        );
+        assert_eq!(ink(&filled.outline(-1.0)), ink(&filled));
+
+        // Steps of a quarter pixel, which only a subpixel erosion can tell
+        // apart: a single integer disc gives the same output across each whole
+        // pixel of stroke width.
+        let inks: Vec<f32> = [1.0f32, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0]
+            .iter()
+            .map(|stroke| ink(&filled.outline(*stroke)))
+            .collect();
+
+        for pair in inks.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "a thicker stroke should keep more ink: {inks:?}"
+            );
+        }
+        assert!(
+            *inks.last().unwrap() < ink(&filled),
+            "even the thickest stroke tested should still be hollow: \
+             {inks:?} against {}",
+            ink(&filled)
+        );
+    }
+
+    /// A stroke wider than the glyph has nothing left to erode, so it degenerates
+    /// to the filled letter rather than to something empty or panicking.
+    #[test]
+    fn test_an_absurdly_thick_stroke_degenerates_to_a_filled_glyph() {
+        let filled = glyph();
+        let hollow = filled.outline(500.0);
+        assert!((ink(&hollow) - ink(&filled)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_fade_scales_coverage_uniformly_when_both_ends_agree() {
+        let original = glyph();
+        let faded = original.clone().fade(0.5, 0.5, 1.234);
+
+        for y in 0..original.height as i32 {
+            for x in 0..original.width as i32 {
+                assert!(
+                    (faded.at(x, y) - original.at(x, y) * 0.5).abs() < 1e-6,
+                    "coverage at ({x},{y}) was not halved"
+                );
+            }
+        }
+        // Full opacity is exactly identity, not merely close — nothing is
+        // resampled, so the multiply by 1.0 is lossless.
+        assert_eq!(
+            original.clone().fade(1.0, 1.0, 0.0).coverage,
+            original.coverage
+        );
+    }
+
+    #[test]
+    fn test_fade_ramps_along_its_axis_without_moving_the_glyph() {
+        let original = glyph();
+        // Angle 0 runs left to right: solid at the left edge, gone at the right.
+        let faded = original.clone().fade(1.0, 0.0, 0.0);
+
+        assert_eq!(
+            (faded.width, faded.height, faded.left, faded.top),
+            (original.width, original.height, original.left, original.top),
+            "a fade changes opacity, never geometry"
+        );
+
+        let column_ink = |mask: &GlyphMask, x: i32| -> f32 {
+            (0..mask.height as i32).map(|y| mask.at(x, y)).sum()
+        };
+        let width = original.width as i32;
+        let left_ratio = column_ink(&faded, 1) / column_ink(&original, 1).max(1e-6);
+        let right_ratio =
+            column_ink(&faded, width - 2) / column_ink(&original, width - 2).max(1e-6);
+
+        assert!(
+            left_ratio > 0.9,
+            "the near end should stay opaque, kept {left_ratio}"
+        );
+        assert!(
+            right_ratio < 0.1,
+            "the far end should fade out, kept {right_ratio}"
+        );
+
+        // A vertical axis must ramp the other way round, or the angle is ignored.
+        let down = original.clone().fade(1.0, 0.0, std::f32::consts::FRAC_PI_2);
+        let row_ink = |mask: &GlyphMask, y: i32| -> f32 {
+            (0..mask.width as i32).map(|x| mask.at(x, y)).sum()
+        };
+        let height = original.height as i32;
+        assert!(
+            row_ink(&down, 1) / row_ink(&original, 1).max(1e-6) > 0.9
+                && row_ink(&down, height - 2) / row_ink(&original, height - 2).max(1e-6) < 0.1,
+            "a vertical fade should run top to bottom"
+        );
+    }
+
+    #[test]
+    fn test_linear_ramp_spans_zero_to_one_along_its_angle() {
+        let ramp = LinearRamp::across(11, 21, 0.0);
+        assert_eq!(ramp.at(0, 0), 0.0);
+        assert_eq!(ramp.at(10, 0), 1.0);
+        assert_eq!(ramp.at(10, 20), 1.0, "angle 0 must ignore y");
+        assert!((ramp.at(5, 7) - 0.5).abs() < 1e-6);
+
+        let reversed = LinearRamp::across(11, 21, std::f32::consts::PI);
+        assert!((reversed.at(0, 0) - 1.0).abs() < 1e-5);
+        assert!(reversed.at(10, 0) < 1e-5);
+
+        let down = LinearRamp::across(11, 21, std::f32::consts::FRAC_PI_2);
+        assert!(down.at(0, 0) < 1e-5 && (down.at(0, 20) - 1.0).abs() < 1e-5);
+
+        // Diagonals reach both ends at opposite corners.
+        let diagonal = LinearRamp::across(11, 21, std::f32::consts::FRAC_PI_4);
+        assert!(diagonal.at(0, 0) < 1e-5);
+        assert!((diagonal.at(10, 20) - 1.0).abs() < 1e-5);
+
+        // Degenerate boxes have nowhere to ramp to and must not divide by zero.
+        for (w, h) in [(1, 1), (1, 40), (40, 1), (0, 0)] {
+            let flat = LinearRamp::across(w, h, 0.0);
+            assert!(flat.at(0, 0).is_finite());
+        }
+        assert_eq!(LinearRamp::across(1, 40, 0.0).at(0, 39), 0.0);
+    }
+
+    #[test]
+    fn test_hsl_lerp_takes_the_short_way_round_the_wheel() {
+        let red = Hsl {
+            hue: 0.95,
+            saturation: 0.8,
+            lightness: 0.4,
+        };
+        let orange = Hsl {
+            hue: 0.05,
+            saturation: 0.8,
+            lightness: 0.6,
+        };
+
+        // The short arc from 0.95 to 0.05 runs forward through 1.0/0.0, so the
+        // midpoint is 0.0 — not 0.5, which is where the long way round lands.
+        let middle = red.lerp(orange, 0.5);
+        assert!(
+            middle.hue < 0.01 || middle.hue > 0.99,
+            "midpoint hue {} took the long way round",
+            middle.hue
+        );
+        assert!((middle.lightness - 0.5).abs() < 1e-6);
+
+        // The near end is exactly the colour that was drawn for the letter, and
+        // the far end lands on its target — the hue to within the rounding of
+        // going out and back through `rem_euclid`.
+        assert_eq!(red.lerp(orange, 0.0), red);
+        assert!((red.lerp(orange, 1.0).hue - orange.hue).abs() < 1e-6);
+
+        // t clamps rather than extrapolating past either end.
+        assert_eq!(red.lerp(orange, -5.0), red);
+        assert_eq!(red.lerp(orange, 5.0).lightness, orange.lightness);
+    }
+
+    #[test]
+    fn test_a_gradient_with_equal_ends_is_a_flat_fill() {
+        let color = Hsl {
+            hue: 0.61,
+            saturation: 0.8,
+            lightness: 0.42,
+        };
+        let mask = glyph();
+
+        let mut flat = canvas();
+        let mut graded = canvas();
+        composite_mask(&mut flat, &mask, 20, 30, color.to_rgb());
+        composite_mask_gradient(&mut graded, &mask, 20, 30, color, color, 0.7);
+
+        assert_eq!(
+            flat, graded,
+            "with both ends equal the gradient must reduce to the pinned flat path"
+        );
+    }
+
+    #[test]
+    fn test_a_gradient_paints_the_two_ends_in_different_colours() {
+        let near = Hsl {
+            hue: 0.0,
+            saturation: 0.9,
+            lightness: 0.4,
+        };
+        let far = Hsl {
+            hue: 0.45,
+            saturation: 0.9,
+            lightness: 0.4,
+        };
+        let mask = glyph();
+
+        let mut image = RgbImage::from_pixel(120, 120, Rgb([224, 238, 253]));
+        composite_mask_gradient(&mut image, &mask, 30, 30, near, far, 0.0);
+
+        // Solidly inked pixels only, so antialiasing against the background
+        // cannot be mistaken for the gradient.
+        let solid: Vec<(u32, Rgb<u8>)> = (0..mask.height)
+            .flat_map(|gy| (0..mask.width).map(move |gx| (gx, gy)))
+            .filter(|(gx, gy)| mask.coverage[(gy * mask.width + gx) as usize] >= 0.999)
+            .map(|(gx, gy)| {
+                (
+                    gx,
+                    *image.get_pixel(
+                        (gx as i32 + 30 + mask.left) as u32,
+                        (gy as i32 + 30 + mask.top) as u32,
+                    ),
+                )
+            })
+            .collect();
+        assert!(solid.len() > 100, "not enough solid pixels to judge");
+
+        // Each end of the letter should resemble its own end of the gradient.
+        // Compared by distance rather than equality because the leftmost and
+        // rightmost *solid* pixels sit a little inside the mask's bounding box,
+        // where the ramp has not quite reached 0.0 or 1.0.
+        let distance = |a: Rgb<u8>, b: Rgb<u8>| -> i32 {
+            a.0.iter()
+                .zip(b.0)
+                .map(|(l, r)| (i32::from(*l) - i32::from(r)).abs())
+                .sum()
+        };
+        let leftmost = solid.iter().min_by_key(|(gx, _)| *gx).unwrap().1;
+        let rightmost = solid.iter().max_by_key(|(gx, _)| *gx).unwrap().1;
+        assert!(
+            distance(leftmost, near.to_rgb()) < distance(leftmost, far.to_rgb()),
+            "the left of the letter should be the near colour: {leftmost:?}"
+        );
+        assert!(
+            distance(rightmost, far.to_rgb()) < distance(rightmost, near.to_rgb()),
+            "the right of the letter should be the far colour: {rightmost:?}"
+        );
+
+        // The flat path is one colour over the whole interior; the gradient must
+        // not be, and that is the property that stops a single membership test
+        // from finding every pixel of a letter.
+        let mut counts = std::collections::HashMap::new();
+        for (_, pixel) in &solid {
+            *counts.entry(pixel.0).or_insert(0usize) += 1;
+        }
+        assert!(
+            counts.len() > 10,
+            "a gradient should paint many distinct colours, got {}",
+            counts.len()
+        );
+        assert!(
+            *counts.values().max().unwrap() < solid.len() / 3,
+            "no single colour should dominate a gradient"
         );
     }
 

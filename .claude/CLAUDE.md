@@ -359,8 +359,19 @@ cargo nextest run
    That is not hypothetical — it is how a vision model attacked these images in testing before
    template-matching against the bundled font. Only lightness and saturation are bounded, and only
    enough to keep glyphs legible. Do not reintroduce a fixed palette for the sake of consistent
-   branding.
-8. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
+   branding. The same rule extends past colour: a letter is no longer described by *one* colour
+   either, since `gradient` ramps hue and lightness across it, and `outline` means "filled" is not
+   a property a solver can assume. Outline stroke widths are drawn from a continuous range and the
+   erosion is subpixel precisely so that they do not collapse onto a handful of enumerable values.
+8. **Deformations are per-letter and mutually independent.** Eight of them — jitter, scale, skew,
+   wave, clustering, outline, transparency, gradient — all ramp linearly with difficulty from
+   nothing at level 1 to full at level 10, and each is drawn separately for every letter, so no
+   single rule describes a whole solution. The legibility floors are load-bearing and were set by
+   measurement, not taste: `MIN_OPACITY` is what survives difficulty-10 gaussian noise, and
+   `MIN_OUTLINE_OPACITY` is higher because a hollow letter has an order of magnitude less ink to
+   lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
+   nothing a machine finds harder.
+9. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
    An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
    compression artifacts costing a frontier vision model a full solve, but that was on the
    renderer *before* hue randomisation and clustering, and it no longer reproduces. Re-measured on
@@ -371,7 +382,7 @@ cargo nextest run
    marginal factor. Keep 40 for bandwidth and storage. Do not raise it expecting harm, or lower it
    expecting benefit, without measuring at a difficulty where solve rates are non-zero — the
    difficulty-10 test floors every model regardless of quality, so it cannot detect an effect.
-9. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
+10. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
 ### Best Practices
