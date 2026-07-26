@@ -105,6 +105,11 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
             admin_routes(admin_state, master_middleware_admin),
         );
 
+    // The console is the page that *asks* for the master key, so it sits outside the
+    // master-key middleware. It carries no data of its own.
+    #[cfg(feature = "admin-ui")]
+    let base_router = base_router.merge(crate::routes::admin_ui_routes());
+
     // Build router with rate limiting, using appropriate key extractor based on config
     let (router, governor_limiter): (Router, Arc<DefaultKeyedRateLimiter<IpAddr>>) =
         if rate_limiter_config.reverse_proxy {

@@ -90,6 +90,10 @@ chacha20poly1305 = { version = "0.11.0", default-features = false, features = [
 
 [features]
 default = []
+# Embed the admin console (a static HTML/CSS/JS page) in the binary and serve it
+# at /admin. Off by default: it is dead weight for anyone driving the admin API
+# from curl or a config file, and this binary is optimised for size.
+admin-ui = []
 # Compile in the OpenTelemetry OTLP exporter. Traces are still gated at
 # runtime by OTEL_ENABLED; this only controls whether the exporter exists.
 otel = [
