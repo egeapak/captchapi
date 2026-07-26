@@ -3,16 +3,21 @@
 //! Derived from the `captcha-rs` crate (v0.5.0), MIT licensed,
 //! Copyright (c) 2022 Samir Djelal — see THIRD_PARTY_LICENSES.
 //!
-//! Vendored so that CaptchAPI controls the `image`/`imageproc` feature set.
-//! Upstream pulls in `image/default`, which drags every codec (AVIF, EXR,
-//! TIFF, PNG, WebP, ...) into the build even though only JPEG is used.
-//! Upstream also embeds a proprietary Monotype Arial; this port uses a subset
-//! of Roboto Bold (SIL OFL 1.1, no Reserved Font Name).
+//! Vendored so that CaptchAPI controls the `image` feature set. Upstream pulls
+//! in `image/default`, which drags every codec (AVIF, EXR, TIFF, PNG, WebP,
+//! ...) into the build even though only JPEG is used. Upstream also embeds a
+//! proprietary Monotype Arial; this port uses a subset of Roboto Bold
+//! (SIL OFL 1.1, no Reserved Font Name).
+//!
+//! The drawing and noise routines this calls are vendored too, in
+//! [`super::drawing`] — `imageproc` is no longer a dependency at all.
 
+use super::drawing::{
+    draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, draw_text_mut, gaussian_noise_mut,
+    salt_and_pepper_noise_mut,
+};
 use ab_glyph::FontArc;
 use image::{DynamicImage, ImageBuffer, Rgb};
-use imageproc::drawing::{draw_cubic_bezier_curve_mut, draw_hollow_ellipse_mut, draw_text_mut};
-use imageproc::noise::{gaussian_noise_mut, salt_and_pepper_noise_mut};
 use rand::{rng, RngExt};
 use std::sync::OnceLock;
 
@@ -166,7 +171,11 @@ fn draw_interference_line(image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, dark_mode: 
     );
 }
 
-/// Scatter hollow ellipses over the image.
+/// Scatter hollow circles over the image.
+///
+/// Upstream asked for ellipses, but always with equal radii — which
+/// `imageproc` dispatched straight to its circle routine — so this calls the
+/// circle path directly. The name is kept for continuity with `captcha-rs`.
 fn draw_interference_ellipses(
     count: usize,
     image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
@@ -179,7 +188,7 @@ fn draw_interference_ellipses(
         let radius = (10 + get_rnd(5)) as i32;
         let x = get_rnd((image.width() - 25) as usize) as i32;
         let y = get_rnd((image.height() - 15) as usize) as i32;
-        draw_hollow_ellipse_mut(image, (x, y), radius, radius, get_color(dark_mode));
+        draw_hollow_circle_mut(image, (x, y), radius, get_color(dark_mode));
     }
 }
 

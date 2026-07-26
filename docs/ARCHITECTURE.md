@@ -8,7 +8,7 @@
 | Web Framework | Axum | 0.8 |
 | Async Runtime | Tokio | 1.x |
 | Database | SQLite via SQLx | 0.8 |
-| CAPTCHA Generation | In-tree renderer on image + imageproc (JPEG/text only) | - |
+| CAPTCHA Generation | In-tree renderer and drawing primitives on image (JPEG only) | - |
 | Authentication | SHA256 + salt | - |
 | Telemetry | OpenTelemetry + tracing | 0.27 |
 | Rate Limiting | tower_governor (GCRA) | 0.8 |

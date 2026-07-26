@@ -17,7 +17,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Language**: Rust (Edition 2021)
 - **Web Framework**: Axum 0.8 (async-first, built on Tokio)
 - **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
-- **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) on image + imageproc, JPEG/text features only
+- **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) with in-tree drawing primitives (`drawing.rs`), on `image` with the JPEG feature only
 - **Authentication**: API key-based with SHA256 hashing
 - **Deployment**: Static musl binary in distroless container (8.49 MB unpacked / 3.36 MB compressed)
 
@@ -69,7 +69,8 @@ captchapi/
     │   ├── mod.rs
     │   ├── captcha/             # CAPTCHA generation
     │   │   ├── mod.rs           # CaptchaService (JPEG encoding)
-    │   │   └── generator.rs     # In-tree renderer (vendored from captcha-rs)
+    │   │   ├── generator.rs     # In-tree renderer (vendored from captcha-rs)
+    │   │   └── drawing.rs       # In-tree drawing/noise (vendored from imageproc)
     │   ├── auth.rs              # API key hashing
     │   ├── storage.rs           # Database operations
     │   ├── session_ops.rs       # Session orchestration
@@ -371,11 +372,11 @@ axum = "0.8"                    # Web framework
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
 
-# CAPTCHA rendering. Deliberately minimal features: only JPEG is encoded and
-# only text/shape drawing is used. `image`'s defaults would add every codec
-# (AVIF, EXR, TIFF, PNG, WebP, ...) and ~58 transitive crates.
+# CAPTCHA rendering. Deliberately minimal features: only JPEG is encoded.
+# `image`'s defaults would add every codec (AVIF, EXR, TIFF, PNG, WebP, ...)
+# and ~76 transitive crates. The drawing and noise routines are vendored in
+# `src/services/captcha/drawing.rs`, so there is no `imageproc` dependency.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-imageproc = { version = "0.26", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
 
 serde = { version = "1", features = ["derive"] }
@@ -460,8 +461,10 @@ entire build with `undefined symbol: sqlite3_load_extension`.
 
 ### Vendored CAPTCHA Renderer
 
-`src/services/captcha/generator.rs` is vendored from `captcha-rs` v0.5.0 (MIT)
-rather than used as a dependency, for two reasons:
+Two files are vendored rather than depended on. Both exist because a crate in
+the chain forces feature or dependency choices this project cannot override.
+
+**`src/services/captcha/generator.rs`** — from `captcha-rs` v0.5.0 (MIT):
 
 1. Upstream depends on `imageproc` with default features, whose `default`
    list includes `image/default`. Because Cargo features are additive, that
@@ -470,8 +473,30 @@ rather than used as a dependency, for two reasons:
 2. Upstream embeds Monotype Arial, whose license forbids redistribution. The
    renderer uses Roboto Bold (SIL OFL 1.1) instead.
 
-Attribution for both lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep them
-in sync when touching the renderer or the bundled font.
+**`src/services/captcha/drawing.rs`** — from `imageproc` v0.26.2 (MIT): the
+text, Bézier, line, circle and noise routines, specialised to `RgbImage`.
+`imageproc` declares `nalgebra` non-optionally, with no feature to switch it
+off, so depending on it meant carrying `simba`, `paste` (RUSTSEC-2024-0436,
+unmaintained), `matrixmultiply`, `num-complex`, `approx`, `safe_arch`,
+`typenum`, `wide`, `rawpointer` and a second major version of `rand` (via
+`rand_distr`) — 29 crates, none reachable from the six functions used.
+
+Specialising to `RgbImage` is behaviour-preserving rather than approximate:
+upstream's blanket `impl<I: GenericImage> Canvas for I` defines `draw_pixel`
+as `put_pixel`, and the renderer never used the `Blend` wrapper that makes the
+trait interesting. Only the noise generators diverge, and only in their RNG —
+they sample Box-Muller from `rand` 0.10 instead of `rand_distr` over `rand`
+0.9. Seeds are drawn freshly per CAPTCHA, so no output was ever reproducible
+across calls and nothing observable changed.
+
+**The geometry is pinned by digests** in `drawing.rs`'s tests, captured while
+the port still ran side by side with `imageproc` under a differential test
+asserting byte-identical buffers. Those digests are the only remaining record
+of upstream's behaviour — the comparison cannot be re-run once the dependency
+is gone, so treat a digest change as a regression until proven otherwise.
+
+Attribution for all of it lives in `THIRD_PARTY_LICENSES` and `NOTICE`. Keep
+them in sync when touching either renderer or the bundled font.
 
 ### Embedded Font
 

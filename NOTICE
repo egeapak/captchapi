@@ -21,6 +21,9 @@ See THIRD_PARTY_LICENSES for complete license information.
 This product includes CAPTCHA rendering code derived from captcha-rs,
 Copyright (c) 2022 Samir Djelal, licensed under the MIT License.
 
+This product includes drawing and noise routines derived from imageproc,
+Copyright (c) 2015 PistonDevelopers, licensed under the MIT License.
+
 This product embeds a modified version of the Roboto Bold font,
 Copyright 2011 The Roboto Project Authors, licensed under the SIL Open
 Font License, Version 1.1. The font has been subset to the characters

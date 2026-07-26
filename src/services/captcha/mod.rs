@@ -1,3 +1,4 @@
+mod drawing;
 mod generator;
 
 use crate::error::Result;

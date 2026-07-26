@@ -33,11 +33,14 @@ governor = "0.10"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite-bundled", "migrate"] }
 
 # CAPTCHA generation
-# Kept to the minimum feature set: only JPEG is encoded and only text/shape
-# drawing is used. Pulling `image`'s defaults would add every codec
-# (AVIF, EXR, TIFF, PNG, WebP, ...) and ~76 transitive crates.
+# Kept to the minimum feature set: only JPEG is encoded. Pulling `image`'s
+# defaults would add every codec (AVIF, EXR, TIFF, PNG, WebP, ...) and ~76
+# transitive crates.
+#
+# The drawing and noise routines are vendored in services/captcha/drawing.rs
+# rather than taken from `imageproc`, which declares `nalgebra` with no feature
+# to switch it off — see that module and CLAUDE.md.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
-imageproc = { version = "0.26", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
 
 # Serialization
