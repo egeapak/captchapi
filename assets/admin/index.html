@@ -1,73 +1,181 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <title>CaptchAPI admin</title>
 <style>
-:root{color-scheme:dark;--bg:#14161a;--panel:#1b1e24;--line:#2b3038;--fg:#e6e8ec;--dim:#8b93a1;--accent:#5b9dd9;--warn:#d98b5b;--ok:#6bbf7b;--err:#d96b6b}
+:root{
+color-scheme:light dark;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,system-ui,sans-serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+--bg:#f3f5f9;--glow:#e5e9f5;--panel:#fff;--field:#fff;--sunk:#f7f8fb;
+--line:#e0e4ec;--hair:#eef0f5;--fg:#161a22;--dim:#5f6878;--faint:#98a0b0;
+--accent:#4a5fd0;--on-accent:#fff;--accent-soft:#eceffd;
+--ok:#0e7a4d;--ok-soft:#e6f4ec;--warn:#8a5300;--warn-soft:#fbf0dc;--err:#b32318;--err-soft:#fdeceb;
+--ring:rgba(74,95,208,.28);
+--shadow:0 1px 2px rgba(16,20,35,.05),0 10px 28px -14px rgba(16,20,35,.25)
+}
+@media (prefers-color-scheme:dark){:root{
+--bg:#0c0e13;--glow:#151a26;--panel:#141821;--field:#0e121a;--sunk:#171c26;
+--line:#252b38;--hair:#1d222d;--fg:#e6eaf2;--dim:#909aab;--faint:#69727f;
+--accent:#8098ff;--on-accent:#0a0d16;--accent-soft:#1a2138;
+--ok:#4fcb92;--ok-soft:#10251d;--warn:#e0b163;--warn-soft:#282013;--err:#f2867d;--err-soft:#2a1618;
+--ring:rgba(128,152,255,.3);
+--shadow:0 1px 2px rgba(0,0,0,.5),0 14px 34px -18px #000
+}}
 *{box-sizing:border-box}
-body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-main{max-width:60rem;margin:0 auto}
-h1{font-size:1.3rem;margin:0 0 .25rem}
-.sub{color:var(--dim);font-size:.85rem;margin:0 0 1.5rem}
-fieldset{border:0;padding:0;margin:0}
-label{display:block;font-size:.8rem;color:var(--dim);margin-bottom:.3rem}
-input,button{font:inherit;color:inherit;border-radius:6px;border:1px solid var(--line)}
-input{background:#0f1115;padding:.45rem .6rem;width:100%}
-input:focus{outline:2px solid var(--accent);outline-offset:-1px}
-input:disabled{color:var(--dim);background:#171a1f}
-button{background:var(--panel);padding:.45rem .9rem;cursor:pointer}
-button:hover:not(:disabled){border-color:var(--accent)}
-button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:var(--accent);border-color:var(--accent);color:#0b0d10;font-weight:600}
-table{width:100%;border-collapse:collapse;margin:1rem 0}
-th{text-align:left;font-size:.75rem;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);padding:.4rem .5rem;border-bottom:1px solid var(--line)}
-td{padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:middle}
-td.k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.85rem;white-space:nowrap}
-td.v{width:40%}
-.tag{font-size:.7rem;padding:.1rem .4rem;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
-.tag.live{color:var(--ok);border-color:#2f5136}
-.tag.dirty{color:var(--warn);border-color:#5a4229}
-.bar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+body{margin:0;padding:2.5rem 1.25rem;min-height:100vh;background:var(--bg);
+background-image:radial-gradient(48rem 22rem at 50% -6rem,var(--glow),transparent 70%);
+color:var(--fg);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+main{max-width:58rem;margin:0 auto}
+body.gated main{max-width:25rem;display:flex;flex-direction:column;justify-content:center;min-height:calc(100vh - 5rem)}
+h1{font-size:1rem;font-weight:600;letter-spacing:-.01em;margin:0}
+p{margin:0}
+.sub{color:var(--dim);font-size:.8rem}
+
+/* header */
+.top{display:flex;align-items:center;gap:.7rem;margin:0 0 1.5rem}
+.mark{flex:none;width:2.1rem;height:2.1rem;border-radius:.6rem;display:grid;place-items:center;
+color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--line)}
+body.gated .top{flex-direction:column;text-align:center;gap:.85rem;margin-bottom:1.25rem}
+body.gated .mark{width:2.6rem;height:2.6rem;border-radius:.85rem}
+
+/* controls */
+input{font:inherit;color:inherit;width:100%;background:var(--field);border:1px solid var(--line);
+border-radius:8px;padding:.5rem .65rem;transition:border-color .15s,box-shadow .15s}
+input:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+button{font:600 .84rem/1.4 var(--sans);color:var(--fg);background:var(--panel);border:1px solid var(--line);
+border-radius:8px;padding:.48rem .8rem;cursor:pointer;transition:.15s}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:focus-visible{outline:0;box-shadow:0 0 0 3px var(--ring)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.primary:hover:not(:disabled){color:var(--on-accent);filter:brightness(1.08)}
+.lab{display:block;font:600 .7rem/1 var(--sans);letter-spacing:.07em;text-transform:uppercase;
+color:var(--dim);margin:0 0 .45rem}
+
+/* gate */
+.gate{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.5rem;box-shadow:var(--shadow)}
+.gate h2{font-size:.95rem;font-weight:600;margin:0 0 .3rem}
+.gate .sub{margin-bottom:1.25rem}
+.gate button{width:100%;margin-top:.9rem;padding:.6rem}
+.foot{display:flex;gap:.45rem;align-items:center;justify-content:center;margin-top:1rem;
+font-size:.75rem;color:var(--faint)}
+
+/* status */
+.msg{display:none;gap:.55rem;align-items:baseline;font-size:.85rem;margin:0 0 1rem;padding:.65rem .85rem;
+border:1px solid var(--line);border-left:3px solid var(--faint);border-radius:10px;
+background:var(--panel);color:var(--dim);overflow-wrap:anywhere}
+.msg.on{display:flex}
+.msg::before{content:"";flex:none;width:.4rem;height:.4rem;border-radius:50%;background:currentColor;transform:translateY(-.15rem)}
+.msg.ok{color:var(--ok);border-color:var(--line);border-left-color:var(--ok);background:var(--ok-soft)}
+.msg.err{color:var(--err);border-color:var(--line);border-left-color:var(--err);background:var(--err-soft)}
+
+/* legend + table */
+.legend{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .5rem;font-size:.78rem;color:var(--dim);margin:0 0 .85rem}
+.legend b{font-weight:400;margin-right:.5rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font:600 .68rem/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+text-align:left;padding:.65rem .9rem;background:var(--sunk);border-bottom:1px solid var(--line)}
+th:first-child{width:33%}
+th:nth-child(2){width:45%}
+th:last-child{text-align:right}
+td{padding:.2rem .9rem;border-bottom:1px solid var(--hair);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tr.live:hover td{background:var(--sunk)}
+td.k{font:.79rem/1.4 var(--mono);letter-spacing:-.01em;white-space:nowrap;color:var(--dim);
+border-left:2px solid transparent}
+tr.live td.k{color:var(--fg);border-left-color:var(--accent)}
+tr.dirty td.k{border-left-color:var(--warn)}
+td.v{padding-left:.3rem}
+td.v input{font-family:var(--mono);font-size:.79rem;text-overflow:ellipsis}
+td.s{text-align:right;white-space:nowrap}
+input:disabled{background:0 0;border-color:transparent;color:var(--dim);cursor:default}
+tr.secret input{color:var(--faint)}
+input::placeholder{color:var(--faint);opacity:.5}
+tr.dirty td.v input{border-color:var(--warn)}
+
+/* tags */
+.tag{display:inline-flex;align-items:center;gap:.35rem;font:600 .66rem/1 var(--sans);letter-spacing:.06em;
+text-transform:uppercase;padding:.3rem .5rem;border-radius:999px;border:1px solid transparent;
+color:var(--faint);background:var(--sunk)}
+.tag::before{content:"";width:.36rem;height:.36rem;border-radius:50%;background:currentColor}
+.tag.live{color:var(--ok);background:var(--ok-soft)}
+.tag.dirty{color:var(--warn);background:var(--warn-soft)}
+.tag.secret{color:var(--faint);background:0 0;border-color:var(--line);border-style:dashed}
+
+/* action bar */
+.bar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1.1rem}
 .bar .spacer{flex:1}
-.msg{padding:.5rem .75rem;border-radius:6px;border:1px solid var(--line);margin:1rem 0;font-size:.9rem;display:none}
-.msg.on{display:block}
-.msg.err{color:var(--err);border-color:#5a2f2f}
-.msg.ok{color:var(--ok);border-color:#2f5136}
-.gate{max-width:24rem;margin:4rem auto;background:var(--panel);padding:1.5rem;border:1px solid var(--line);border-radius:10px}
+#pend{display:none;font-size:.78rem;font-weight:600;color:var(--warn);padding-left:.15rem}
+.bar.dirty #pend{display:inline}
+.note{margin-top:1.1rem;font-size:.78rem;color:var(--dim);overflow-wrap:anywhere}
 .hide{display:none}
+
+@media (max-width:40rem){
+body{padding:1.5rem 1rem}
+thead{display:none}
+table,tbody,td{display:block}
+tr{display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;align-items:center;
+padding:.6rem .85rem;border-bottom:1px solid var(--hair);border-left:2px solid transparent}
+tr.live{border-left-color:var(--accent)}
+tr.dirty{border-left-color:var(--warn)}
+td{padding:0;border:0}
+td.k{grid-area:1/1;border-left:0;white-space:normal;overflow-wrap:anywhere}
+td.s{grid-area:1/2}
+td.v{grid-area:2/1/3/3;width:auto;padding:0}
+td.v input{padding:.35rem .5rem;margin-top:.3rem}
+.bar button{flex:1 1 auto}
+}
 </style>
 </head>
-<body>
+<body class="gated">
 <main>
-  <h1>CaptchAPI admin</h1>
-  <p class="sub">Runtime configuration. Live fields apply immediately; boot fields need a restart.</p>
+  <header class="top">
+    <span class="mark" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l7 2.8v5.6c0 4.3-2.9 7.7-7 9.2-4.1-1.5-7-4.9-7-9.2V6z"/><path d="m9.2 12.1 2 2 3.8-4"/></svg></span>
+    <div>
+      <h1>CaptchAPI</h1>
+      <p class="sub">Runtime configuration console</p>
+    </div>
+  </header>
 
   <div id="msg" class="msg"></div>
 
   <form id="gate" class="gate">
-    <label for="key">Master API key</label>
-    <input id="key" type="password" autocomplete="current-password" required>
-    <p class="sub" style="margin:.75rem 0 0">Held in memory for this tab only.</p>
-    <button class="primary" style="margin-top:.75rem;width:100%">Unlock</button>
+    <h2>Administrator access</h2>
+    <p class="sub">Enter the master key to inspect and adjust the running configuration.</p>
+    <label class="lab" for="key">Master API key</label>
+    <input id="key" type="password" autocomplete="current-password" placeholder="••••••••••••••••" autofocus required>
+    <button class="primary">Unlock</button>
+    <p class="foot"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Held in memory for this tab only — never stored.</p>
   </form>
 
   <section id="panel" class="hide">
-    <table>
-      <thead><tr><th>Field</th><th>Value</th><th>Scope</th></tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div class="bar">
+    <p class="legend">
+      <b>Scope</b>
+      <span class="tag live">live</span> applies at once
+      <span class="tag boot">boot</span> needs a restart
+      <span class="tag secret">secret</span> redacted
+    </p>
+    <div class="card">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th><th>Scope</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="bar" id="bar">
       <button id="apply" class="primary" disabled>Apply changes</button>
       <button id="revert" disabled>Revert</button>
+      <span id="pend"></span>
       <span class="spacer"></span>
       <button id="reload">Reload from sources</button>
       <button id="cleanup">Run cleanup</button>
       <button id="lock">Lock</button>
     </div>
-    <p class="sub" id="ovr" style="margin-top:1rem"></p>
+    <p class="note" id="ovr"></p>
   </section>
 </main>
 <!-- Absolute: a relative src resolves against /admin (no trailing slash) and would 404. -->

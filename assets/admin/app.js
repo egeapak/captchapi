@@ -30,13 +30,22 @@ async function call(path, init) {
   return body;
 }
 
-function dirty() {
-  return Object.keys(draft).length > 0;
+function syncButtons() {
+  const n = Object.keys(draft).length;
+  $("apply").disabled = !n;
+  $("revert").disabled = !n;
+  $("pend").textContent = n + (n === 1 ? " unsaved edit" : " unsaved edits");
+  $("bar").className = "bar" + (n ? " dirty" : "");
 }
 
-function syncButtons() {
-  $("apply").disabled = !dirty();
-  $("revert").disabled = !dirty();
+// Row and tag styling for one field: which of the three classes it is, and whether it is edited.
+// Purely presentational — the class names drive the stylesheet, nothing reads them back.
+function mark(tr, tag, field, entry) {
+  const cls = entry.secret ? "secret" : entry.reloadable ? "live" : "boot";
+  const edited = field in draft;
+  tr.className = cls + (edited ? " dirty" : "");
+  tag.className = "tag " + (edited ? "dirty" : cls);
+  tag.textContent = edited ? "modified" : cls;
 }
 
 function render(data) {
@@ -51,6 +60,11 @@ function render(data) {
     k.className = "k";
     k.textContent = field;
 
+    const s = document.createElement("td");
+    s.className = "s";
+    const tag = document.createElement("span");
+    s.appendChild(tag);
+
     const v = document.createElement("td");
     v.className = "v";
     const input = document.createElement("input");
@@ -60,26 +74,13 @@ function render(data) {
       input.addEventListener("input", () => {
         if (input.value === entry.value) delete draft[field];
         else draft[field] = input.value;
-        tag.className = "tag " + (field in draft ? "dirty" : "live");
-        tag.textContent = field in draft ? "modified" : "live";
+        mark(tr, tag, field, entry);
         syncButtons();
       });
     }
     v.appendChild(input);
 
-    const s = document.createElement("td");
-    const tag = document.createElement("span");
-    if (entry.secret) {
-      tag.className = "tag";
-      tag.textContent = "secret";
-    } else if (entry.reloadable) {
-      tag.className = "tag " + (field in draft ? "dirty" : "live");
-      tag.textContent = field in draft ? "modified" : "live";
-    } else {
-      tag.className = "tag";
-      tag.textContent = "boot";
-    }
-    s.appendChild(tag);
+    mark(tr, tag, field, entry);
 
     tr.append(k, v, s);
     rows.appendChild(tr);
@@ -91,10 +92,16 @@ function render(data) {
   syncButtons();
 }
 
+// `gated` on <body> switches the page between the centred unlock card and the full console.
+function gated(on) {
+  document.body.className = on ? "gated" : "";
+  $("gate").classList.toggle("hide", !on);
+  $("panel").classList.toggle("hide", on);
+}
+
 async function load() {
   render(await call("/config"));
-  $("gate").classList.add("hide");
-  $("panel").classList.remove("hide");
+  gated(false);
 }
 
 $("gate").addEventListener("submit", async (e) => {
@@ -154,7 +161,6 @@ $("lock").addEventListener("click", () => {
   draft = {};
   state = null;
   $("key").value = "";
-  $("panel").classList.add("hide");
-  $("gate").classList.remove("hide");
+  gated(true);
   say("Locked.", "");
 });
