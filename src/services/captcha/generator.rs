@@ -300,8 +300,9 @@ struct Shading {
     near: Hsl,
     /// Outline stroke in pixels, or 0.0 for a solid letter.
     stroke: f32,
-    /// Opacity at each end of the fade, and the fade's axis in radians.
-    fade: Option<(f32, f32, f32)>,
+    /// Opacity at the far end of the fade, and the fade's axis in radians. The
+    /// near end is always fully opaque, for the reason given in [`Shading::draw`].
+    fade: Option<(f32, f32)>,
     /// Far end of the colour gradient, and its axis in radians.
     gradient: Option<(Hsl, f32)>,
 }
@@ -342,7 +343,6 @@ impl Shading {
             // a human to follow it from. The direction is random, so which part
             // of the letter is solid is not predictable.
             (
-                1.0,
                 rng.random_range(floor..1.0),
                 rng.random_range(0.0..std::f32::consts::TAU),
             )
@@ -388,7 +388,7 @@ impl Shading {
             mask
         };
         match self.fade {
-            Some((from, to, angle)) => mask.fade(from, to, angle),
+            Some((far, angle)) => mask.fade(1.0, far, angle),
             None => mask,
         }
     }

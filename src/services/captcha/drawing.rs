@@ -604,8 +604,11 @@ impl GlyphMask {
         }
 
         GlyphMask {
+            width: self.width,
+            height: self.height,
+            left: self.left,
+            top: self.top,
             coverage,
-            ..self.clone()
         }
     }
 
