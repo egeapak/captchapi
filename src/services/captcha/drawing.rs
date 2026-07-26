@@ -730,6 +730,46 @@ mod tests {
         );
     }
 
+    /// The property that separates a wave from a shear: a shear displaces rows
+    /// monotonically from top to bottom, a sine sends them back the other way.
+    #[test]
+    fn test_a_sine_displacement_bends_rows_in_both_directions() {
+        let original = glyph();
+        let height = original.height as f32;
+        let waved = original.displace_rows(|y| 6.0 * (std::f32::consts::TAU * y / height).sin());
+
+        let (before, after) = (ink(&original), ink(&waved));
+        assert!(
+            (after - before).abs() / before < 0.02,
+            "the wave lost or invented ink: {before} -> {after}"
+        );
+
+        let centroid = |mask: &GlyphMask, y: i32| -> Option<f32> {
+            let mut weight = 0.0;
+            let mut moment = 0.0;
+            for x in 0..mask.width as i32 {
+                let v = mask.at(x, y);
+                weight += v;
+                moment += v * (x as f32 + mask.left as f32);
+            }
+            (weight > 0.1).then(|| moment / weight)
+        };
+
+        // One full cycle over the glyph's height pushes the upper rows one way
+        // and the lower rows the other.
+        let mut shifts = Vec::new();
+        for y in 0..original.height as i32 {
+            if let (Some(a), Some(b)) = (centroid(&original, y), centroid(&waved, y)) {
+                shifts.push(b - a);
+            }
+        }
+        assert!(shifts.len() > 4, "not enough inked rows to judge");
+        assert!(
+            shifts.iter().any(|s| *s > 1.0) && shifts.iter().any(|s| *s < -1.0),
+            "a sine must displace rows both left and right; shifts were {shifts:?}"
+        );
+    }
+
     /// A character missing from the subset does not vanish — it maps to
     /// `.notdef`, which in this font is a visible box. That is precisely what
     /// makes the generator's `test_every_basic_char_has_a_glyph` worth having:

@@ -71,6 +71,14 @@ const MAX_SCALE_VARIANCE: f32 = 0.30;
 /// horizontal shift per pixel of height, so 0.40 is roughly 22 degrees.
 const MAX_SKEW: f32 = 0.40;
 
+/// At full intensity, the sine wave pushes a row sideways by up to this
+/// fraction of the font size.
+const MAX_WAVE_AMPLITUDE: f32 = 0.14;
+
+/// The wave's period, as a multiple of the letter's height. Under 1.0 a letter
+/// shows more than a full cycle, which reads as a wobble rather than a bend.
+const WAVE_PERIOD: std::ops::Range<f32> = 0.7..1.6;
+
 /// How strongly each per-letter deformation is applied.
 ///
 /// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
@@ -89,6 +97,8 @@ pub struct Deformations {
     pub scale: f32,
     /// Random per-letter lean, as a horizontal shear about the letter's middle.
     pub skew: f32,
+    /// Sine displacement down each letter, at a random amplitude and phase.
+    pub wave: f32,
 }
 
 impl Deformations {
@@ -98,6 +108,7 @@ impl Deformations {
             jitter: 0.0,
             scale: 0.0,
             skew: 0.0,
+            wave: 0.0,
         }
     }
 }
@@ -217,13 +228,32 @@ fn write_characters(
         // number of random draws must not depend on whether this particular
         // glyph turned out to have an outline.
         let lean = spread(MAX_SKEW * deform.skew);
+        let amplitude = spread(MAX_WAVE_AMPLITUDE * scale * deform.wave);
+        let (period, phase) = if deform.wave > 0.0 {
+            (
+                rng().random_range(WAVE_PERIOD),
+                rng().random_range(0.0..std::f32::consts::TAU),
+            )
+        } else {
+            (1.0, 0.0)
+        };
 
         if let Some(mask) = rasterize_char(font, *ch, px) {
-            let mask = if lean != 0.0 {
-                // Shear about the letter's middle, so it leans rather than
-                // sliding sideways as it tilts.
+            let mask = if lean != 0.0 || amplitude != 0.0 {
+                // Both deformations are horizontal displacements that depend
+                // only on the row, so they sum into one closure and cost a
+                // single resample. Applying them in sequence would filter the
+                // glyph twice and soften it for no reason.
+                //
+                // The shear is taken about the letter's middle so it leans in
+                // place, and the wave's period scales with the letter's height
+                // so a tall glyph is not cut into more cycles than a short one.
                 let centre = mask.height as f32 / 2.0;
-                mask.displace_rows(|row| lean * (row - centre))
+                let wavelength = (mask.height as f32 * period).max(1.0);
+                mask.displace_rows(|row| {
+                    lean * (row - centre)
+                        + amplitude * (std::f32::consts::TAU * row / wavelength + phase).sin()
+                })
             } else {
                 mask
             };
@@ -444,6 +474,15 @@ mod tests {
             })
             .collect();
         write_jpeg(&contact_sheet(&skew, 3, 1), "04-skew.jpg");
+
+        let wave: Vec<_> = levels
+            .iter()
+            .map(|i| Deformations {
+                wave: *i,
+                ..Deformations::none()
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&wave, 3, 1), "05-sine-wave.jpg");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
