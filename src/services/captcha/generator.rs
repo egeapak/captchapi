@@ -733,25 +733,34 @@ mod tests {
         assert_eq!(Deformations::for_difficulty(999), hardest);
     }
 
+    /// Compares medians rather than counting how many individual draws come
+    /// out wider, because a per-draw count is the wrong statistic here: jitter
+    /// is symmetric and scale can shrink a letter, so roughly 15% of
+    /// full-intensity draws are actually *narrower* than the undeformed
+    /// baseline. A threshold on that count sits on top of its own mean and
+    /// flakes; the median over the same draws is stable, and the gap it has to
+    /// clear (median 184 against a baseline of 176, with the lower quartile at
+    /// 180) leaves real margin.
     #[test]
     fn test_a_harder_captcha_disturbs_its_letters_more() {
         let easy = glyph_pixels("KBMX", Deformations::for_difficulty(1));
-        let (el, _, er, _) = bbox(&easy);
-        let easy_width = er - el;
+        let (easy_left, _, easy_right, _) = bbox(&easy);
+        let easy_width = easy_right - easy_left;
 
-        // Jitter, scale and skew all widen the inked area, so the hardest
-        // level should reliably spread letters further than the easiest.
-        let mut wider = 0;
-        for _ in 0..24 {
-            let hard = glyph_pixels("KBMX", Deformations::for_difficulty(10));
-            let (hl, _, hr, _) = bbox(&hard);
-            if hr - hl > easy_width {
-                wider += 1;
-            }
-        }
+        let mut widths: Vec<u32> = (0..24)
+            .map(|_| {
+                let hard = glyph_pixels("KBMX", Deformations::for_difficulty(10));
+                let (l, _, r, _) = bbox(&hard);
+                r - l
+            })
+            .collect();
+        widths.sort_unstable();
+        let median = widths[widths.len() / 2];
+
         assert!(
-            wider >= 20,
-            "difficulty 10 should disturb letters more than difficulty 1; only {wider}/24 did"
+            median > easy_width,
+            "difficulty 10 should spread letters wider than difficulty 1: \
+             median {median} vs {easy_width} (widths {widths:?})"
         );
     }
 
