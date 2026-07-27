@@ -1,10 +1,11 @@
 // The binary is a thin wrapper over the library crate. Declaring `mod app; mod config; ...`
 // here instead would compile the entire crate a second time and create a distinct set of
 // types, so everything lives in `lib.rs` and is used from there.
-use captchapi::app::build_app;
+use captchapi::app::build_app_with_restart;
 use captchapi::cli::{self, Handled, EXIT_USAGE};
 use captchapi::config::{apply_stored, ConfigHandle};
 use captchapi::metrics::init_metrics;
+use captchapi::restart::{exec_self, Argv, RestartHandle};
 use captchapi::services::{BootOutcome, ConfigStore};
 use captchapi::tasks::{start_cleanup_task, start_log_filter_task};
 #[cfg(feature = "otel")]
@@ -23,6 +24,10 @@ const CONFIRM_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Captured before parsing consumes it, so a restart can come back as exactly the same
+    // command rather than one re-rendered from a parsed structure.
+    let argv = Argv::capture();
+
     // Arguments are parsed before anything else: `--log-level` and `--otel` must be known
     // before the tracing subscriber is built, because it can only be initialized once.
     let action = cli::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|e| {
@@ -163,11 +168,17 @@ async fn main() -> anyhow::Result<()> {
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
 
-    // Build application (services, middleware, router, rate limiter)
-    let components = build_app(pool.clone(), config.clone(), metrics.clone());
-
     // Create shutdown token for graceful shutdown
     let shutdown_token = CancellationToken::new();
+    let restart = RestartHandle::new(shutdown_token.clone());
+
+    // Build application (services, middleware, router, rate limiter)
+    let components = build_app_with_restart(
+        pool.clone(),
+        config.clone(),
+        metrics.clone(),
+        Some(restart.clone()),
+    );
 
     // Start cleanup task. It holds the handle rather than a fixed interval, so a reload
     // changes how often it runs without a restart.
@@ -271,12 +282,33 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // A stale PID file would make `captchapi reload` signal a recycled, unrelated process.
-    cli::remove_pid_file(&pid_file);
+    // Skipped when restarting: the PID does not change across an exec, so the file stays right.
+    if !restart.requested() {
+        cli::remove_pid_file(&pid_file);
+    }
 
     // Shutdown OpenTelemetry gracefully if it was enabled
     #[cfg(feature = "otel")]
     if otel_enabled {
         shutdown_telemetry();
+    }
+
+    // Flushed before the exec either way: the process image is about to be replaced, and any
+    // batched spans still in the exporter would go with it.
+    if restart.requested() {
+        // WAL checkpointed rather than left for the next start to recover. SQLite already opens
+        // its files with O_CLOEXEC, so this is about flushing, not about leaking descriptors.
+        pool.close().await;
+        tracing::warn!("Restarting in place");
+        match exec_self(&argv) {
+            // `exec_self` only returns on failure; on success this process no longer exists.
+            Err(e) => {
+                tracing::error!("Restart failed, exiting instead so a supervisor can retry: {e}");
+                result?;
+                std::process::exit(1);
+            }
+            Ok(never) => match never {},
+        }
     }
 
     tracing::info!("Server shutdown complete");
@@ -373,6 +405,11 @@ async fn shutdown_signal(shutdown_token: CancellationToken) {
         },
         _ = terminate => {
             tracing::info!("Received SIGTERM, initiating graceful shutdown");
+        },
+        // A restart cancels the same token every background task watches, so asking for one
+        // drains the server through exactly the path a signal would.
+        _ = shutdown_token.cancelled() => {
+            tracing::info!("Shutdown requested internally, draining");
         },
     }
 

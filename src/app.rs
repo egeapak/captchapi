@@ -33,6 +33,19 @@ pub struct AppComponents {
 /// Returns [`AppComponents`] containing the assembled `Router`, the governor rate limiter handle
 /// (needed for the cleanup task), and the `StorageService` (also needed for cleanup).
 pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) -> AppComponents {
+    build_app_with_restart(pool, config, metrics, None)
+}
+
+/// Build the application, optionally able to restart the process it runs in.
+///
+/// `restart` is `None` for anything that is not the real server — tests, the NAPI bindings —
+/// so `POST /admin/restart` refuses rather than appearing to work and doing nothing.
+pub fn build_app_with_restart(
+    pool: SqlitePool,
+    config: ConfigHandle,
+    metrics: Arc<Metrics>,
+    restart: Option<crate::restart::RestartHandle>,
+) -> AppComponents {
     // Everything read here is boot-only: the values are captured into the services, the
     // middleware and the rate limiter, and cannot change without a restart. One snapshot is
     // therefore both sufficient and honest about what a reload can reach.
@@ -93,6 +106,7 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
         metrics: metrics.clone(),
         config: config.clone(),
         store: config_store,
+        restart,
     };
 
     // Build base router (without rate-limited sessions routes)

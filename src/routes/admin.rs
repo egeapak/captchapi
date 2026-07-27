@@ -5,6 +5,7 @@ use crate::config::{Config, ConfigHandle, Source};
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
+use crate::restart::{preflight_bind, RestartHandle};
 use crate::services::{ConfigStore, StorageService, WrittenBy};
 use crate::tasks::cleanup_expired_sessions;
 use axum::{
@@ -23,6 +24,9 @@ pub struct AdminState {
     pub metrics: Arc<Metrics>,
     pub config: ConfigHandle,
     pub store: ConfigStore,
+    /// `None` in tests and anywhere the server is not the one that owns the process, in which
+    /// case a restart request is refused rather than silently doing nothing.
+    pub restart: Option<RestartHandle>,
 }
 
 pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -> Router {
@@ -35,6 +39,7 @@ pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -
             "/config/stored/{field}",
             axum::routing::delete(delete_stored),
         )
+        .route("/restart", post(restart_server))
         .route_layer(middleware::from_fn_with_state(
             master_middleware,
             MasterKeyMiddleware::authenticate,
@@ -137,6 +142,13 @@ pub struct StoredResponse {
     pub shadowed: Vec<String>,
     /// Stored boot fields that a restart would apply.
     pub pending_restart: Vec<&'static str>,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RestartResponse {
+    /// Boot fields the restart is expected to apply.
+    pub applying: Vec<&'static str>,
     pub message: String,
 }
 
@@ -563,6 +575,70 @@ async fn reload_config(State(state): State<AdminState>) -> Result<Json<ReloadRes
         ignored: outcome.drift,
         message,
     }))
+}
+
+/// Restart the server so stored boot settings take effect.
+///
+/// Off by default. A remote restart endpoint is an availability lever and, if the master key
+/// ever leaks, a denial-of-service amplifier, so it has to be turned on deliberately.
+async fn restart_server(State(state): State<AdminState>) -> Result<Json<RestartResponse>> {
+    let running = state.config.get();
+    if !running.admin_restart_enabled {
+        return Err(AppError::RestartNotEnabled(
+            "restarting from the API is disabled (ADMIN_RESTART_ENABLED=false)".to_string(),
+        ));
+    }
+
+    let Some(handle) = state.restart.clone() else {
+        return Err(AppError::RestartNotEnabled(
+            "this server was not started in a way that can restart itself".to_string(),
+        ));
+    };
+
+    // The failure validation cannot see. `server_port` is exactly the field an operator edits
+    // through a web form, and "already in use" is only discoverable by trying — after which a
+    // restart would leave the service down rather than merely unchanged.
+    let stored = state.config.stored();
+    let candidate = tokio::task::spawn_blocking({
+        let config = state.config.clone();
+        move || config.dry_run(&stored)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("config dry run failed: {e}")))?
+    .map_err(AppError::InvalidConfig)?;
+
+    let (next, current) = (candidate.server_address(), running.server_address());
+    let (next, current) = (
+        next.parse::<std::net::SocketAddr>()
+            .map_err(|e| AppError::InvalidConfig(format!("invalid address {next}: {e}")))?,
+        current
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("running address unparseable: {e}")))?,
+    );
+    tokio::task::spawn_blocking(move || preflight_bind(next, current))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("preflight task failed: {e}")))?
+        .map_err(AppError::AddressUnavailable)?;
+
+    let applying = state.config.pending_restart();
+    let first = handle.request();
+
+    tracing::warn!(
+        "Restart requested through the admin API (applying: {})",
+        if applying.is_empty() {
+            "nothing".to_string()
+        } else {
+            applying.join(", ")
+        }
+    );
+    state.metrics.system.config_reloads.add(1, &[]);
+
+    let message = if first {
+        "Restarting; the server will be unavailable briefly".to_string()
+    } else {
+        "A restart is already in progress".to_string()
+    };
+    Ok(Json(RestartResponse { applying, message }))
 }
 
 #[cfg(test)]

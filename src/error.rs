@@ -48,6 +48,14 @@ pub enum AppError {
     #[error("Configuration field is pinned by the environment it was started in: {0}")]
     ConfigPinned(String),
 
+    /// `POST /admin/restart` was called but restarting from the API is turned off.
+    #[error("Restarting from the API is not enabled: {0}")]
+    RestartNotEnabled(String),
+
+    /// The address a restart would bind cannot be bound right now.
+    #[error("Address unavailable: {0}")]
+    AddressUnavailable(String),
+
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
@@ -104,6 +112,12 @@ impl IntoResponse for AppError {
                 msg.clone(),
             ),
             AppError::ConfigPinned(ref msg) => (StatusCode::CONFLICT, "config_pinned", msg.clone()),
+            AppError::RestartNotEnabled(ref msg) => {
+                (StatusCode::FORBIDDEN, "restart_not_enabled", msg.clone())
+            }
+            AppError::AddressUnavailable(ref msg) => {
+                (StatusCode::CONFLICT, "address_unavailable", msg.clone())
+            }
             AppError::InvalidConfig(ref msg) => {
                 (StatusCode::BAD_REQUEST, "invalid_config", msg.clone())
             }

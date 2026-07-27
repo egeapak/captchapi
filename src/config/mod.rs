@@ -80,6 +80,8 @@ pub struct Config {
     pub captcha_compression: u8,
     /// Whether `PATCH /api/v1/admin/config` may change settings at runtime.
     pub admin_config_write: bool,
+    /// Whether `POST /api/v1/admin/restart` may restart the server.
+    pub admin_restart_enabled: bool,
     // Observability
     pub log_level: String,
     pub otel_enabled: bool,
@@ -123,6 +125,7 @@ impl fmt::Debug for Config {
             .field("rate_limit_reverse_proxy", &self.rate_limit_reverse_proxy)
             .field("captcha_compression", &self.captcha_compression)
             .field("admin_config_write", &self.admin_config_write)
+            .field("admin_restart_enabled", &self.admin_restart_enabled)
             .field("log_level", &self.log_level)
             .field("otel_enabled", &self.otel_enabled)
             .field("otel_endpoint", &self.otel_endpoint)
@@ -243,6 +246,11 @@ impl Config {
                 .parse::<u8>()
                 .map_err(|_| "Invalid CAPTCHA_COMPRESSION: must be a number between 1 and 100")?
                 .clamp(1, 100),
+            admin_restart_enabled: env
+                .get("ADMIN_RESTART_ENABLED")
+                .ok()
+                .and_then(|v| parse_bool_lenient(&v))
+                .unwrap_or(false),
             admin_config_write: {
                 let raw = env
                     .get("ADMIN_CONFIG_WRITE")
@@ -309,6 +317,7 @@ impl Config {
             "rate_limit_reverse_proxy" => self.rate_limit_reverse_proxy.to_string(),
             "captcha_compression" => self.captcha_compression.to_string(),
             "admin_config_write" => self.admin_config_write.to_string(),
+            "admin_restart_enabled" => self.admin_restart_enabled.to_string(),
             "log_level" => self.log_level.clone(),
             "otel_enabled" => self.otel_enabled.to_string(),
             "otel_endpoint" => self.otel_endpoint.clone(),
@@ -371,6 +380,7 @@ impl Config {
             rate_limit_burst_size: self.rate_limit_burst_size,
             rate_limit_reverse_proxy: self.rate_limit_reverse_proxy,
             admin_config_write: self.admin_config_write,
+            admin_restart_enabled: self.admin_restart_enabled,
             otel_enabled: self.otel_enabled,
             otel_endpoint: self.otel_endpoint.clone(),
             otel_service_name: self.otel_service_name.clone(),
@@ -404,6 +414,7 @@ impl Config {
             rate_limit_reverse_proxy: false,
             captcha_compression: 40,
             admin_config_write: true,
+            admin_restart_enabled: false,
             log_level: "captchapi=debug,tower_http=debug".to_string(),
             otel_enabled: false,
             otel_endpoint: "http://localhost:4318".to_string(),
@@ -1141,6 +1152,7 @@ mod tests {
             rate_limit_reverse_proxy: true,
             captcha_compression: 99,
             admin_config_write: false,
+            admin_restart_enabled: true,
             log_level: "captchapi=trace".to_string(),
             otel_enabled: true,
             otel_endpoint: "http://example.invalid:4318".to_string(),

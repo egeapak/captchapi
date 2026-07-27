@@ -47,6 +47,14 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
                 msg
             ),
         ),
+        AppError::RestartNotEnabled(msg) => napi::Error::new(
+            Status::GenericFailure,
+            format!("Restarting from the API is not enabled: {}", msg),
+        ),
+        AppError::AddressUnavailable(msg) => napi::Error::new(
+            Status::GenericFailure,
+            format!("Address unavailable: {}", msg),
+        ),
         AppError::InvalidConfig(msg) => napi::Error::new(
             Status::InvalidArg,
             format!("Invalid configuration: {}", msg),

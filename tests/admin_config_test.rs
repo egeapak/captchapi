@@ -871,3 +871,60 @@ async fn test_stored_endpoints_require_the_master_key() {
         .await
         .assert_status_unauthorized();
 }
+
+// ── POST /api/v1/admin/restart ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_restart_is_refused_when_not_enabled() {
+    // Off by default: a remote restart endpoint is an availability lever, and a denial-of-
+    // service amplifier if the master key ever leaks.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .post("/api/v1/admin/restart")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "restart_not_enabled");
+}
+
+#[tokio::test]
+async fn test_restart_is_refused_when_the_process_cannot_restart_itself() {
+    // Enabled in configuration, but this app was not built by `main`, so there is no handle on
+    // the process. Refusing beats returning 200 and doing nothing.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app_with_config(captchapi::config::Config {
+        master_api_key: master_key.clone(),
+        admin_restart_enabled: true,
+        ..captchapi::config::Config::for_test()
+    }));
+
+    let response = server
+        .post("/api/v1/admin/restart")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "restart_not_enabled");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("not started in a way"));
+}
+
+#[tokio::test]
+async fn test_restart_requires_the_master_key() {
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    server
+        .post("/api/v1/admin/restart")
+        .await
+        .assert_status_unauthorized();
+}
