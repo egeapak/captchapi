@@ -365,9 +365,9 @@ cargo nextest run
    erosion is subpixel precisely so that they do not collapse onto a handful of enumerable values.
 8. **Deformations are per-letter and mutually independent.** Ten of them — jitter, scale, skew,
    wave, rotation, clustering, outline, transparency, gradient, blur — and each is drawn separately
-   for every letter, so no single rule describes a whole solution. All but one ramp linearly with
-   difficulty from nothing at level 1 to full at level 10; `blur` is pinned flat at every level
-   above 1, for the reason below. The legibility floors are load-bearing and were set by
+   for every letter, so no single rule describes a whole solution. All but one ramp with difficulty
+   from nothing at level 1 to full at level 10, along the concave curve documented below; `blur` is
+   pinned flat at every level above 1, also below. The legibility floors are load-bearing and were set by
    measurement, not taste: `MIN_OPACITY` is what survives difficulty-10 gaussian noise, and
    `MIN_OUTLINE_OPACITY` is higher because a hollow letter has an order of magnitude less ink to
    lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
@@ -422,38 +422,55 @@ cargo nextest run
    `blur`. Choose the difficulty band with headroom: below it every arm solves everything and above
    it every arm solves nothing, so neither end can move whatever you do.
 
-   **`blur` has now failed to show a benefit under three separate designs, and the last one was
-   the pre-registered decider. It should be removed.** The history is worth keeping because the
-   sequence is what makes the conclusion trustworthy rather than a single disappointing run:
+   **`blur` failed three times, and then worked once it was moved after the composite. What it
+   mixes with is the entire deformation; how much of it there is barely matters.** The sequence is
+   worth keeping, because four measurements of "the same feature" is what located the mechanism:
 
    | design | result |
    |---|---|
-   | unpaired grid, difficulty 3/5/8/10, ramped | 12/36 -> 10/36 solves, 61% -> 55% chars |
-   | paired crossover, difficulty 6 and 7, ramped | 11/36 -> 9/36, flips 8 lost / 6 gained |
-   | paired crossover, difficulty 3 and 5, **flat** | 29/36 -> 27/36, flips 5 lost / 3 gained, p = 0.73 |
+   | unpaired grid, difficulty 3/5/8/10, ramped, pre-composite | 12/36 -> 10/36 solves, 61% -> 55% chars |
+   | paired crossover, difficulty 6 and 7, ramped, pre-composite | 11/36 -> 9/36, flips 8 lost / 6 gained |
+   | paired crossover, difficulty 3 and 5, flat, pre-composite | 29/36 -> 27/36, flips 5 lost / 3 gained, p = 0.73 |
+   | paired crossover, difficulty 3 and 5, flat, **post-composite** | 17/36 -> 12/36, flips **7 lost / 2 gained**, p = 0.18 |
 
    The first was confounded — the two conditions used different random images, so part of what it
    measured was whether one set of strings happened to be harder. The second fixed that by rendering
    the *same* text under both conditions, and came back symmetric: blur flipped individual solves in
-   both directions about equally, which is what noise looks like. The diagnosis then was that the
-   linear ramp put the deformation where it could not help — sigma reached about 0.35px at
-   difficulty 3, invisible, and full strength only at 8 and 10 where every arm already scores zero.
-   So the third design pinned it flat (`FLAT_BLUR`), putting full blur at difficulty 3 and 5, the
-   only band with headroom to detect anything.
+   both directions about equally, which is what noise looks like. The third pinned the intensity flat
+   so full blur landed at difficulty 3 and 5 where there was headroom, and difficulty 5 came back
+   **identical**, 12/18 both ways.
 
-   It still did nothing. **Difficulty 5 was identical, 12/18 both ways**, with flips 2-2. Difficulty
-   3 moved 17/18 to 15/18, three lost against one gained, p = 0.63. Nothing here is distinguishable
-   from noise, and this was the test agreed in advance to settle it.
+   Three failures with one thing in common: the blur was applied to the glyph's coverage mask, so it
+   softened a letter's edges and then blended a soft letter onto a clean background. The letter
+   stayed a distinct object with a fuzzy border, and a fuzzy border is not a segmentation problem.
 
-   Meanwhile the flat profile made it *more* expensive, exactly as expected: 13-16% of render time
-   at difficulty 3-10, against 5-8% when it ramped. It does shrink the JPEG 0.5-2.7%, and isolated
-   from the noise pass it shrinks it 5.7% — but at shipping difficulties the gaussian noise
-   dominates the entropy and that saving disappears.
+   Moving the same gaussian to *after* the composite changes what it acts on. It now mixes the letter
+   with whatever it overlaps, which under clustering is the neighbouring glyph:
 
-   The one hypothesis left standing is that blur is *the wrong kind* of deformation here rather than
-   the wrong strength: it removes high-frequency detail, and every other deformation in the set
-   moves ink instead. If someone wants to try again, the thing to vary is what it does, not how much
-   of it there is. Do not retune the magnitude a fourth time. Measure with
+   ```
+   difficulty 3, blur off   12/18 solved   chars 81/90 (90%)
+   difficulty 3, blur on    12/18 solved   chars 82/90 (91%)     flips 2 / 2
+   difficulty 5, blur off    5/18 solved   chars 72/90 (80%)
+   difficulty 5, blur on     0/18 solved   chars 47/90 (52%)     flips 5 / 0, p = 0.06
+   ```
+
+   **Difficulty 5 went to zero, and all five discordant pairs flipped the same way.** The character
+   rate — 90 characters rather than 18 images, so the steadier statistic — fell from 80% to 52%.
+
+   Difficulty 3 not moving is not a disappointment, it is the mechanism confirming itself. Blur is
+   pinned flat, so it is at full strength at difficulty 3 too; what is missing there is *clustering*,
+   which at that level barely overlaps the letters. With nothing but background to mix into,
+   post-composite blur is just the pre-composite version that three measurements found inert. The
+   deformation's value is entirely in what it smears the letter into.
+
+   Two consequences worth not forgetting. `MAX_OUTLINE_BLUR` is gone: the old cap existed because a
+   sigma near the stroke width closed a hollow letter's counter back up, and blurring composited
+   pixels leaves the mask untouched. And it is **expensive** — 36-39% of render time at difficulty
+   3-10, against 13-16% for the mask version, because it convolves three channels of canvas per
+   letter instead of one channel of a small coverage buffer. Sustained throughput is about 120
+   renders/s/core at difficulty 5. That is worth it at a 5/18-to-0/18 effect, but if it needs to come
+   down, the honest lever is the one the data points at: it does nothing where letters do not
+   overlap, so gating it on clustering would buy back the low-difficulty cost. Measure with
    `CAPTCHA_AB_FIELD=blur cargo test --release --lib deformation_impact -- --ignored --nocapture`.
 
    **`rotation` is the counter-example, and it is what a deformation that works looks like.** Same
@@ -488,6 +505,49 @@ cargo nextest run
    `M` as `W`, `6` as `9` — which costs a human the character outright while costing a solver that
    already knows the character set nothing it cannot brute-force. It costs 6-11% of render time and
    nothing measurable in encoded size.
+
+   **The intensity ramp is concave, not linear, and this is the largest measured change in the
+   renderer's history.** `INTENSITY_CURVE` is 0.6, so intensity is `((difficulty - 1) / 9) ^ 0.6`:
+
+   | difficulty | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+   |---|---|---|---|---|---|---|---|---|---|---|
+   | linear | 0.00 | 0.11 | 0.22 | 0.33 | 0.44 | 0.56 | 0.67 | 0.78 | 0.89 | 1.00 |
+   | curve 0.6 | 0.00 | 0.27 | 0.41 | 0.52 | 0.61 | 0.70 | 0.78 | 0.86 | 0.93 | 1.00 |
+
+   The dial was not earning its range. Solve rates ran ~90% at difficulty 3, 50-65% at 5 and ~2% at
+   8 and above, so the bottom third of the scale was not a CAPTCHA and the top third was already at
+   the floor — about two useful levels out of ten. A concave curve moves intensity into the low band
+   where there is solve rate left to take away, and leaves both endpoints alone: difficulty 1 is
+   still undeformed and difficulty 10 is still full.
+
+   Paired against the linear ramp at the same difficulty labels:
+
+   ```
+   difficulty 3, linear   16/18 solved   chars 88/90 (98%)
+   difficulty 3, curved   11/18 solved   chars 82/90 (91%)     flips 5 / 0, p = 0.06
+   difficulty 5, linear    4/18 solved   chars 66/90 (73%)
+   difficulty 5, curved    0/18 solved   chars 54/90 (60%)     flips 4 / 0, p = 0.13
+   overall                20/36 -> 11/36                       flips 9 / 0, p = 0.004
+   ```
+
+   **Nine discordant pairs, nine flips, zero reversals.** Nothing else measured here comes close to
+   that — every other change has had at least one flip going the other way. It costs 3-7% of render
+   time at difficulty 3-5 and nothing at 8 or above, which is simply the cost of the deformations it
+   turns up.
+
+   **It changes what an existing difficulty setting means, and that is a breaking behaviour change
+   for callers.** A caller pinned at 5 gets images about as hard as the old 7 without changing
+   anything, and a caller who chose 2 or 3 for accessibility gets a real step up — measured at 98%
+   to 91% character accuracy for frontier models, so the human cost is not nothing. That is the
+   intent, but it belongs in release notes. If low difficulty needs to stay genuinely easy, the lever
+   is the exponent: 0.8 is a milder version of the same shape.
+
+   One thing to check before shipping the pair of changes above: **`DEFAULT_DIFFICULTY` may now be
+   too high.** It was raised to 8 because difficulty 5 was solvable; with the curve and the
+   post-composite blur, difficulty 5 measured 0/18 against both frontier vision models. Dropping the
+   default back to 5 would recover the ~20% render time and ~20% stored bytes that raising it cost.
+   Do not do that on the vision-only numbers alone — tool-equipped arms historically did better at
+   difficulty 5 than vision-only ones, and that is the arm that would decide it.
 
    Implementation note worth not undoing: rotation goes through
    `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row

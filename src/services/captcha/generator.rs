@@ -13,8 +13,9 @@
 //! [`super::drawing`] — `imageproc` is no longer a dependency at all.
 
 use super::drawing::{
-    composite_mask, composite_mask_gradient, draw_cubic_bezier_curve_mut, draw_hollow_circle_mut,
-    gaussian_noise_mut, rasterize_char, salt_and_pepper_noise_mut, GlyphMask, Hsl,
+    blur_over_mask, composite_mask, composite_mask_gradient, draw_cubic_bezier_curve_mut,
+    draw_hollow_circle_mut, gaussian_noise_mut, rasterize_char, salt_and_pepper_noise_mut,
+    GlyphMask, Hsl,
 };
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -142,22 +143,39 @@ const MIN_OUTLINE_OPACITY: f32 = 0.6;
 /// from the near end on the hue wheel, in turns — 0.5 being the opposite side.
 const MAX_GRADIENT_HUE_SHIFT: f32 = 0.45;
 
-/// At full intensity, a letter is defocused with a gaussian of up to this sigma,
-/// as a fraction of the font size.
+/// At full intensity, the canvas under a letter is defocused with a gaussian of
+/// up to this sigma, as a fraction of the font size.
 ///
 /// Drawn per letter from zero up to the cap, so a solution mixes sharp and soft
 /// glyphs rather than being uniformly out of focus — the same argument as
 /// `MAX_OUTLINE_SHARE`. At 42px the cap is a sigma of about 1.9px, which visibly
 /// softens a stroke without dissolving it.
+///
+/// The blur runs *after* the letter is composited rather than on its coverage
+/// mask, so what it softens is the boundary between the letter and whatever it
+/// overlaps. See `Shading::paint` for why that distinction is the deformation.
 const MAX_BLUR: f32 = 0.045;
 
-/// The blur cap for a letter that is *also* outlined.
+/// The exponent shaping how intensity tracks difficulty.
 ///
-/// An outline stroke is 1-2.75px wide, and a gaussian whose sigma approaches the
-/// stroke width does not soften the stroke so much as erase it — the two edges
-/// blur into each other and the counter fills back in, undoing the hollowing.
-/// This keeps sigma well inside the thinnest stroke `OUTLINE_STROKE` can draw.
-const MAX_OUTLINE_BLUR: f32 = 0.015;
+/// `1.0` is the linear ramp this started with. Below 1.0 the curve is concave:
+/// it rises fast at the bottom of the dial and flattens at the top.
+///
+/// The dial was not earning its range. Measured solve rates against frontier
+/// vision models ran roughly 90% at difficulty 3, 50-65% at 5, and 2% at 8 and
+/// above — so the bottom third of the scale was not a CAPTCHA and the top third
+/// was already at the floor, leaving about two useful levels in the middle. A
+/// concave curve moves intensity into the low band where there is solve rate to
+/// take away, without touching the endpoints: difficulty 1 is still undeformed
+/// and difficulty 10 is still full.
+///
+/// At 0.6 the intensity at difficulty 3 goes from 0.22 to 0.42 and at 5 from
+/// 0.44 to 0.62, so today's level 3 renders about like the old level 5.
+///
+/// **This changes what an existing difficulty setting means.** A caller pinned
+/// at 5 gets harder images than before without changing anything. That is the
+/// intent, but it is a behaviour change and belongs in release notes.
+const INTENSITY_CURVE: f32 = 0.6;
 
 /// The intensity `blur` is held at for every difficulty above the easiest.
 ///
@@ -251,7 +269,16 @@ impl Deformations {
     /// deformation, blur included, because that is the contract the untouched
     /// output tests rest on.
     pub fn for_difficulty(difficulty: u32) -> Self {
-        let intensity = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
+        Self::shaped(difficulty, INTENSITY_CURVE)
+    }
+
+    /// [`for_difficulty`] with the ramp's exponent supplied, so an A/B can hold
+    /// everything else fixed and vary only the curve. `1.0` is the linear ramp.
+    ///
+    /// [`for_difficulty`]: Deformations::for_difficulty
+    fn shaped(difficulty: u32, curve: f32) -> Self {
+        let linear = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
+        let intensity = linear.powf(curve);
         if intensity == 0.0 {
             return Self::none();
         }
@@ -416,16 +443,10 @@ impl Shading {
             )
         });
 
-        // Capped harder when the letter is hollow, for the reason on
-        // MAX_OUTLINE_BLUR: a sigma near the stroke width closes the counter
-        // back up and undoes the outline.
+        // No hollow-letter special case any more: the blur runs after the
+        // composite, so it cannot close an outline's counter back up.
         let sigma = if deform.blur > 0.0 {
-            let cap = if stroke > 0.0 {
-                MAX_OUTLINE_BLUR
-            } else {
-                MAX_BLUR
-            };
-            scale * cap * deform.blur.clamp(0.0, 1.0) * rng().random_range(0.0..1.0)
+            scale * MAX_BLUR * deform.blur.clamp(0.0, 1.0) * rng().random_range(0.0..1.0)
         } else {
             0.0
         };
@@ -462,20 +483,13 @@ impl Shading {
     }
 
     /// Applies the deformations that change the mask itself.
+    ///
+    /// The blur is not among them any more — see [`Shading::paint`].
     fn shape(&self, mask: GlyphMask) -> GlyphMask {
         // Outlined before faded, so the fade attenuates the stroke rather than
         // the ink the stroke is about to be cut from.
         let mask = if self.stroke > 0.0 {
             mask.outline(self.stroke)
-        } else {
-            mask
-        };
-        // Defocus after hollowing and before fading: blurring first would give
-        // the erosion a soft mask to cut from and produce a wide smear rather
-        // than a soft stroke, and fading first would be undone here anyway,
-        // since the blur redistributes the very coverage the fade just scaled.
-        let mask = if self.sigma > 0.0 {
-            mask.blur(self.sigma)
         } else {
             mask
         };
@@ -485,11 +499,29 @@ impl Shading {
         }
     }
 
-    /// Blends the finished mask onto the canvas.
+    /// Blends the finished mask onto the canvas, then defocuses what landed.
+    ///
+    /// **The blur runs after the composite, not before, and that is the whole
+    /// deformation.** Blurring the coverage buffer first — which is what this
+    /// did originally — softens the letter's edges and then blends a soft
+    /// letter onto a clean background. The letter stays a distinct object with
+    /// a fuzzy border, and three independent measurements found that costs a
+    /// solver nothing at any difficulty. Blurring the canvas afterwards mixes
+    /// the letter with whatever it overlaps, which under clustering is the
+    /// neighbouring glyph, so the boundary between two letters stops being a
+    /// place where one colour ends and another begins.
+    ///
+    /// It also means the blur is no longer capped harder for a hollow letter.
+    /// That cap existed because a sigma near the stroke width closed an
+    /// outline's counter back up; blurring the composited pixels leaves the
+    /// mask, and therefore the hollowing, untouched.
     fn paint(&self, image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, mask: &GlyphMask, x: i32, y: i32) {
         match self.gradient {
             Some((far, angle)) => composite_mask_gradient(image, mask, x, y, self.near, far, angle),
             None => composite_mask(image, mask, x, y, self.near.to_rgb()),
+        }
+        if self.sigma > 0.0 {
+            blur_over_mask(image, mask, x, y, self.sigma);
         }
     }
 }
@@ -1018,13 +1050,35 @@ mod tests {
             turned.push((difficulty, with));
         }
         write_jpeg(&contact_sheet(&turned, 2), "16-rotation-off-vs-on.jpg");
+
+        // The linear intensity ramp against the concave one, at the same
+        // difficulty labels. This is the sheet to judge `INTENSITY_CURVE` on,
+        // because the change is not "harder" so much as "the dial's low half now
+        // does something" — and the cost, if there is one, is legibility at
+        // levels that were meant to be easy.
+        let mut curve = Vec::new();
+        for difficulty in [2u32, 3, 5, 8] {
+            curve.push((difficulty, Deformations::shaped(difficulty, 1.0)));
+            curve.push((difficulty, Deformations::for_difficulty(difficulty)));
+        }
+        write_jpeg(&contact_sheet(&curve, 2), "17-linear-vs-curved-ramp.jpg");
+    }
+
+    /// The "off" arm of an A/B: usually this level minus one deformation, but
+    /// `curve` instead swaps the whole intensity ramp back to linear.
+    ///
+    /// Doing it by name keeps the harnesses generic — a new deformation becomes
+    /// measurable by adding a line here rather than by copying a test. `curve`
+    /// is the one entry that is not a single field, because the thing under test
+    /// is how every intensity is derived rather than any one of them.
+    fn control(difficulty: u32, field: &str) -> Deformations {
+        if field == "curve" {
+            return Deformations::shaped(difficulty, 1.0);
+        }
+        without(Deformations::for_difficulty(difficulty), field)
     }
 
     /// Switches one deformation off, leaving the rest of the level untouched.
-    ///
-    /// The A/B harnesses below both need "this level, minus one deformation",
-    /// and doing it by name keeps them generic — a new deformation becomes
-    /// measurable by adding a line here rather than by copying a test.
     fn without(deform: Deformations, field: &str) -> Deformations {
         match field {
             "jitter" => Deformations {
@@ -1150,7 +1204,7 @@ mod tests {
         );
         for difficulty in [1u32, 3, 5, 8, 10] {
             let with = Deformations::for_difficulty(difficulty);
-            let (t_off, s_off) = measure(difficulty, without(with, &field));
+            let (t_off, s_off) = measure(difficulty, control(difficulty, &field));
             let (t_on, s_on) = measure(difficulty, with);
             let pct = |a: f64, b: f64| 100.0 * (b - a) / a;
             println!(
@@ -1162,14 +1216,18 @@ mod tests {
 
         // The deformation alone, no others and no noise, so the primitive's own
         // cost is visible rather than buried under the gaussian noise pass.
-        let (bare_t, bare_s) = measure(1, Deformations::none());
-        let (solo_t, solo_s) = measure(1, only_named(&field, 1.0));
-        println!(
-            "\n{field} alone at difficulty 1: {bare_t}us -> {solo_t}us ({:+.1}%), \
-             {bare_s}B -> {solo_s}B ({:+.1}%)",
-            100.0 * (solo_t as f64 - bare_t as f64) / bare_t as f64,
-            100.0 * (solo_s as f64 - bare_s as f64) / bare_s as f64
-        );
+        // `curve` has no isolated form — it shapes every intensity rather than
+        // being one of them — so there is nothing to run on its own.
+        if field != "curve" {
+            let (bare_t, bare_s) = measure(1, Deformations::none());
+            let (solo_t, solo_s) = measure(1, only_named(&field, 1.0));
+            println!(
+                "\n{field} alone at difficulty 1: {bare_t}us -> {solo_t}us ({:+.1}%), \
+                 {bare_s}B -> {solo_s}B ({:+.1}%)",
+                100.0 * (solo_t as f64 - bare_t as f64) / bare_t as f64,
+                100.0 * (solo_s as f64 - bare_s as f64) / bare_s as f64
+            );
+        }
     }
 
     /// Writes a paired A/B image set for solver evaluation.
@@ -1221,7 +1279,8 @@ mod tests {
                     let text = random_text(length);
                     let with = Deformations::for_difficulty(difficulty);
 
-                    for (condition, deform) in [("off", without(with, &field)), ("on", with)] {
+                    for (condition, deform) in [("off", control(difficulty, &field)), ("on", with)]
+                    {
                         let image = render(&text, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
                         let mut bytes = Vec::new();
                         JpegEncoder::new_with_quality(&mut bytes, 40)

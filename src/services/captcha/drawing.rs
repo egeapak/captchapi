@@ -755,15 +755,7 @@ impl GlyphMask {
             return self.clone();
         }
 
-        let radius = (3.0 * sigma).ceil() as i32;
-        let kernel: Vec<f32> = (-radius..=radius)
-            .map(|offset| {
-                let x = offset as f32;
-                (-(x * x) / (2.0 * sigma * sigma)).exp()
-            })
-            .collect();
-        let total: f32 = kernel.iter().sum();
-        let kernel: Vec<f32> = kernel.iter().map(|weight| weight / total).collect();
+        let (radius, kernel) = gaussian_kernel(sigma);
 
         let pad = radius as u32;
         let width = self.width + 2 * pad;
@@ -831,6 +823,145 @@ impl GlyphMask {
             }
         }
         self
+    }
+}
+
+/// A normalised 1-D gaussian and its radius, truncated at 3σ.
+///
+/// A gaussian retains 99.7% of its mass inside 3σ, and renormalising afterwards
+/// keeps the truncation from quietly darkening whatever is convolved.
+fn gaussian_kernel(sigma: f32) -> (i32, Vec<f32>) {
+    let radius = (3.0 * sigma).ceil() as i32;
+    let kernel: Vec<f32> = (-radius..=radius)
+        .map(|offset| {
+            let x = offset as f32;
+            (-(x * x) / (2.0 * sigma * sigma)).exp()
+        })
+        .collect();
+    let total: f32 = kernel.iter().sum();
+    (radius, kernel.iter().map(|w| w / total).collect())
+}
+
+/// How far the post-composite blur reaches past the glyph's own ink, as a gain
+/// on the coverage that decides where it applies.
+///
+/// The weight has to hold at full strength slightly *beyond* the glyph or the
+/// blend undoes the outward half of the smear. Just outside a letter the blurred
+/// canvas holds the ink the gaussian pushed there; a weight that has already
+/// fallen to near zero puts the clean background straight back, and the result
+/// is a letter that is soft on the inside and crisply bounded on the outside —
+/// which is the opposite of the point. Amplifying and clamping is a cheap
+/// dilation: it holds the weight at 1 for roughly another sigma before
+/// feathering off, so the letter genuinely bleeds into its neighbours.
+const BLUR_SPILL_GAIN: f32 = 3.0;
+
+/// Blurs the canvas where a glyph has just been composited, mixing the glyph
+/// into whatever was already underneath it.
+///
+/// This is deliberately *not* [`GlyphMask::blur`]. Blurring the coverage buffer
+/// softens a letter's edges and then blends the soft letter onto a clean
+/// background, so the letter remains a distinct object with a fuzzy border —
+/// three separate measurements found that costs a solver nothing. Blurring
+/// after compositing mixes the letter with what it overlaps, which under
+/// clustering is the neighbouring glyph. The boundary between two letters stops
+/// being a place where one colour ends and another begins.
+///
+/// `x` and `y` are the pen position the mask was composited at, matching
+/// [`composite_mask`].
+///
+/// The region touched is the glyph's own footprint grown by the kernel radius,
+/// and the blend weight comes from the glyph's coverage — blurred by the same
+/// sigma, so it feathers instead of leaving a rectangle, then amplified by
+/// [`BLUR_SPILL_GAIN`]. Sampling clamps at the canvas edge rather than treating
+/// off-canvas as black, which would draw a dark halo along the border.
+pub fn blur_over_mask(image: &mut RgbImage, mask: &GlyphMask, x: i32, y: i32, sigma: f32) {
+    if sigma <= 0.0 || mask.width == 0 || mask.height == 0 {
+        return;
+    }
+    let (canvas_w, canvas_h) = (image.width() as i32, image.height() as i32);
+    let (radius, kernel) = gaussian_kernel(sigma);
+
+    // The weight, and with it the region: `blur` grows the buffer by the radius
+    // on every side, which is exactly the spill the smear can reach.
+    let weight = mask.blur(sigma);
+    let left = x + weight.left;
+    let top = y + weight.top;
+
+    // Tighten to where the blend can actually move a pixel. The outer fringe of
+    // the weight is a gaussian tail: past a share of half a u8 level the blend
+    // rounds back to what was already there, so convolving out there is work
+    // with no visible result. Costs one single-channel scan and saves a chunk of
+    // a three-channel double convolution.
+    let mut x0 = i32::MAX;
+    let mut x1 = i32::MIN;
+    let mut y0 = i32::MAX;
+    let mut y1 = i32::MIN;
+    for row in 0..weight.height as i32 {
+        for column in 0..weight.width as i32 {
+            if weight.at(column, row) * BLUR_SPILL_GAIN > 1.0 / 512.0 {
+                x0 = x0.min(column);
+                x1 = x1.max(column + 1);
+                y0 = y0.min(row);
+                y1 = y1.max(row + 1);
+            }
+        }
+    }
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+
+    let x0 = (left + x0).max(0);
+    let x1 = (left + x1).min(canvas_w);
+    let y0 = (top + y0).max(0);
+    let y1 = (top + y1).min(canvas_h);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+
+    // Horizontal pass over the region's columns, across rows extended by the
+    // radius so the vertical pass has real values to read above and below.
+    let hy0 = (y0 - radius).max(0);
+    let hy1 = (y1 + radius).min(canvas_h);
+    let stride = (x1 - x0) as usize;
+    let mut horizontal = vec![[0.0f32; 3]; stride * (hy1 - hy0) as usize];
+    for row in hy0..hy1 {
+        for column in x0..x1 {
+            let mut sum = [0.0f32; 3];
+            for (index, weight) in kernel.iter().enumerate() {
+                let source = (column - radius + index as i32).clamp(0, canvas_w - 1);
+                let pixel = image.get_pixel(source as u32, row as u32).0;
+                for (channel, total) in sum.iter_mut().enumerate() {
+                    *total += weight * pixel[channel] as f32;
+                }
+            }
+            horizontal[(row - hy0) as usize * stride + (column - x0) as usize] = sum;
+        }
+    }
+
+    // Vertical pass, blended straight back into the canvas.
+    for row in y0..y1 {
+        for column in x0..x1 {
+            let coverage = weight.at(column - left, row - top);
+            let share = (coverage * BLUR_SPILL_GAIN).clamp(0.0, 1.0);
+            if share <= 0.0 {
+                continue;
+            }
+            let mut sum = [0.0f32; 3];
+            for (index, k) in kernel.iter().enumerate() {
+                let source = (row - radius + index as i32).clamp(hy0, hy1 - 1);
+                let taps = horizontal[(source - hy0) as usize * stride + (column - x0) as usize];
+                for (channel, total) in sum.iter_mut().enumerate() {
+                    *total += k * taps[channel];
+                }
+            }
+            let original = image.get_pixel(column as u32, row as u32).0;
+            let mut mixed = [0u8; 3];
+            for (channel, value) in mixed.iter_mut().enumerate() {
+                let blended = original[channel] as f32 * (1.0 - share) + sum[channel] * share;
+                *value = clamp_u8_f32(blended);
+            }
+            image.put_pixel(column as u32, row as u32, Rgb(mixed));
+        }
     }
 }
 
@@ -1419,6 +1550,128 @@ mod tests {
             (after - before).abs() / before < 0.03,
             "shear plus rotation should conserve ink: {after} vs {before}"
         );
+    }
+
+    /// The property that distinguishes blurring after the composite from
+    /// blurring the mask, and the only reason the deformation was rewritten.
+    ///
+    /// A pixel where the glyph's coverage is 1.0 is painted exactly the glyph's
+    /// colour by the composite. Blurring the *mask* first cannot change that —
+    /// full coverage still writes the flat colour — so a letter drawn over a
+    /// neighbour stays pure itself and merely gains a soft rim. Blurring the
+    /// canvas afterwards pulls the neighbour's colour into that interior, which
+    /// is what stops the boundary between two overlapping letters from being a
+    /// place where one colour ends and another begins.
+    #[test]
+    fn test_post_composite_blur_pulls_a_neighbour_into_the_letter() {
+        let mask = glyph();
+        // Black ground, so a pixel that gains red gained it from the red glyph
+        // and not from the background — over white, blurring toward the
+        // background would raise every channel and prove nothing.
+        let mut image = RgbImage::from_pixel(220, 120, Rgb([0, 0, 0]));
+
+        composite_mask(&mut image, &mask, 30, 20, Rgb([255, 0, 0]));
+        composite_mask(&mut image, &mask, 44, 20, Rgb([0, 0, 255]));
+
+        // Interior of the blue glyph: full coverage, so exactly blue right now.
+        let interior: Vec<(u32, u32)> = (0..mask.height)
+            .flat_map(|y| (0..mask.width).map(move |x| (x, y)))
+            .filter(|(x, y)| mask.coverage[(y * mask.width + x) as usize] > 0.99)
+            .map(|(x, y)| {
+                (
+                    (44 + mask.left + x as i32) as u32,
+                    (20 + mask.top + y as i32) as u32,
+                )
+            })
+            .collect();
+        assert!(
+            !interior.is_empty(),
+            "the test glyph needs a solid interior"
+        );
+        // Coverage of 0.99 leaves a point or two of the ground showing, so this
+        // checks the channel that matters: the composite writes the glyph's own
+        // colour and nothing of the red glyph beside it, however they overlap.
+        for (x, y) in &interior {
+            let pixel = image.get_pixel(*x, *y).0;
+            assert_eq!(
+                pixel[0], 0,
+                "the composite must not put red inside the blue glyph at ({x},{y})"
+            );
+            assert!(pixel[2] > 250, "expected near-solid blue, got {pixel:?}");
+        }
+
+        blur_over_mask(&mut image, &mask, 44, 20, 2.0);
+
+        let bled = interior
+            .iter()
+            .filter(|(x, y)| image.get_pixel(*x, *y).0[0] > 0)
+            .count();
+        assert!(
+            bled > 0,
+            "no interior pixel of the blue glyph picked up any red from the one \
+             it overlaps; the blur is not reaching across the boundary"
+        );
+    }
+
+    #[test]
+    fn test_post_composite_blur_leaves_a_flat_region_and_far_pixels_alone() {
+        let mask = glyph();
+        let fill = Rgb([90, 140, 200]);
+        let mut image = RgbImage::from_pixel(220, 120, fill);
+        let before = image.clone();
+
+        blur_over_mask(&mut image, &mask, 60, 30, 2.5);
+
+        // A gaussian of a constant is that constant, so nothing may move by more
+        // than u8 rounding. A kernel that failed to renormalise would darken the
+        // whole region here.
+        for (x, y, pixel) in image.enumerate_pixels() {
+            for channel in 0..3 {
+                assert!(
+                    pixel.0[channel].abs_diff(before.get_pixel(x, y).0[channel]) <= 1,
+                    "flat region moved at ({x},{y}): {:?}",
+                    pixel.0
+                );
+            }
+        }
+
+        // And the effect stays local: a pixel far from the glyph is untouched
+        // even when the canvas is not flat.
+        let mut textured = canvas();
+        let reference = textured.clone();
+        blur_over_mask(&mut textured, &mask, 60, 30, 2.5);
+        assert_eq!(
+            textured.get_pixel(5, 110),
+            reference.get_pixel(5, 110),
+            "the blur reached a pixel nowhere near the glyph"
+        );
+        assert_eq!(
+            textured.get_pixel(215, 5),
+            reference.get_pixel(215, 5),
+            "the blur reached a pixel nowhere near the glyph"
+        );
+    }
+
+    #[test]
+    fn test_post_composite_blur_is_a_no_op_at_zero_sigma() {
+        let mask = glyph();
+        let mut image = canvas();
+        composite_mask(&mut image, &mask, 30, 20, Rgb([255, 0, 0]));
+        let before = image.clone();
+        blur_over_mask(&mut image, &mask, 30, 20, 0.0);
+        assert_eq!(image, before, "zero sigma must not touch the canvas");
+    }
+
+    /// Off-canvas placement must clip rather than panic, the same contract every
+    /// other drawing routine here holds to.
+    #[test]
+    fn test_post_composite_blur_clips_at_the_canvas_edges() {
+        let mask = glyph();
+        for (x, y) in [(-40, -40), (215, 115), (-5, 60), (60, -5), (400, 400)] {
+            let mut image = canvas();
+            composite_mask(&mut image, &mask, x, y, Rgb([255, 0, 0]));
+            blur_over_mask(&mut image, &mask, x, y, 2.0);
+        }
     }
 
     #[test]
