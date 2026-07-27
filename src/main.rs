@@ -2,7 +2,7 @@
 // here instead would compile the entire crate a second time and create a distinct set of
 // types, so everything lives in `lib.rs` and is used from there.
 use captchapi::app::build_app_with_restart;
-use captchapi::cli::{self, Handled, EXIT_USAGE};
+use captchapi::cli::{self, Handled, StoreEdit, EXIT_USAGE};
 use captchapi::config::{apply_stored, ConfigHandle};
 use captchapi::metrics::init_metrics;
 use captchapi::restart::{exec_self, Argv, RestartHandle};
@@ -12,8 +12,28 @@ use captchapi::tasks::{start_cleanup_task, start_log_filter_task};
 use captchapi::telemetry::shutdown_telemetry;
 use captchapi::telemetry::{init_tracing, is_telemetry_enabled};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
+
+/// Open the SQLite pool, creating the data directory if it is missing.
+async fn open_pool(config: &captchapi::config::Config) -> anyhow::Result<SqlitePool> {
+    let path = config
+        .database_url
+        .strip_prefix("sqlite:")
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(SqlitePoolOptions::new()
+        .max_connections(config.database_max_connections)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await?)
+}
 
 /// How long a process must serve before the configuration it booted with is considered good.
 ///
@@ -40,6 +60,27 @@ async fn main() -> anyhow::Result<()> {
     let (cli_args, config, sources) = match cli::handle(action) {
         Ok(Handled::Done) => return Ok(()),
         Ok(Handled::Serve(cli_args, config, sources)) => (*cli_args, *config, *sources),
+        // Offline repair of the config store. Handled here rather than in `cli::handle`
+        // because opening the database is async and that function is deliberately sync.
+        Ok(Handled::EditStore(config, edit)) => {
+            let pool = open_pool(&config).await?;
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            let store = ConfigStore::new(pool.clone());
+            match edit {
+                StoreEdit::Unset(field) => {
+                    if store.unset(&field).await? {
+                        println!("removed stored `{field}`");
+                    } else {
+                        println!("`{field}` was not stored; nothing to remove");
+                    }
+                }
+                StoreEdit::Clear => {
+                    println!("removed {} stored setting(s)", store.clear().await?);
+                }
+            }
+            pool.close().await;
+            return Ok(());
+        }
         Err(e) => {
             eprintln!("captchapi: {e}");
             std::process::exit(EXIT_USAGE);
@@ -55,32 +96,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Starting CaptchAPI server");
 
-    // Create data directory if it doesn't exist
-    if config.database_url.starts_with("sqlite:") {
-        let db_path = config
-            .database_url
-            .strip_prefix("sqlite:")
-            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?;
-        if let Some(parent) = std::path::Path::new(db_path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    // Set up database connection pool
-    let pool = SqlitePoolOptions::new()
-        .max_connections(config.database_max_connections)
-        .connect_with(
-            SqliteConnectOptions::new()
-                .filename(
-                    config
-                        .database_url
-                        .strip_prefix("sqlite:")
-                        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?,
-                )
-                .create_if_missing(true),
-        )
-        .await?;
-
+    let pool = open_pool(&config).await?;
     tracing::info!("Database connection established");
 
     // Run migrations
@@ -98,26 +114,38 @@ async fn main() -> anyhow::Result<()> {
     // would pin the boot fields to the first pass and defeat the point.
     let store = ConfigStore::new(pool.clone());
 
-    let booted_generation = match store.prepare_boot().await? {
-        BootOutcome::Clean { generation } => generation,
-        BootOutcome::Trying { generation } => {
-            tracing::info!("Trying configuration generation {generation} for the first time");
-            Some(generation)
-        }
-        BootOutcome::RolledBack {
-            generation,
-            restored_fields,
-        } => {
-            tracing::warn!(
-                "Configuration generation {generation} was never confirmed by the start that \
-                 tried it; rolled back to the last confirmed settings ({restored_fields} \
-                 field(s))"
-            );
-            None
-        }
-    };
+    // `--ignore-stored-config` is the recovery path for a stored configuration that stops the
+    // service working. Checked before `prepare_boot`, not after: that call increments the
+    // attempt counter and can roll the store back, and a start that has been told to ignore
+    // the store has no business writing to it.
+    let ignore_stored = cli::ignore_stored_config(&cli_args, &captchapi::config::RealEnv);
 
-    let stored = store.load().await?;
+    let (stored, booted_generation) = if ignore_stored {
+        tracing::warn!(
+            "Ignoring the config store (--ignore-stored-config); it is left exactly as it is"
+        );
+        (captchapi::config::Layer::new(), None)
+    } else {
+        let generation = match store.prepare_boot().await? {
+            BootOutcome::Clean { generation } => generation,
+            BootOutcome::Trying { generation } => {
+                tracing::info!("Trying configuration generation {generation} for the first time");
+                Some(generation)
+            }
+            BootOutcome::RolledBack {
+                generation,
+                restored_fields,
+            } => {
+                tracing::warn!(
+                    "Configuration generation {generation} was never confirmed by the start that \
+                     tried it; rolled back to the last confirmed settings ({restored_fields} \
+                     field(s))"
+                );
+                None
+            }
+        };
+        (store.load().await?, generation)
+    };
     let booted = apply_stored(&cli_args, config, sources, &stored, booted_generation);
     match &booted.error {
         // A stored value that cannot resolve must not stop the server: it would take the
