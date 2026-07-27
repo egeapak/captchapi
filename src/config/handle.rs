@@ -219,6 +219,22 @@ impl ConfigHandle {
             }
         }
 
+        // `log_level` is the one live field whose value has a syntax that
+        // `Config::from_env_provider` does not check: it stores the directives verbatim, and
+        // `log_filter` quietly substitutes a default if they turn out to be unparseable.
+        //
+        // That fallback is right at boot — refusing to start over a log directive would be
+        // worse than ignoring it — and wrong here, because now there is a running filter to
+        // diverge from. Accepting a value that cannot be installed would leave `GET /config`
+        // reporting a filter the server is not using.
+        for (key, value) in updates {
+            if key == "RUST_LOG" {
+                value
+                    .parse::<tracing_subscriber::filter::Targets>()
+                    .map_err(|e| format!("Invalid RUST_LOG: unparseable log filter: {e}"))?;
+            }
+        }
+
         let mut overlay = state.overlay.clone();
         for (key, value) in updates {
             overlay.insert(key.clone(), value.clone());
@@ -444,6 +460,35 @@ mod tests {
         with_env(&h, pairs);
         h.reload().expect("the fixture must resolve");
         h
+    }
+
+    #[test]
+    fn test_patch_accepts_a_valid_log_filter() {
+        let h = handle();
+        let updated = h
+            .patch(&[("RUST_LOG".into(), "captchapi=trace".into())])
+            .unwrap();
+        assert_eq!(updated.log_level, "captchapi=trace");
+    }
+
+    #[test]
+    fn test_patch_refuses_a_log_filter_it_could_not_install() {
+        // Boot tolerates unparseable directives and falls back to a default. At runtime that
+        // would leave the reported configuration describing a filter the server never
+        // installed, so the patch is refused instead.
+        let h = handle();
+        let before = h.get().log_level.clone();
+
+        let err = h
+            .patch(&[("RUST_LOG".into(), "=:=nonsense=:=".into())])
+            .unwrap_err();
+
+        assert!(err.contains("unparseable log filter"), "{err}");
+        assert_eq!(h.get().log_level, before, "config must be untouched");
+        assert!(
+            h.overlay_keys().is_empty(),
+            "a failed patch is not recorded"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@ use captchapi::app::build_app;
 use captchapi::cli::{self, Handled, EXIT_USAGE};
 use captchapi::config::ConfigHandle;
 use captchapi::metrics::init_metrics;
-use captchapi::tasks::start_cleanup_task;
+use captchapi::tasks::{start_cleanup_task, start_log_filter_task};
 #[cfg(feature = "otel")]
 use captchapi::telemetry::shutdown_telemetry;
 use captchapi::telemetry::{init_tracing, is_telemetry_enabled};
@@ -35,8 +35,10 @@ async fn main() -> anyhow::Result<()> {
 
     let otel_enabled = is_telemetry_enabled(&config);
 
-    // Initialize tracing, with OpenTelemetry export when it is available
-    init_tracing(&config, otel_enabled)?;
+    // Initialize tracing, with OpenTelemetry export when it is available. The returned handle
+    // is what makes `log_level` a live field: the filter goes in behind a reload layer, so a
+    // later change can reach the installed subscriber.
+    let log_filter = init_tracing(&config, otel_enabled)?;
 
     // The handle owns the running configuration from here on, and retains the parsed arguments
     // so a reload resolves from exactly the same sources as this boot did.
@@ -115,6 +117,9 @@ async fn main() -> anyhow::Result<()> {
         boot.cleanup_interval_seconds
     );
 
+    // Follow `log_level`, which is live only because the filter is behind a reload handle.
+    let log_filter_task = start_log_filter_task(config.clone(), log_filter, shutdown_token.clone());
+
     // Reload on SIGHUP. Installed before the server starts because SIGHUP's default
     // disposition terminates the process — which is exactly what `captchapi reload` sends.
     #[cfg(unix)]
@@ -155,6 +160,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Waiting for background tasks to complete...");
     if let Err(e) = cleanup_handle.await {
         tracing::error!("Cleanup task panicked: {:?}", e);
+    }
+
+    if let Err(e) = log_filter_task.await {
+        tracing::error!("Log filter task panicked: {:?}", e);
     }
 
     #[cfg(unix)]

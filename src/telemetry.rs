@@ -9,7 +9,42 @@
 use crate::config::Config;
 use tracing::Level;
 use tracing_subscriber::filter::Targets;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{layer::SubscriberExt, reload, util::SubscriberInitExt, Registry};
+
+/// Swaps the running log filter.
+///
+/// The subscriber can only be installed once, and it is installed before the database — and so
+/// before any stored configuration — is available. Rather than delay it and lose the logs from
+/// config resolution and migration, which are the ones most worth having when boot fails, the
+/// filter goes in behind a [`reload::Layer`] and is replaced once the final configuration is
+/// known. That is also what lets `log_level` be a live field: a reload or a `PATCH` reaches the
+/// running filter through this handle.
+///
+/// Cheap to clone; the underlying handle is an `Arc`.
+#[derive(Clone)]
+pub struct LogFilterHandle(reload::Handle<Targets, Registry>);
+
+impl LogFilterHandle {
+    /// Replace the running filter with one parsed from `directives`.
+    ///
+    /// Unparseable directives leave the current filter in place. `log_filter` would otherwise
+    /// substitute its built-in default, which for a *running* server means a bad edit silently
+    /// changes what is logged instead of being ignored.
+    pub fn apply(&self, directives: &str) -> Result<(), String> {
+        let filter: Targets = directives
+            .parse()
+            .map_err(|e| format!("unparseable log filter {directives:?}: {e}"))?;
+        self.0
+            .modify(|current| *current = filter)
+            .map_err(|e| format!("log filter handle is no longer live: {e}"))
+    }
+}
+
+impl std::fmt::Debug for LogFilterHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LogFilterHandle")
+    }
+}
 
 /// Build the log filter from `RUST_LOG`-style directives.
 ///
@@ -36,33 +71,38 @@ pub fn log_filter(directives: &str) -> Targets {
 }
 
 /// Install the fmt subscriber with no OpenTelemetry layer.
-fn init_plain_tracing(config: &Config) {
+fn init_plain_tracing(config: &Config) -> LogFilterHandle {
+    let (filter, handle) = reload::Layer::new(log_filter(&config.log_level));
     tracing_subscriber::registry()
-        .with(log_filter(&config.log_level))
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
+    LogFilterHandle(handle)
 }
 
 /// Install the tracing subscriber, adding the OTLP export layer when the
 /// `otel` feature is compiled in and the configuration asks for it.
 #[cfg(feature = "otel")]
-pub fn init_tracing(config: &Config, otel_enabled: bool) -> anyhow::Result<()> {
-    if otel_enabled {
+pub fn init_tracing(config: &Config, otel_enabled: bool) -> anyhow::Result<LogFilterHandle> {
+    let handle = if otel_enabled {
         let tracer = init_telemetry(config)?;
         let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        let (filter, handle) = reload::Layer::new(log_filter(&config.log_level));
 
         tracing_subscriber::registry()
-            .with(log_filter(&config.log_level))
+            .with(filter)
             .with(tracing_subscriber::fmt::layer())
             .with(telemetry_layer)
             .init();
 
         tracing::info!("OpenTelemetry enabled");
+        LogFilterHandle(handle)
     } else {
-        init_plain_tracing(config);
+        let handle = init_plain_tracing(config);
         tracing::info!("OpenTelemetry disabled");
-    }
-    Ok(())
+        handle
+    };
+    Ok(handle)
 }
 
 /// Without the `otel` feature there is no exporter to install.
@@ -70,10 +110,10 @@ pub fn init_tracing(config: &Config, otel_enabled: bool) -> anyhow::Result<()> {
 /// `is_telemetry_enabled` has already warned on stderr if the configuration
 /// asked for telemetry, so this only records the build configuration.
 #[cfg(not(feature = "otel"))]
-pub fn init_tracing(config: &Config, _otel_enabled: bool) -> anyhow::Result<()> {
-    init_plain_tracing(config);
+pub fn init_tracing(config: &Config, _otel_enabled: bool) -> anyhow::Result<LogFilterHandle> {
+    let handle = init_plain_tracing(config);
     tracing::info!("OpenTelemetry not compiled in (rebuild with --features otel)");
-    Ok(())
+    Ok(handle)
 }
 
 #[cfg(feature = "otel")]
@@ -425,6 +465,53 @@ mod metrics_export_tests {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+
+    /// A live handle over a filter that is *not* installed globally.
+    ///
+    /// The subscriber can only be installed once per process, and other tests in this binary
+    /// need it, so these exercise the handle against a free-standing reload layer. The layer
+    /// must outlive the handle or `modify` fails, which is why it is returned alongside.
+    fn detached_handle(
+        initial: &str,
+    ) -> (
+        reload::Layer<Targets, Registry>,
+        LogFilterHandle,
+        reload::Handle<Targets, Registry>,
+    ) {
+        let (layer, handle) = reload::Layer::new(log_filter(initial));
+        (layer, LogFilterHandle(handle.clone()), handle)
+    }
+
+    #[test]
+    fn test_apply_replaces_the_running_filter() {
+        let (_layer, filter, raw) = detached_handle("captchapi=info");
+
+        filter.apply("captchapi=trace").expect("valid directives");
+
+        // `Targets` has no field accessors, so compare its rendering — which round-trips.
+        assert_eq!(raw.clone_current().unwrap().to_string(), "captchapi=trace");
+    }
+
+    #[test]
+    fn test_apply_rejects_bad_directives_and_keeps_the_old_filter() {
+        // `log_filter` substitutes its built-in default for unparseable input, which is right
+        // at startup and wrong for a running server: a bad edit would silently change what is
+        // logged instead of being ignored. `apply` parses first and refuses.
+        let (_layer, filter, raw) = detached_handle("captchapi=info");
+
+        let err = filter.apply("=:=nonsense=:=").unwrap_err();
+
+        assert!(err.contains("unparseable log filter"), "{err}");
+        assert_eq!(raw.clone_current().unwrap().to_string(), "captchapi=info");
+    }
+
+    #[test]
+    fn test_apply_reports_a_dead_handle_rather_than_panicking() {
+        let (layer, filter, _raw) = detached_handle("captchapi=info");
+        drop(layer);
+
+        assert!(filter.apply("captchapi=trace").is_err());
+    }
 
     #[cfg(feature = "otel")]
     use opentelemetry::trace::Tracer;

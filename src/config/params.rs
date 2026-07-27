@@ -341,7 +341,7 @@ pub const PARAMS: &[Param] = &[
         // per-callsite interest caching for the whole subscriber, so every request pays for a
         // feature almost nobody uses. Not a good trade in a service built with `opt-level = "z"`.
         kind: Kind::Str,
-        reload: Reload::Boot,
+        reload: Reload::Live,
         persist: Persist::Allowed,
         secret: false,
         default: Some("captchapi=debug,tower_http=debug"),
@@ -525,10 +525,15 @@ mod tests {
         assert!(by_toml("security.api_key_salt").is_none());
     }
 
+    /// Live means the running process can actually adopt a new value.
+    ///
+    /// That is the per-request and per-tick values, plus anything that holds a handle onto the
+    /// thing it configures — `log_level` reaches the installed subscriber through
+    /// `LogFilterHandle`, so it belongs here despite being read once per event rather than per
+    /// request. Everything else is captured at startup by the listener, the pool, the
+    /// middleware or the rate limiter, and cannot move without a restart.
     #[test]
-    fn test_only_per_request_values_are_live() {
-        // Everything else is captured at startup (listener, pool, middleware, rate limiter)
-        // and cannot be changed without a restart.
+    fn test_live_fields_are_exactly_those_the_process_can_adopt() {
         let live: HashSet<_> = PARAMS
             .iter()
             .filter(|p| p.reload == Reload::Live)
@@ -540,6 +545,7 @@ mod tests {
             "max_validation_attempts",
             "captcha_compression",
             "cleanup_interval_seconds",
+            "log_level",
         ]
         .into_iter()
         .collect();
