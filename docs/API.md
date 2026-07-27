@@ -86,7 +86,7 @@ Content-Type: application/json
 {
   "length": 5,                  // Optional: CAPTCHA text length 1-20 (default: 5)
   "expires_in_seconds": 300,    // Optional: TTL in seconds (default: 300)
-  "difficulty": 8,              // Optional: 1-10 (default: 8)
+  "difficulty": 5,              // Optional: 1-10 (default: 5)
   "width": 220,                 // Optional: pixels (default: 220)
   "height": 120,                // Optional: pixels (default: 120)
   "dark_mode": false,           // Optional: theme (default: false)

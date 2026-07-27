@@ -373,12 +373,14 @@ cargo nextest run
    lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
    nothing a machine finds harder.
 
-   Measured after the outline/transparency/gradient additions, over one grid of 12 challenges
-   (lengths 4-6 x difficulty 3/5/8/10) served at the shipped JPEG quality and attempted by Haiku
-   4.5, Sonnet 5 and Opus 5, vision only, each told the character set and the exact solution
-   length:
+   Measured after the outline/transparency/gradient additions but **before** the concave intensity
+   ramp and the post-composite blur, over one grid of 12 challenges (lengths 4-6 x difficulty
+   3/5/8/10) served at the shipped JPEG quality and attempted by Haiku 4.5, Sonnet 5 and Opus 5,
+   vision only, each told the character set and the exact solution length. Read it as the baseline
+   the two later changes were measured against, not as current numbers — difficulty 5 in this table
+   is roughly what difficulty 3 renders like now:
 
-   | difficulty | 3 | 5 | 8 (default) | 10 |
+   | difficulty | 3 | 5 | 8 | 10 |
    |---|---|---|---|---|
    | vision only, 5 arms | 10/15 | 5/15 | 1/15 | 0/15 |
    | with image tools, 3 arms | 6/9 | 5/9 | 0/9 | 0/9 |
@@ -542,12 +544,13 @@ cargo nextest run
    intent, but it belongs in release notes. If low difficulty needs to stay genuinely easy, the lever
    is the exponent: 0.8 is a milder version of the same shape.
 
-   One thing to check before shipping the pair of changes above: **`DEFAULT_DIFFICULTY` may now be
-   too high.** It was raised to 8 because difficulty 5 was solvable; with the curve and the
-   post-composite blur, difficulty 5 measured 0/18 against both frontier vision models. Dropping the
-   default back to 5 would recover the ~20% render time and ~20% stored bytes that raising it cost.
-   Do not do that on the vision-only numbers alone — tool-equipped arms historically did better at
-   difficulty 5 than vision-only ones, and that is the arm that would decide it.
+   **`DEFAULT_DIFFICULTY` came back down to 5 as a consequence of the two changes above**, having
+   been raised to 8 when level 5 was still solvable. Level 5 now measures 0/18 against both frontier
+   vision models, which is the floor level 8 was needed for, so the default was paying about 20% more
+   render time and 20% more stored bytes for a solve rate that was already zero. The caveat is on the
+   constant itself: that zero is vision-only, and tool-equipped arms have historically done better at
+   difficulty 5 than vision-only ones, so a solver with python and Pillow is the arm that should
+   decide whether 5 holds.
 
    Implementation note worth not undoing: rotation goes through
    `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row

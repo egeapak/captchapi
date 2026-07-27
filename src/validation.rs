@@ -22,21 +22,34 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 // Default values
 /// Difficulty applied when a request does not name one.
 ///
-/// Raised from 5 to 8 on measured evidence. Three vision models were given 27
-/// challenges each across lengths 4-6; at difficulty 5 they solved 13 of 27
-/// outright — Sonnet alone took 8 of 9, including every 5- and 6-character
-/// image. At difficulty 8 and above, no model solved a single challenge longer
-/// than four characters in 36 attempts.
+/// This has been 5, then 8, and now 5 again, and the round trip is the point:
+/// the number that matters is the solve rate, and the renderer changed
+/// underneath it.
 ///
-/// Nearly every deformation scales with this value (see
-/// `services::captcha::generator::Deformations::for_difficulty`), so the
-/// default was landing in the one band where they barely applied. Costs about
-/// 20% more render time and 20% more stored bytes per session.
+/// It went to 8 because difficulty 5 was solvable — three vision models were
+/// given 27 challenges each across lengths 4-6 and took 13 of 27 at level 5,
+/// Sonnet alone 8 of 9. Nearly every deformation scales with this value (see
+/// `services::captcha::generator::Deformations::for_difficulty`), and the old
+/// linear ramp left level 5 in the band where they barely applied.
 ///
-/// `blur` is the exception and is held flat at every level above 1 — it ramped
-/// once, measured as doing nothing, and the diagnosis was that the ramp put it
-/// where there was no solve rate left to take away. See `FLAT_BLUR`.
-pub const DEFAULT_DIFFICULTY: i64 = 8;
+/// Two later changes moved that band down. `INTENSITY_CURVE` made the ramp
+/// concave, so level 5 now carries the intensity the linear ramp gave level 7,
+/// and the blur moved after the composite, where it smears clustered letters
+/// into each other instead of softening their edges. Measured after both, on
+/// paired crossover sets at the shipped JPEG quality, **difficulty 5 was solved
+/// 0 times in 18 attempts by Opus 5 and Sonnet 5** — the same floor difficulty 8
+/// used to be needed for. Holding the default at 8 was paying about 20% more
+/// render time and 20% more stored bytes for a solve rate that was already zero.
+///
+/// The caveat on that zero, kept because it is the thing that would reverse this:
+/// it is vision-only. Tool-equipped arms have historically done better at
+/// difficulty 5 than vision-only ones — 3/3 against 2/3 on one earlier grid — so
+/// a solver with python and Pillow is the arm that should decide whether 5 holds.
+/// If it does not, raise this rather than reaching for another deformation.
+///
+/// `blur` does not scale with this value; it is held flat at every level above
+/// 1. See `FLAT_BLUR`.
+pub const DEFAULT_DIFFICULTY: i64 = 5;
 pub const DEFAULT_LENGTH: i64 = 5;
 pub const DEFAULT_WIDTH: i64 = 220;
 pub const DEFAULT_HEIGHT: i64 = 120;
