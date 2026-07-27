@@ -25,11 +25,28 @@ configured.** `database_url` and `database_max_connections` are read to open the
 can never be read *from* it. `main.rs` makes this concrete: config resolves at line 27, the pool
 opens at line 75.
 
-**2. Anything used before the pool opens would apply one boot late.** Between those two lines
-sit `init_tracing` (`log_level`, the three `otel_*`) and the PID file. Storing those would mean
-a value that silently takes effect on the *next* restart — exactly the half-truth this codebase
-refuses elsewhere. They stay unstorable unless subscriber initialisation moves after the pool,
-which loses early-boot logs. See decision D2.
+**2. Anything used before the pool opens needs a way to be reconfigured afterwards.** Between
+those two lines sit `init_tracing` (`log_level`, the three `otel_*`) and the PID file write.
+A stored value for one of these would not merely be late — it would be *permanently* ineffective,
+because after a restart step 2 still precedes step 5.
+
+The fix is to install the subscriber once at step 2 with a
+[`tracing_subscriber::reload::Layer`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/reload/)
+wrapping the filter, and swap the filter at step 6 once the stored layer is known. Early-boot
+logs are kept — config errors and migration failures still go through the real subscriber — and
+`log_level` becomes not just storable but `Reload::Live`, changeable by `PATCH`, by a reload and
+by the store. Verified against `tracing-subscriber` 0.3.23 with this repo's `Targets` filter, so
+it costs no new dependency and does not drag in the `regex` that `EnvFilter` would.
+
+The PID file write simply moves after step 6, making `pid_file` storable with no machinery at
+all.
+
+The three `otel_*` settings stay unstorable in this change. Their layer is not just a filter:
+`init_telemetry` installs a global `TracerProvider` and `MeterProvider`, and `CLAUDE.md` records
+that the ordering there is load-bearing — reversing `init_tracing` and `init_metrics` silently
+restores a bug where every instrument gets a no-op meter. Swapping providers at runtime means
+shutting the old one down cleanly and is a change that deserves its own review, not a rider on
+this one.
 
 **3. Secrets must not be stored.** They are deliberately file-only on the CLI and absent from
 the TOML schema so a checked-in config file is safe by construction. Writing them into a SQLite
@@ -66,19 +83,23 @@ pub enum Persist {
 }
 ```
 
-11 of the 22 parameters are `Never`:
+9 of the 22 parameters are `Never`:
 
 | excluded | why |
 |----------|-----|
 | `api_key_salt`, `master_api_key`, `solution_hash_secret`, `image_encryption_secret` | constraint 3 |
 | `database_url`, `database_max_connections` | constraint 1 |
-| `pid_file`, `log_level`, `otel_enabled`, `otel_endpoint`, `otel_service_name` | constraint 2 |
+| `otel_enabled`, `otel_endpoint`, `otel_service_name` | constraint 2 |
 
-Leaving 11 `Allowed`: `server_host`, `server_port`, `default_session_ttl_seconds`,
-`max_session_ttl_seconds`, `max_validation_attempts`, `captcha_compression`,
-`cleanup_interval_seconds`, `rate_limit_requests_per_second`, `rate_limit_burst_size`,
-`rate_limit_reverse_proxy`, `admin_config_write` — every live field, plus the six boot fields an
-operator actually wants to tune.
+Leaving 13 `Allowed`: `server_host`, `server_port`, `pid_file`, `log_level`,
+`default_session_ttl_seconds`, `max_session_ttl_seconds`, `max_validation_attempts`,
+`captcha_compression`, `cleanup_interval_seconds`, `rate_limit_requests_per_second`,
+`rate_limit_burst_size`, `rate_limit_reverse_proxy`, `admin_config_write`.
+
+`log_level` also moves from `Reload::Boot` to `Reload::Live`, on the strength of the reload
+handle. `test_only_per_request_values_are_live` needs its name and rationale revisited: the rule
+becomes "live means the running process can adopt it", which is per-request values *plus*
+anything holding a reload handle, rather than per-request values alone.
 
 Tests enforce that every `secret` param is `Never`, that the two database params are `Never`,
 and that the excluded list is exactly the table above, so adding a parameter forces a decision
@@ -275,8 +296,12 @@ Budget: roughly +3 KB of assets, keeping the pair under 20 KB.
 
 Ordered so each step compiles, passes, and is independently reviewable.
 
-1. **`Persist` column and the storable set** — `params.rs`, plus the three invariant tests.
+1. **`Persist` column and the storable set** — `params.rs`, plus the invariant tests.
    No behaviour change.
+1b. **Reload handle for the log filter** — `telemetry.rs` returns a handle from `init_tracing`;
+   `log_level` becomes `Reload::Live` and the PID write moves after the stored layer is read.
+   Independently useful: it makes the log level changeable by `PATCH` today, before any of the
+   storage work lands.
 2. **`Source::Stored` and the layer** — `sources.rs`, `cli.rs` (`Layers.stored`), unit tests for
    precedence and for `Stored` not being pinned.
 3. **`ConfigStore` service** — `src/services/config_store.rs`: read the layer, upsert, delete,
@@ -317,11 +342,11 @@ Plus Bruno coverage for the four new endpoints and Playwright coverage for the c
 **D1 — restart drops in-flight requests.** Accepted. The alternative is overlapping processes
 with socket handoff, a separate feature several times this size.
 
-**D2 — `log_level`, `pid_file` and the `otel_*` trio stay unstorable.** Recommended: the
-alternative is moving subscriber initialisation after the pool opens and losing early-boot logs,
-which is a bad trade for three rarely-changed settings. Worth confirming, since it means the
-console cannot change the log level — arguably the setting an operator most wants to change
-live.
+**D2 — `log_level` and `pid_file` become storable; the `otel_*` trio does not.** Settled by
+installing a bootstrap subscriber behind a reload handle rather than moving initialisation, so
+nothing is lost from early boot and `log_level` gains live reconfiguration as a bonus. The
+telemetry providers are excluded for a specific reason rather than by category; see constraint
+2.
 
 **D3 — `PUT /config/stored` does not restart.** Storing and restarting stay separate calls, so
 storing several fields costs one restart rather than several.
