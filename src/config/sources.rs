@@ -472,12 +472,73 @@ mod tests {
 
     #[test]
     fn test_source_labels() {
+        assert_eq!(Source::Admin.label(), "admin");
         assert_eq!(Source::Cli.label(), "cli");
         assert_eq!(Source::Env.label(), "env");
         assert_eq!(Source::EnvFile.label(), "env-file");
         assert_eq!(Source::File.label(), "file");
         assert_eq!(Source::Carried.label(), "carried");
         assert_eq!(Source::Default.label(), "default");
+    }
+
+    /// Exactly two layers are fixed for the life of the process, and the whole pinning rule
+    /// rests on that list being right — so it is spelled out rather than spot-checked.
+    #[test]
+    fn test_only_the_process_level_layers_are_pinned() {
+        assert!(Source::Cli.is_pinned());
+        assert!(Source::Env.is_pinned());
+
+        // Files can be edited and re-read, so an override there is something a reload can be
+        // made to agree with.
+        assert!(!Source::EnvFile.is_pinned());
+        assert!(!Source::File.is_pinned());
+        assert!(!Source::Default.is_pinned());
+        assert!(!Source::Carried.is_pinned());
+        // And a value this API set is by definition one it may set again.
+        assert!(!Source::Admin.is_pinned());
+    }
+
+    #[test]
+    fn test_the_overlay_outranks_the_command_line() {
+        let overlay = layer(&[("CAPTCHA_COMPRESSION", "90")]);
+        let cli = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried).with_overlay(&overlay);
+
+        assert_eq!(l.get("CAPTCHA_COMPRESSION").unwrap(), "90");
+        assert_eq!(l.source_of("CAPTCHA_COMPRESSION"), Source::Admin);
+    }
+
+    #[test]
+    fn test_without_an_overlay_the_command_line_still_answers() {
+        let cli = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried);
+
+        assert_eq!(l.get("CAPTCHA_COMPRESSION").unwrap(), "70");
+        assert_eq!(l.source_of("CAPTCHA_COMPRESSION"), Source::Cli);
+    }
+
+    #[test]
+    fn test_capture_records_a_layer_for_every_parameter() {
+        let cli = layer(&[("SERVER_PORT", "9999")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried);
+
+        let sources = Sources::capture(&l);
+
+        assert_eq!(sources.get("server_port"), Source::Cli);
+        assert!(sources.is_pinned("server_port"));
+        assert_eq!(sources.get("captcha_compression"), Source::Default);
+        assert!(!sources.is_pinned("captcha_compression"));
+        // Fails open: a field no layer mentioned must not be treated as pinned.
+        assert_eq!(sources.get("nonexistent_field"), Source::Default);
+        assert!(!sources.is_pinned("nonexistent_field"));
     }
 
     // ── TOML parsing ──────────────────────────────────────────────────────────

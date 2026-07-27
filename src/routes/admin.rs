@@ -191,6 +191,12 @@ async fn patch_config(
         ));
     }
 
+    // One snapshot for the whole batch: `sources()` takes the handle's lock and clones the map,
+    // so reading it per field would do both once per key for no benefit. It is only a
+    // fast-fail with a precise error code either way — `ConfigHandle::patch` re-checks under
+    // its own lock, which is what actually makes the rule hold against a concurrent reload.
+    let sources = state.config.sources();
+
     let mut updates = Vec::with_capacity(req.len());
     for (field, value) in &req {
         let Some(param) = by_field(field) else {
@@ -212,7 +218,7 @@ async fn patch_config(
         // only until the next reload and could never be made durable. Rejected here, ahead of
         // `ConfigHandle::patch`, so the response carries its own error code rather than being
         // flattened into `invalid_config` with everything else the handle refuses.
-        let source = state.config.sources().get(param.field);
+        let source = sources.get(param.field);
         if source.is_pinned() {
             state.metrics.system.config_patch_failures.add(1, &[]);
             return Err(AppError::ConfigPinned(format!(

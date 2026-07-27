@@ -29,15 +29,13 @@ tests {
     });
   });
 
-  test("should only mark a field editable if a PATCH would accept it", function() {
+  test("editable should be exactly reloadable-and-not-pinned", function() {
+    // An equivalence, not an implication: a one-way check would pass a server that marked
+    // nothing editable at all, which is the failure mode most likely to slip through.
     Object.keys(res.body.config).forEach(function(field) {
       const entry = res.body.config[field];
-      // Editable implies reloadable, and implies the value was not pinned by the command
-      // line or the environment this server was started with.
-      if (entry.editable) {
-        expect(entry.reloadable, field).to.equal(true);
-        expect(["cli", "env"], field).to.not.include(entry.source);
-      }
+      const pinned = entry.source === "cli" || entry.source === "env";
+      expect(entry.editable, field).to.equal(entry.reloadable && !pinned);
     });
   });
 
