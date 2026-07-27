@@ -101,6 +101,21 @@ function render(data) {
     rows.appendChild(tr);
   }
 
+  // Boot fields that a restart would change. Stored or not: an edited env file shows up here
+  // too, so the wording says what a restart would do rather than naming a cause.
+  const waiting = data.pending_restart || [];
+  const restart = $("restart");
+  restart.replaceChildren();
+  if (waiting.length) {
+    const label = document.createElement("b");
+    label.textContent =
+      waiting.length === 1 ? "1 setting needs a restart:" : waiting.length + " settings need a restart:";
+    const names = document.createElement("code");
+    names.textContent = waiting.join(", ");
+    restart.append(label, names);
+  }
+  restart.classList.toggle("hide", !waiting.length);
+
   // Only say something when there is something to say — "no overrides active" is the
   // normal state and does not need a line of its own.
   $("ovr").textContent = data.overrides.length

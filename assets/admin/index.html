@@ -71,6 +71,15 @@ background:var(--panel);color:var(--dim);overflow-wrap:anywhere}
 .msg.ok{color:var(--ok);border-color:var(--line);border-left-color:var(--ok);background:var(--ok-soft)}
 .msg.err{color:var(--err);border-color:var(--line);border-left-color:var(--err);background:var(--err-soft)}
 
+/* pending restart */
+.restart{display:flex;gap:.55rem;align-items:baseline;font-size:.85rem;margin:0 0 1rem;
+padding:.65rem .85rem;border:1px solid var(--line);border-left:3px solid var(--warn);
+border-radius:10px;background:var(--warn-soft);color:var(--warn);overflow-wrap:anywhere}
+.restart::before{content:"";flex:none;width:.4rem;height:.4rem;border-radius:50%;
+background:currentColor;transform:translateY(-.15rem)}
+.restart b{font-weight:600}
+.restart code{font-family:var(--mono);font-size:.8rem}
+
 /* legend + table */
 .legend{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .5rem;font-size:.78rem;color:var(--dim);margin:0 0 .85rem}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
@@ -146,6 +155,7 @@ td.v input{padding:.35rem .5rem;margin-top:.3rem}
   </header>
 
   <div id="msg" class="msg"></div>
+  <div id="restart" class="restart hide"></div>
 
   <form id="gate" class="gate">
     <input id="key" type="password" autocomplete="current-password" aria-label="Master API key"

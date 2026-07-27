@@ -3,7 +3,7 @@
 // types, so everything lives in `lib.rs` and is used from there.
 use captchapi::app::build_app;
 use captchapi::cli::{self, Handled, EXIT_USAGE};
-use captchapi::config::ConfigHandle;
+use captchapi::config::{apply_stored, ConfigHandle};
 use captchapi::metrics::init_metrics;
 use captchapi::services::{BootOutcome, ConfigStore};
 use captchapi::tasks::{start_cleanup_task, start_log_filter_task};
@@ -113,38 +113,23 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let stored = store.load().await?;
-    let mut stored_applied = true;
-    let (config, sources) = if stored.is_empty() {
-        (config, sources)
-    } else {
-        match cli::resolve_with_stored(&cli_args, stored.clone()) {
-            Ok(resolved) => {
-                tracing::info!("Applied {} stored configuration setting(s)", stored.len());
-                resolved
-            }
-            // A stored value that cannot resolve must not stop the server: it would take the
-            // service down over a row in a table that the service itself is the only way to
-            // edit. Carry on with the first-pass configuration and say so loudly.
-            Err(e) => {
-                stored_applied = false;
-                tracing::error!("Ignoring the stored configuration, which does not resolve: {e}");
-                (config, sources)
-            }
+    let booted = apply_stored(&cli_args, config, sources, &stored, booted_generation);
+    match &booted.error {
+        // A stored value that cannot resolve must not stop the server: it would take the
+        // service down over a row in a table that the service itself is the only supported way
+        // to edit. Carry on with the first-pass configuration and say so loudly.
+        Some(e) => {
+            tracing::error!("Ignoring the stored configuration, which does not resolve: {e}");
+            tracing::warn!(
+                "Not confirming this configuration generation: its settings were not applied"
+            );
         }
-    };
-
-    // Serving proves nothing about settings that were never applied. Confirming the generation
-    // anyway would record a configuration that does not resolve as the known-good one — and
-    // since a rollback restores the newest *confirmed* snapshot, that would make the broken
-    // settings the thing every later rollback restores to.
-    let booted_generation = if stored_applied {
-        booted_generation
-    } else {
-        tracing::warn!(
-            "Not confirming this configuration generation: its stored settings were not applied"
-        );
-        None
-    };
+        None if !stored.is_empty() => {
+            tracing::info!("Applied {} stored configuration setting(s)", stored.len());
+        }
+        None => {}
+    }
+    let (config, sources, booted_generation) = (booted.config, booted.sources, booted.confirmable);
 
     // Now that the final configuration is known, push it into the filter installed at startup.
     if let Err(e) = log_filter.apply(&config.log_level) {

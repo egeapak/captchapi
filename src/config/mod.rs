@@ -2,10 +2,12 @@ use crate::models::SessionConfig;
 use std::env;
 use std::fmt;
 
+pub mod boot;
 pub mod handle;
 pub mod params;
 pub mod sources;
 
+pub use boot::{apply_stored, Booted};
 pub use handle::ConfigHandle;
 pub use params::{Kind, Param, Persist, Reload, PARAMS};
 pub use sources::{Layer, LayeredEnv, Source, Sources};
