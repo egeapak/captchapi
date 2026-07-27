@@ -612,6 +612,78 @@ impl GlyphMask {
         }
     }
 
+    /// Defocuses the glyph with a gaussian of standard deviation `sigma` pixels.
+    ///
+    /// Separable: a horizontal pass then a vertical one, which costs `2k` taps
+    /// per pixel instead of the `k²` a 2D kernel would. The kernel is truncated
+    /// at 3σ, where a gaussian retains 99.7% of its mass, and renormalised so
+    /// the truncation does not quietly darken the glyph.
+    ///
+    /// The buffer grows by the kernel radius on every side and `left`/`top` move
+    /// to match, so the caller composites at the same pen position and the glyph
+    /// simply occupies more room — the same contract as [`displace_rows`]. A blur
+    /// that clipped instead would eat the outermost ink and shrink the letter as
+    /// it softened.
+    ///
+    /// [`displace_rows`]: GlyphMask::displace_rows
+    pub fn blur(&self, sigma: f32) -> GlyphMask {
+        if sigma <= 0.0 || self.width == 0 || self.height == 0 {
+            return self.clone();
+        }
+
+        let radius = (3.0 * sigma).ceil() as i32;
+        let kernel: Vec<f32> = (-radius..=radius)
+            .map(|offset| {
+                let x = offset as f32;
+                (-(x * x) / (2.0 * sigma * sigma)).exp()
+            })
+            .collect();
+        let total: f32 = kernel.iter().sum();
+        let kernel: Vec<f32> = kernel.iter().map(|weight| weight / total).collect();
+
+        let pad = radius as u32;
+        let width = self.width + 2 * pad;
+        let height = self.height + 2 * pad;
+
+        // Horizontal pass: full output width, original height. Reading through
+        // `at` means everything outside the source is zero, which is what the
+        // padding is for.
+        let mut horizontal = vec![0.0f32; (width * self.height) as usize];
+        for y in 0..self.height as i32 {
+            for x in 0..width as i32 {
+                let mut sum = 0.0;
+                for (index, weight) in kernel.iter().enumerate() {
+                    let offset = index as i32 - radius;
+                    sum += weight * self.at(x - pad as i32 + offset, y);
+                }
+                horizontal[(y as u32 * width + x as u32) as usize] = sum;
+            }
+        }
+
+        // Vertical pass over that intermediate, into the padded output.
+        let mut coverage = vec![0.0f32; (width * height) as usize];
+        for y in 0..height as i32 {
+            for x in 0..width {
+                let mut sum = 0.0;
+                for (index, weight) in kernel.iter().enumerate() {
+                    let source = y - pad as i32 + index as i32 - radius;
+                    if source >= 0 && source < self.height as i32 {
+                        sum += weight * horizontal[(source as u32 * width + x) as usize];
+                    }
+                }
+                coverage[(y as u32 * width + x) as usize] = sum;
+            }
+        }
+
+        GlyphMask {
+            width,
+            height,
+            left: self.left - pad as i32,
+            top: self.top - pad as i32,
+            coverage,
+        }
+    }
+
     /// Scales coverage by an opacity ramping from `from` to `to` along `angle`.
     ///
     /// Coverage *is* the blend weight [`composite_mask`] applies, so scaling it
@@ -1150,6 +1222,124 @@ mod tests {
         let filled = glyph();
         let hollow = filled.outline(500.0);
         assert!((ink(&hollow) - ink(&filled)).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_blur_conserves_ink_and_keeps_the_glyph_centred() {
+        let sharp = glyph();
+        let soft = sharp.blur(2.0);
+
+        // The buffer grows by the kernel radius on each side and the offsets
+        // move to match, so the glyph stays where it was.
+        let pad = (3.0f32 * 2.0).ceil() as u32;
+        assert_eq!(
+            (soft.width, soft.height),
+            (sharp.width + 2 * pad, sharp.height + 2 * pad)
+        );
+        assert_eq!(
+            (soft.left, soft.top),
+            (sharp.left - pad as i32, sharp.top - pad as i32)
+        );
+
+        // A normalised kernel redistributes ink without creating or destroying
+        // it. Growing the buffer is what makes this true — a clipping blur
+        // would lose the tails and darken the letter.
+        let (before, after) = (ink(&sharp), ink(&soft));
+        assert!(
+            (after - before).abs() / before < 0.01,
+            "blur lost or invented ink: {before} -> {after}"
+        );
+
+        // Centroid in absolute (composited) coordinates must not move.
+        let centroid = |mask: &GlyphMask| -> (f32, f32) {
+            let mut weight = 0.0;
+            let (mut mx, mut my) = (0.0, 0.0);
+            for y in 0..mask.height as i32 {
+                for x in 0..mask.width as i32 {
+                    let value = mask.at(x, y);
+                    weight += value;
+                    mx += value * (x + mask.left) as f32;
+                    my += value * (y + mask.top) as f32;
+                }
+            }
+            (mx / weight, my / weight)
+        };
+        let (sx, sy) = centroid(&sharp);
+        let (bx, by) = centroid(&soft);
+        assert!(
+            (sx - bx).abs() < 0.1 && (sy - by).abs() < 0.1,
+            "blur moved the glyph: ({sx},{sy}) -> ({bx},{by})"
+        );
+    }
+
+    #[test]
+    fn test_blur_softens_edges_in_proportion_to_sigma_and_zero_is_identity() {
+        let sharp = glyph();
+        assert_eq!(
+            sharp.blur(0.0).coverage,
+            sharp.coverage,
+            "sigma 0 is identity"
+        );
+        assert_eq!(sharp.blur(-1.0).coverage, sharp.coverage);
+
+        // Softness measured as the share of inked pixels that are neither
+        // background nor solid — a sharp glyph has those only on its outline,
+        // a blurred one has them throughout the falloff.
+        let partial = |mask: &GlyphMask| -> f64 {
+            let inked: Vec<f32> = mask
+                .coverage
+                .iter()
+                .copied()
+                .filter(|v| *v > 0.001)
+                .collect();
+            inked.iter().filter(|v| **v < 0.99).count() as f64 / inked.len() as f64
+        };
+
+        // Peak coverage is the metric that tracks sigma without saturating:
+        // the partial-pixel share tops out at 1.0 as soon as no pixel is left
+        // solid, which happens well before the blur stops deepening.
+        let peaks: Vec<f32> = [0.5f32, 1.0, 2.0, 3.0]
+            .iter()
+            .map(|sigma| {
+                sharp
+                    .blur(*sigma)
+                    .coverage
+                    .iter()
+                    .copied()
+                    .fold(0.0, f32::max)
+            })
+            .collect();
+        for pair in peaks.windows(2) {
+            assert!(
+                pair[1] < pair[0],
+                "each step of sigma should spread ink further, dropping the peak: {peaks:?}"
+            );
+        }
+
+        let shares = [
+            partial(&sharp),
+            partial(&sharp.blur(1.0)),
+            partial(&sharp.blur(3.0)),
+        ];
+        assert!(
+            shares[1] > shares[0] && shares[2] > shares[1],
+            "blurring should turn solid interior into falloff: {shares:?}"
+        );
+        assert!(
+            shares[2] > 0.95,
+            "a heavily blurred glyph should be almost entirely falloff: {shares:?}"
+        );
+
+        // And it really is a blur, not a fade: the peak drops because ink
+        // spreads, while the footprint grows.
+        let peak = |mask: &GlyphMask| mask.coverage.iter().copied().fold(0.0, f32::max);
+        let footprint = |mask: &GlyphMask| mask.coverage.iter().filter(|v| **v > 0.001).count();
+        let soft = sharp.blur(2.0);
+        assert!(peak(&soft) < peak(&sharp), "the peak should drop");
+        assert!(
+            footprint(&soft) > footprint(&sharp),
+            "the inked footprint should grow"
+        );
     }
 
     #[test]

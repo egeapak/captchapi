@@ -125,6 +125,23 @@ const MIN_OUTLINE_OPACITY: f32 = 0.6;
 /// from the near end on the hue wheel, in turns — 0.5 being the opposite side.
 const MAX_GRADIENT_HUE_SHIFT: f32 = 0.45;
 
+/// At full intensity, a letter is defocused with a gaussian of up to this sigma,
+/// as a fraction of the font size.
+///
+/// Drawn per letter from zero up to the cap, so a solution mixes sharp and soft
+/// glyphs rather than being uniformly out of focus — the same argument as
+/// `MAX_OUTLINE_SHARE`. At 42px the cap is a sigma of about 1.9px, which visibly
+/// softens a stroke without dissolving it.
+const MAX_BLUR: f32 = 0.045;
+
+/// The blur cap for a letter that is *also* outlined.
+///
+/// An outline stroke is 1-2.75px wide, and a gaussian whose sigma approaches the
+/// stroke width does not soften the stroke so much as erase it — the two edges
+/// blur into each other and the counter fills back in, undoing the hollowing.
+/// This keeps sigma well inside the thinnest stroke `OUTLINE_STROKE` can draw.
+const MAX_OUTLINE_BLUR: f32 = 0.015;
+
 /// How strongly each per-letter deformation is applied.
 ///
 /// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
@@ -156,6 +173,8 @@ pub struct Deformations {
     /// How far the two ends of a letter's colour gradient may diverge. At zero a
     /// letter is painted in one flat colour, as it always was.
     pub gradient: f32,
+    /// How strongly a letter may be defocused.
+    pub blur: f32,
 }
 
 impl Deformations {
@@ -170,6 +189,7 @@ impl Deformations {
             outline: 0.0,
             transparency: 0.0,
             gradient: 0.0,
+            blur: 0.0,
         }
     }
 
@@ -184,7 +204,7 @@ impl Deformations {
     ///
     /// Each deformation has its own cap — `MAX_JITTER`, `MAX_SCALE_VARIANCE`,
     /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE`, `MAX_OUTLINE_SHARE`, `MIN_OPACITY`,
-    /// `MAX_GRADIENT_HUE_SHIFT` — so retuning how strong one gets at a given
+    /// `MAX_GRADIENT_HUE_SHIFT`, `MAX_BLUR` — so retuning how strong one gets at a given
     /// level is a change to that constant, not to this ramp.
     pub fn for_difficulty(difficulty: u32) -> Self {
         let intensity = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
@@ -200,6 +220,7 @@ impl Deformations {
             outline: intensity,
             transparency: intensity,
             gradient: intensity,
+            blur: intensity,
         }
     }
 }
@@ -305,6 +326,8 @@ struct Shading {
     fade: Option<(f32, f32)>,
     /// Far end of the colour gradient, and its axis in radians.
     gradient: Option<(Hsl, f32)>,
+    /// Gaussian sigma in pixels, or 0.0 for a sharp letter.
+    sigma: f32,
 }
 
 impl Shading {
@@ -348,6 +371,20 @@ impl Shading {
             )
         });
 
+        // Capped harder when the letter is hollow, for the reason on
+        // MAX_OUTLINE_BLUR: a sigma near the stroke width closes the counter
+        // back up and undoes the outline.
+        let sigma = if deform.blur > 0.0 {
+            let cap = if stroke > 0.0 {
+                MAX_OUTLINE_BLUR
+            } else {
+                MAX_BLUR
+            };
+            scale * cap * deform.blur.clamp(0.0, 1.0) * rng().random_range(0.0..1.0)
+        } else {
+            0.0
+        };
+
         let gradient = (deform.gradient > 0.0).then(|| {
             let intensity = deform.gradient.clamp(0.0, 1.0);
             let mut rng = rng();
@@ -375,6 +412,7 @@ impl Shading {
             stroke,
             fade,
             gradient,
+            sigma,
         }
     }
 
@@ -384,6 +422,15 @@ impl Shading {
         // the ink the stroke is about to be cut from.
         let mask = if self.stroke > 0.0 {
             mask.outline(self.stroke)
+        } else {
+            mask
+        };
+        // Defocus after hollowing and before fading: blurring first would give
+        // the erosion a soft mask to cut from and produce a wide smear rather
+        // than a soft stroke, and fading first would be undone here anyway,
+        // since the blur redistributes the very coverage the fade just scaled.
+        let mask = if self.sigma > 0.0 {
+            mask.blur(self.sigma)
         } else {
             mask
         };
@@ -843,6 +890,88 @@ mod tests {
         write_jpeg(&contact_sheet(&by_difficulty, 3), "11-by-difficulty.jpg");
     }
 
+    /// Isolates what `blur` costs: render time and encoded size, blur off
+    /// against blur on with everything else held identical.
+    ///
+    /// Ignored because it measures rather than asserts — a timing threshold in
+    /// CI would be a flake generator:
+    ///
+    /// ```text
+    /// cargo test --release --lib blur_impact -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measures render time and encoded size, asserts nothing"]
+    fn blur_impact() {
+        use image::codecs::jpeg::JpegEncoder;
+        use std::time::Instant;
+
+        const DRAWS: usize = 400;
+        const QUALITY: u8 = 40;
+
+        fn measure(difficulty: u32, deform: Deformations) -> (u128, usize) {
+            let mut times = Vec::with_capacity(DRAWS);
+            let mut sizes = Vec::with_capacity(DRAWS);
+            for _ in 0..DRAWS {
+                let start = Instant::now();
+                let image = render(SAMPLE_TEXT, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
+                times.push(start.elapsed().as_micros());
+                let mut bytes = Vec::new();
+                JpegEncoder::new_with_quality(&mut bytes, QUALITY)
+                    .encode_image(&image)
+                    .expect("encodes");
+                sizes.push(bytes.len());
+            }
+            times.sort_unstable();
+            sizes.sort_unstable();
+            (times[DRAWS / 2], sizes[DRAWS / 2])
+        }
+
+        // Warm the lazily-parsed font so its one-time cost lands on neither arm.
+        let _ = render(
+            SAMPLE_TEXT,
+            5,
+            SAMPLE_W,
+            SAMPLE_H,
+            false,
+            Deformations::none(),
+        );
+
+        println!("\nblur impact, medians over {DRAWS} draws at quality {QUALITY}\n");
+        println!(
+            "{:>4} {:>9} {:>9} {:>8}   {:>9} {:>9} {:>8}",
+            "diff", "us off", "us on", "delta", "bytes off", "bytes on", "delta"
+        );
+        for difficulty in [1u32, 3, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            let without = Deformations { blur: 0.0, ..with };
+            let (t_off, s_off) = measure(difficulty, without);
+            let (t_on, s_on) = measure(difficulty, with);
+            let pct = |a: f64, b: f64| 100.0 * (b - a) / a;
+            println!(
+                "{difficulty:>4} {t_off:>9} {t_on:>9} {:>7.1}%   {s_off:>9} {s_on:>9} {:>7.1}%",
+                pct(t_off as f64, t_on as f64),
+                pct(s_off as f64, s_on as f64)
+            );
+        }
+
+        // Blur alone, no other deformation and no noise, so the primitive's own
+        // cost is visible rather than buried under the gaussian noise pass.
+        let (bare_t, bare_s) = measure(1, Deformations::none());
+        let (blur_t, blur_s) = measure(
+            1,
+            Deformations {
+                blur: 1.0,
+                ..Deformations::none()
+            },
+        );
+        println!(
+            "\nblur alone at difficulty 1: {bare_t}us -> {blur_t}us ({:+.1}%), \
+             {bare_s}B -> {blur_s}B ({:+.1}%)",
+            100.0 * (blur_t as f64 - bare_t as f64) / bare_t as f64,
+            100.0 * (blur_s as f64 - bare_s as f64) / bare_s as f64
+        );
+    }
+
     /// Letters only, on a bare canvas — no interference lines, ellipses or
     /// noise — so a deformation can be observed without random clutter on top.
     fn glyph_canvas(text: &str, deform: Deformations) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
@@ -1251,7 +1380,7 @@ mod tests {
 
         // Every field, listed by hand rather than reflected over, so adding a
         // deformation without ramping it fails here.
-        let fields: [fn(&Deformations) -> f32; 8] = [
+        let fields: [fn(&Deformations) -> f32; 9] = [
             |d| d.jitter,
             |d| d.scale,
             |d| d.skew,
@@ -1260,6 +1389,7 @@ mod tests {
             |d| d.outline,
             |d| d.transparency,
             |d| d.gradient,
+            |d| d.blur,
         ];
 
         let hardest = Deformations::for_difficulty(10);

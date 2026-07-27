@@ -363,8 +363,8 @@ cargo nextest run
    either, since `gradient` ramps hue and lightness across it, and `outline` means "filled" is not
    a property a solver can assume. Outline stroke widths are drawn from a continuous range and the
    erosion is subpixel precisely so that they do not collapse onto a handful of enumerable values.
-8. **Deformations are per-letter and mutually independent.** Eight of them — jitter, scale, skew,
-   wave, clustering, outline, transparency, gradient — all ramp linearly with difficulty from
+8. **Deformations are per-letter and mutually independent.** Nine of them — jitter, scale, skew,
+   wave, clustering, outline, transparency, gradient, blur — all ramp linearly with difficulty from
    nothing at level 1 to full at level 10, and each is drawn separately for every letter, so no
    single rule describes a whole solution. The legibility floors are load-bearing and were set by
    measurement, not taste: `MIN_OPACITY` is what survives difficulty-10 gaussian noise, and
@@ -398,6 +398,22 @@ cargo nextest run
    Reproduce with `examples/challenge_set.rs` and `scripts/solve-challenges.py`. Three images per
    cell is a wide error bar: treat the 8-and-above result as "no arm has yet solved one", not as a
    measured zero, and re-measure with more draws before acting on any single cell.
+
+   **`blur` is the one deformation with no measured benefit, and it is carried on that basis.** The
+   same grid re-rendered with blur on, attempted by the same three vision arms, moved solves from
+   12/36 to 10/36 and characters from 61% to 55% — a difference of 0.06 +/- 0.11, indistinguishable
+   from noise, and confounded by the two conditions using different random images. It costs 5-8% of
+   render time at difficulty 3-10 (3615us -> 3915us at difficulty 8) and changes encoded size by
+   under 1%. Isolated from the noise pass it is expensive (191us -> 420us) and does shrink the JPEG
+   5.7%, but at shipping difficulties the gaussian noise dominates the entropy and that saving
+   disappears.
+
+   The likely reason it does nothing is the linear ramp: sigma reaches roughly 0.35px at difficulty
+   3, which is invisible, and full strength only at 8 and 10 where the solve rate is already at
+   zero. So the deformation lands where there is no headroom and is absent where solve rates are
+   high. Before spending more on blur, test a profile that does *not* track difficulty — and if that
+   does not move difficulty 3 or 5, remove it rather than paying 8% for nothing. Measure with
+   `cargo test --release --lib blur_impact -- --ignored --nocapture`.
 9. **Case sensitivity buys a difficulty band, and only against a solver that cannot preprocess.**
    Validation compares case-sensitively, which converts "nearly read it" into a failed solve: the
    frontier arms recovered 65-75% of individual characters while solving 1 of 48 at difficulty 8 and
