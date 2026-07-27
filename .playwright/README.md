@@ -46,7 +46,9 @@ Exits non-zero if any assertion fails. Screenshots land in `.playwright/shots/`.
 
 ## What it asserts
 
-Beyond rendering: that a wrong key is refused and leaves the page gated, that Revert leaves the
+Beyond rendering: that storing a value through the console reaches the database and can be
+removed again, that the Restart button appears only when something is pending, that a wrong key
+is refused and leaves the page gated, that Revert leaves the
 server untouched, that Apply actually changes it — checked with a separate API call, not by
 reading the DOM back — that Reload discards the override, that boot and secret fields cannot be
 edited, that every row carries a description, that the three scope colours differ, and that the

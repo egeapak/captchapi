@@ -50,14 +50,20 @@ three actions — written once per framework.
 |-------|-------:|------------:|
 | baseline `captchapi` (rustc 1.94.1) | 3,930,328 | — |
 | + provenance and pinning (core, no console) | 3,949,720 | +19,392 (+0.49%) |
-| **+ hand-written console** (`--features admin-ui`) | **3,973,112** | **+42,784 (+1.09%)** |
+| + the SQLite config store and restart (core, no console) | 4,105,656 | +175,328 (+4.46%) |
+| **+ hand-written console** (`--features admin-ui`) | **4,133,272** | **+202,944 (+5.16%)** |
 | baseline, rustc 1.95 (control) | 3,916,664 | −13,664 |
 | **+ Topcoat page**, rustc 1.95 | **5,750,808** | **+1,834,144 (+46.8%)** |
 
 The Topcoat row is measured against the 1.95 control, not the 1.94 baseline, so the
 compiler bump is not counted against it.
 
-Two thirds of that total is not the console. Tracking which layer supplied each value, so the
+Most of that total is not the console. Persisting configuration, the generation bookkeeping
+that rolls a bad one back, and restarting in place account for 175,328 bytes in the core, paid
+by every build; the console's own share is 27,616. The breakdown below predates that work and
+describes the console alone.
+
+Two thirds of the console's original figure was not the console either. Tracking which layer supplied each value, so the
 API can refuse to change one the command line or environment pinned, costs 19,392 bytes in the
 core and is paid by every build whether or not the console is compiled in. The console itself
 accounts for the remaining 23,392: 15,040 of HTML and JS, ~2,400 of per-parameter descriptions
@@ -82,7 +88,7 @@ What lands in the binary, since assets are embedded:
 
 | stack | raw | gzipped |
 |-------|----:|--------:|
-| **hand-written, no dependencies** | **15,040** | **5,462** |
+| **hand-written, no dependencies** | **19,277** | **6,654** |
 | hand-written + water.css | 30,520 | 6,623 |
 | preact/compat SPA (Vite) | 21,533 | 8,702 |
 | hand-written + pico.css (classless) | 78,892 | 13,380 |

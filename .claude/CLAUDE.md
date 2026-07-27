@@ -54,9 +54,11 @@ captchapi/
     ├── config/                  # Layered, reloadable configuration
     │   ├── mod.rs               # Config struct, resolution, redacting Debug
     │   ├── params.rs            # PARAMS: the single source of truth for every setting
-    │   ├── sources.rs           # CLI / env / env-file / TOML layers and provenance
+    │   ├── sources.rs           # CLI / env / stored / env-file / TOML layers and provenance
+    │   ├── boot.rs              # Phase two: fold the store in, decide what may be confirmed
     │   └── handle.rs            # ConfigHandle: watch channel, reload, runtime overrides
     ├── error.rs                 # Error types and handling
+    ├── restart.rs               # In-place restart (execve), pre-flight bind check
     ├── metrics.rs               # Prometheus-style metrics
     ├── telemetry.rs             # OpenTelemetry tracing setup
     ├── validation.rs            # Centralized input validation
@@ -72,6 +74,7 @@ captchapi/
     │   │   ├── generator.rs     # In-tree renderer (vendored from captcha-rs)
     │   │   └── drawing.rs       # In-tree drawing/noise (vendored from imageproc)
     │   ├── auth.rs              # API key hashing
+    │   ├── config_store.rs      # SQLite config store and generation bookkeeping
     │   ├── storage.rs           # Database operations
     │   ├── session_ops.rs       # Session orchestration
     │   ├── solution_hash.rs     # Keyed hashing of CAPTCHA solutions
@@ -92,7 +95,8 @@ captchapi/
     │   └── request_id.rs        # Request ID injection
     └── tasks/                   # Background tasks
         ├── mod.rs
-        └── cleanup.rs           # Expired session cleanup
+        ├── cleanup.rs           # Expired session cleanup
+        └── log_filter.rs        # Push log_level changes into the installed subscriber
 ```
 
 ## API Documentation
@@ -118,7 +122,7 @@ Configuration can come from the command line, the environment, an env file or a 
 Precedence, highest first:
 
 ```
-admin API > command line > environment > env file (.env) > config file > built-in default
+admin API > command line > environment > SQLite store > env file (.env) > config file > default
 ```
 
 The admin overlay is a real layer rather than something merged into the command line, so
@@ -140,10 +144,60 @@ field on `Config` (`src/config/mod.rs`). The flag, help text, TOML key, provenan
 and the reloadable/boot-only split are all derived from the table. Tests enforce that the two
 stay in sync, including that every declared default matches what the code actually produces.
 
-**Reloadable vs boot-only.** Only values read per request or per tick can change at runtime:
-session TTLs, the attempt limit, JPEG compression and the cleanup interval. Everything else is
-captured at startup by the listener, the connection pool, the middleware or the rate limiter.
-A reload reports drift on those rather than pretending to apply it.
+**The SQLite config store.** `config_settings` holds settings that survive a restart, written
+through `PUT /api/v1/admin/config/stored`. It sits below the command line and the environment
+because those are the recovery path — a stored value that breaks the service must be
+overridable with `captchapi --port 3000` without opening SQLite — and above the files, which
+are the deployment baseline durable operator intent should override.
+
+**Boot is a two-phase resolve, and has to be.** The store lives in the database, and where that
+database is, is itself configured, so nothing can read it until the first pass has opened the
+pool. The second pass is a *fresh resolve*, not a reload: at that point nothing has captured a
+boot value yet, and a reload would pin the boot fields to the first pass and defeat the point of
+storing `server_port`. `config::boot::apply_stored` is that step, extracted from `main.rs` so
+its sharpest decision is testable.
+
+**A `Persist` column says what may be stored.** Nine of twenty-three parameters are `Never`, for
+exactly three reasons: a secret, needed to open the database the store lives in, or consumed
+before the store is read (the `otel_*` trio). It is an allow-list rather than a derived rule,
+because two of those reasons are facts about `main.rs`'s ordering no code can infer — so adding
+a parameter forces a decision instead of defaulting into storability.
+
+**Generations and rollback.** Every write snapshots the table as a `pending` generation. A boot
+that reads it increments `attempts`; a process that serves for 30 seconds marks it `confirmed`;
+a boot that finds a `pending` row already attempted restores the newest confirmed snapshot.
+`confirm` takes the specific generation the boot reported, never "whatever is pending" — a write
+made while the process runs opens a generation it has proved nothing about, and confirming that
+would disarm the rollback for the change most likely to need it. A configuration that fails to
+*resolve* is skipped to keep the service up, and its generation is deliberately not confirmed:
+confirming it would record settings that do not work as the ones every later rollback restores
+to.
+
+**Restart is `execve` on this process**, not a supervisor. The PID never changes, so `docker
+stop`, Kubernetes, systemd and the PID file keep working with no extra code, where a parent
+would inherit PID 1's obligations to reap orphans and forward signals. `POST /admin/restart` is
+off by default behind `ADMIN_RESTART_ENABLED`; it dry-runs the configuration and test-binds the
+new address first, because "port already in use" is invisible to validation and a restart into
+it leaves the service down rather than merely unchanged.
+
+**Recovery needs no shell.** The distroless and scratch images have neither a shell nor
+`sqlite3`, so `captchapi config unset <field>`, `captchapi config clear` and
+`--ignore-stored-config` (also `IGNORE_STORED_CONFIG`) are the only way to undo a stored value
+that prevents startup. `--ignore-stored-config` is checked *before* the generation bookkeeping
+runs: a start told to ignore the store must not write to it.
+
+**Reloadable vs boot-only.** Live means the running process can actually adopt a new value:
+the per-request and per-tick values — session TTLs, the attempt limit, JPEG compression, the
+cleanup interval — *plus* anything holding a handle onto the thing it configures. `log_level`
+qualifies because the subscriber is installed behind a `tracing_subscriber::reload::Layer` and
+`tasks::log_filter` pushes changes into it. Everything else is captured at startup by the
+listener, the connection pool, the middleware or the rate limiter, and a reload reports drift
+rather than pretending to apply it.
+
+`with_boot_fields_from` is a hand-written struct literal naming every field, and
+`test_with_boot_fields_from_agrees_with_params_on_every_field` walks `PARAMS` to check it stays
+in step. Without that test, moving a field between `Boot` and `Live` compiles, passes every
+other test, and silently stops applying reloads to one setting.
 
 Reload is triggered by SIGHUP, `captchapi reload`, or `POST /api/v1/admin/config/reload`.
 
@@ -157,6 +211,9 @@ redact them — keep it that way when adding fields.
 captchapi                        # run the server (default verb)
 captchapi config show            # effective config with provenance, secrets redacted
 captchapi config check           # validate and exit (0 ok, 2 bad) — useful in CI
+captchapi config unset <FIELD>   # remove one setting from the SQLite store
+captchapi config clear           # remove every setting from the SQLite store
+captchapi --ignore-stored-config # start without consulting the store at all
 captchapi reload                 # signal a running server to re-read its config
 captchapi --help
 ```
@@ -193,6 +250,11 @@ RATE_LIMIT_REQUESTS_PER_SECOND=2
 RATE_LIMIT_BURST_SIZE=10
 RATE_LIMIT_REVERSE_PROXY=false    # Set true when behind nginx/Cloudflare
 
+# Admin
+ADMIN_CONFIG_WRITE=true           # Set false to make the admin API read-only
+ADMIN_RESTART_ENABLED=false       # Set true to allow POST /api/v1/admin/restart
+IGNORE_STORED_CONFIG=false        # Set true to start without the SQLite config store
+
 # Background Tasks
 CLEANUP_INTERVAL_SECONDS=60
 
@@ -228,6 +290,36 @@ CREATE TABLE sessions (
     dark_mode INTEGER DEFAULT 0       -- Boolean
 );
 ```
+
+### Config Settings Table
+Settings persisted through the admin API, applied as a configuration layer at startup.
+
+```sql
+CREATE TABLE config_settings (
+    field      TEXT PRIMARY KEY,  -- Config field name, e.g. 'server_port'
+    value      TEXT NOT NULL,     -- Raw string, parsed exactly as any other layer
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL      -- 'admin-api' | 'cli' | 'rollback'
+);
+```
+
+### Config Generations Table
+One snapshot per write, so a configuration that prevents startup rolls back on its own.
+
+```sql
+CREATE TABLE config_generations (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    snapshot   TEXT NOT NULL,     -- JSON of config_settings at this generation
+    status     TEXT NOT NULL,     -- 'pending' | 'confirmed' | 'rolled_back'
+    attempts   INTEGER NOT NULL DEFAULT 0
+);
+```
+
+Pruned on confirmation: everything older than the newest confirmed generation is unreachable,
+since a rollback only ever consults the newest row and the newest confirmed one. Pruning on
+*confirm* rather than on write is what keeps the last known-good snapshot alive through a burst
+of failed attempts.
 
 ### API Keys Table
 Stores hashed API keys for authentication.
