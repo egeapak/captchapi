@@ -35,18 +35,23 @@ which loses early-boot logs. See decision D2.
 the TOML schema so a checked-in config file is safe by construction. Writing them into a SQLite
 file that the backup story treats as data would undo that.
 
-**4. A field pinned by the command line or environment is not storable either.** This is new,
-and follows directly from the rule already shipped: `env` outranks `stored`, so a stored value
-for a field set in the environment would never become the effective one. Storing it would be
-recording an override that provably cannot take effect — the same thing `ConfigHandle::patch`
-already refuses to do. `PUT /config/stored` reuses `409 config_pinned`.
+**4. A field pinned by the command line or environment can still be stored, but the store must
+say it is shadowed.** `env` outranks `stored`, so such a value is not the effective one.
 
-**This last one has a sharp edge worth stating before any code is written.** A container
-deployment that passes everything through `-e` / `env:` pins everything, and gets nothing
-storable. The remedy is the one the console already gives for PATCH — stop setting the field in
-the environment and manage it here instead — but it means this feature is only useful to
-deployments willing to hand a subset of settings over to the database. An `.env` file is fine;
-it is a file, and files stay changeable.
+The instinct is to refuse it, for symmetry with `PATCH`. That is wrong, and the difference
+matters. A `PATCH` override that a higher layer shadows is worthless: it is ephemeral, so it
+gets discarded having never done anything. A **stored** value that is currently shadowed is not
+worthless — it persists, and becomes effective the moment the environment variable goes away.
+That is precisely the migration path off env-driven configuration: store the values, then drop
+the `-e` flags, then restart. Refusing the write would make that path impossible and would leave
+a fully env-driven deployment with nothing storable at all.
+
+So `PUT /config/stored` accepts pinned fields and the API reports `shadowed_by: "env"` on them;
+the console shows the stored value greyed with "not in effect — set in the environment". What is
+never allowed is storing a value and *implying* it took effect. This upholds the same principle
+as the pinning rule — never record something that provably cannot take effect without saying so
+— while recognising that a durable value's "cannot take effect" is temporary and a runtime
+override's is permanent.
 
 ## The storable set
 
@@ -225,14 +230,16 @@ ephemeral-override semantics keep working unchanged:
 | `DELETE` | `/api/v1/admin/config/stored/{field}` | remove one stored field |
 | `POST` | `/api/v1/admin/restart` | graceful shutdown then re-exec; **off by default** |
 
-`ConfigEntry` gains `storable: bool` alongside the existing `editable: bool`. The two are
-different questions and the console needs both:
+`ConfigEntry` gains `storable: bool` and `shadowed_by: Option<&str>` alongside the existing
+`editable: bool`. These are three different questions and the console needs all three:
 
 - `editable` — `PATCH` will take it: live, and not pinned.
-- `storable` — `PUT /stored` will take it: `Persist::Allowed`, and not pinned.
+- `storable` — `PUT /stored` will take it: `Persist::Allowed`. Pinning does **not** disqualify.
+- `shadowed_by` — a stored value exists but a higher layer answers instead, naming that layer.
 
-A live field can be both. A boot field can be storable but never editable. Neither is true for
-anything pinned or secret.
+A live field can be editable and storable. A boot field can be storable but never editable. A
+pinned field is storable but not editable, and anything stored for it comes back `shadowed_by`
+until the pin is removed.
 
 `PUT` re-resolves and publishes immediately, so a stored live field takes effect at once — the
 same way `PATCH` does — while a stored boot field only changes what a restart would produce.
@@ -294,7 +301,8 @@ Ordered so each step compiles, passes, and is independently reviewable.
 The existing gates cover most of it. Three things need new kinds of test:
 
 - **Precedence and storability** — unit tests on the layer stack, that a `Persist::Never` field
-  is refused, and that a field pinned by cli/env is refused with `config_pinned`.
+  is refused, and that a field pinned by cli/env is *accepted* but comes back `shadowed_by`,
+  then becomes effective once the pin is gone.
 - **Rollback** — write a `pending` generation with `attempts = 1` and a value that cannot boot,
   then assert the boot path restores the last confirmed snapshot. No process machinery needed.
 - **Re-exec** — not unit-testable. Needs an integration test that spawns the real binary, stores
@@ -318,9 +326,12 @@ live.
 **D3 — `PUT /config/stored` does not restart.** Storing and restarting stay separate calls, so
 storing several fields costs one restart rather than several.
 
-**D4 — pinned fields are not storable.** This follows from precedence and from the rule already
-shipped, but it is the decision most likely to disappoint: a fully env-driven container
-deployment gets nothing storable. Called out above under constraint 4.
+**D4 — pinned fields *are* storable, and report as shadowed.** Reversed from the first draft of
+this plan, which refused them for symmetry with `PATCH`. The symmetry is false: an ephemeral
+override that is shadowed never does anything, while a stored value that is shadowed becomes
+effective as soon as the environment variable is dropped — which is the only sane migration path
+off env-driven configuration. Refusing would have left a fully env-driven deployment unable to
+use the feature at all. See constraint 4.
 
 **Scope.** This roughly doubles the pull request, which is already +2015/−33 across 27 files. It
 is a coherent unit — the console is the reason to want stored boot fields — but it is a lot to
