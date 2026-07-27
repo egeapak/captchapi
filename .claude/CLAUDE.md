@@ -371,7 +371,29 @@ cargo nextest run
    `MIN_OUTLINE_OPACITY` is higher because a hollow letter has an order of magnitude less ink to
    lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
    nothing a machine finds harder.
-9. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
+
+   Measured after the outline/transparency/gradient additions, over one grid of 12 challenges
+   (lengths 4-6 x difficulty 3/5/8/10) served at the shipped JPEG quality and attempted by Haiku
+   4.5, Sonnet 5 and Opus 5, vision only, each told the character set and the exact solution
+   length:
+
+   | difficulty | 3 | 5 | 8 (default) | 10 |
+   |---|---|---|---|---|
+   | solves, all arms | 10/15 | 5/15 | 1/15 | 0/15 |
+
+   Difficulty 3 is not a CAPTCHA — every frontier arm cleared it outright. The ramp does its work
+   between 5 and 8, and by 10 nothing was solved. Haiku 4.5 managed one solve in 24 attempts across
+   two runs, all difficulty 3. Reproduce with `examples/challenge_set.rs` and
+   `scripts/solve-challenges.py`; 3 images per cell is a wide error bar, so re-measure with more
+   draws before acting on any single cell.
+9. **Case sensitivity is load-bearing, not a usability wart.** Validation compares case-sensitively,
+   and that is what converts "nearly read it" into a failed solve. Across the grid above the three
+   frontier arms recovered 65-72% of individual characters while solving 1 of 18 at difficulty 8
+   and above — they were reading most of the glyphs and still not producing the string. Several near-misses were
+   case alone: on one difficulty-5 image every frontier arm returned the right four letters and
+   only lower-cased the leading `V`. Making matching case-insensitive would hand back a large part
+   of what the deformations buy, and would do it precisely at the difficulties that currently hold.
+10. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
    An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
    compression artifacts costing a frontier vision model a full solve, but that was on the
    renderer *before* hue randomisation and clustering, and it no longer reproduces. Re-measured on
@@ -382,7 +404,7 @@ cargo nextest run
    marginal factor. Keep 40 for bandwidth and storage. Do not raise it expecting harm, or lower it
    expecting benefit, without measuring at a difficulty where solve rates are non-zero — the
    difficulty-10 test floors every model regardless of quality, so it cannot detect an effect.
-10. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
+11. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
 ### Best Practices
