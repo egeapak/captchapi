@@ -130,15 +130,39 @@ impl ConfigHandle {
     /// reason `from_static` does: a developer who happens to export `CAPTCHA_COMPRESSION`
     /// must not be able to change what an unrelated test sees.
     pub fn from_static_with_cli(config: Config, values: &[(&str, &str)]) -> Result<Self, String> {
+        Self::from_static_with(
+            config,
+            Cli {
+                no_env_file: true,
+                values: values
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                ..Cli::default()
+            },
+            Layer::new(),
+        )
+    }
+
+    /// The general form: a handle that resolves as if the process had been started with `cli`
+    /// and had found `stored` in the database.
+    ///
+    /// The seam exists because `cli` carries the *file* layers — `--config` and `--env-file` —
+    /// and the interesting failures live below the store, not above it. A stored value can mask
+    /// a file value that no longer resolves, and removing it then has to fail; nothing else can
+    /// build that state, because the only handles a test could otherwise construct resolve from
+    /// defaults, where every layer is valid by construction.
+    ///
+    /// Resolves once against an empty process environment, for the reason
+    /// [`Self::from_static`] gives. Returns the resolution error if `cli` and `stored` together
+    /// do not produce a usable configuration.
+    pub fn from_static_with(config: Config, cli: Cli, stored: Layer) -> Result<Self, String> {
         let handle = Self::from_static(config);
         {
             let mut state = handle.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.cli.values = values
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
+            state.cli = cli;
         }
-        handle.reload(Layer::new())?;
+        handle.reload(stored)?;
         Ok(handle)
     }
 

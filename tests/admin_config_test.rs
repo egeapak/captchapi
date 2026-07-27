@@ -1075,3 +1075,140 @@ async fn test_a_row_the_configuration_drops_is_not_echoed_by_the_api() {
         "the value must not reach the response by any path"
     );
 }
+
+/// A server whose env file holds a `captcha_compression` the parser rejects, masked by a
+/// stored value that does resolve.
+///
+/// Removing the stored value therefore has to fail — which is the only way to reach
+/// `delete_stored`'s validation path, and the reason `ConfigHandle::from_static_with` exists.
+/// An env file rather than a TOML file because TOML is validated as it is read, so an unusable
+/// value there fails at load and never reaches `Config::from_env_provider`.
+async fn app_with_a_stored_value_masking_a_broken_env_file(
+    app: &TestApp,
+) -> (axum::Router, tempfile::TempDir) {
+    use captchapi::config::{ConfigHandle, Layer};
+    use captchapi::services::{ConfigStore, WrittenBy};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let env_file = dir.path().join("broken.env");
+    std::fs::write(&env_file, "CAPTCHA_COMPRESSION=not-a-number\n").expect("write env file");
+
+    ConfigStore::new(app.storage.pool().clone())
+        .set(
+            &[("captcha_compression".to_string(), "70".to_string())],
+            WrittenBy::AdminApi,
+        )
+        .await
+        .expect("seed the store");
+
+    let stored: Layer = [("CAPTCHA_COMPRESSION".to_string(), "70".to_string())]
+        .into_iter()
+        .collect();
+
+    let handle = ConfigHandle::from_static_with(
+        captchapi::config::Config {
+            master_api_key: app.master_key.clone(),
+            ..captchapi::config::Config::for_test()
+        },
+        captchapi::cli::Cli {
+            env_file: Some(env_file),
+            ..captchapi::cli::Cli::default()
+        },
+        stored,
+    )
+    .expect("the stored value masks the broken env file, so this must resolve");
+
+    (app.build_app_with_handle(handle), dir)
+}
+
+#[tokio::test]
+async fn test_a_removal_that_cannot_resolve_is_refused_and_changes_nothing() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let (router, _dir) = app_with_a_stored_value_masking_a_broken_env_file(&app).await;
+    let server = TestServer::new(router);
+    let auth = format!("Bearer {master_key}");
+
+    let before: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(before["config"]["captcha_compression"]["value"], "70");
+    assert_eq!(before["config"]["captcha_compression"]["source"], "stored");
+
+    let response = server
+        .delete("/api/v1/admin/config/stored/captcha_compression")
+        .add_header("Authorization", auth.clone())
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_config");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("CAPTCHA_COMPRESSION"),
+        "the refusal should name what could not resolve: {}",
+        body["message"]
+    );
+
+    // The point of validating first: a refused removal must leave the store as it was, or the
+    // response says "failed" while the database says otherwise.
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(
+        stored["stored"]["captcha_compression"], "70",
+        "the row must survive a removal that was refused"
+    );
+
+    let after: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert_eq!(
+        after["config"]["captcha_compression"]["value"], "70",
+        "and the running configuration must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_a_removal_that_resolves_is_still_carried_out() {
+    // The control: the same shape of server, deleting a field whose removal resolves fine.
+    // Without it the test above would pass just as well against a handler that refused
+    // everything.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let (router, _dir) = app_with_a_stored_value_masking_a_broken_env_file(&app).await;
+    let server = TestServer::new(router);
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "max_validation_attempts": 5 }))
+        .await
+        .assert_status_ok();
+
+    server
+        .delete("/api/v1/admin/config/stored/max_validation_attempts")
+        .add_header("Authorization", auth.clone())
+        .await
+        .assert_status_ok();
+
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert!(stored["stored"]["max_validation_attempts"].is_null());
+    assert_eq!(
+        stored["stored"]["captcha_compression"], "70",
+        "the untouched row is still there"
+    );
+}

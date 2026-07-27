@@ -201,6 +201,15 @@ other test, and silently stops applying reloads to one setting.
 
 Reload is triggered by SIGHUP, `captchapi reload`, or `POST /api/v1/admin/config/reload`.
 
+**Three constructors exist for tests**, all resolving against an *empty* process environment so
+a developer who happens to export `CAPTCHA_COMPRESSION` cannot change what an unrelated test
+sees. `from_static` takes a `Config` and nothing else; `from_static_with_cli` adds command-line
+values, for provenance and pinning; `from_static_with` takes a whole `Cli` and a stored layer,
+which is the only way to build a server whose *lower* layers are interesting — a stored value
+masking an env-file value that no longer resolves, say. Tests must never call
+`std::env::set_var`: `cargo llvm-cov` runs the threaded harness, so an exported-and-restored
+variable is a data race against every concurrent `env::var` in the same binary.
+
 **Secrets** are file-only on the CLI (`--api-key-salt-file`, `--master-api-key-file`) and cannot
 be set in the TOML file at all. `Config` and `Cli` both have hand-written `Debug` impls that
 redact them — keep it that way when adding fields.
