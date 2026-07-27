@@ -9,7 +9,7 @@
 //! keyed by `Config` field name — what the admin API speaks — while a [`Layer`] is keyed by
 //! canonical environment key, so [`ConfigStore::load`] translates between the two.
 
-use crate::config::params::{by_field, Persist};
+use crate::config::params::{by_field, Param, Persist};
 use crate::config::sources::Layer;
 use crate::error::{AppError, Result};
 use chrono::Utc;
@@ -74,20 +74,24 @@ impl ConfigStore {
             .collect())
     }
 
-    /// The stored settings as a configuration layer, keyed by canonical environment key.
+    /// Every stored row naming a field this service will actually honour.
     ///
     /// Rows naming a field that is unknown or `Persist::Never` are **dropped with a warning**
     /// rather than honoured. Nothing this service writes can produce such a row, so one can
     /// only arrive by hand-editing the database or by a downgrade — and honouring it would let
     /// an edit to a data file override a secret or the database location itself. Dropping is
     /// also why the load path cannot be a plain `SELECT *`.
-    pub async fn load(&self) -> Result<Layer> {
-        let mut layer = Layer::new();
+    ///
+    /// Both the configuration layer and the admin API's view are built from this, so the two
+    /// can never disagree about which rows count. Reading raw rows for display was a real hole:
+    /// every secret is `Persist::Never`, so a planted `master_api_key` row was dropped from the
+    /// configuration and then echoed in the clear by `GET /config/stored` — the one surface in
+    /// this codebase that did not redact.
+    async fn honoured(&self) -> Result<Vec<(&'static Param, String)>> {
+        let mut kept = Vec::new();
         for (field, value) in self.all().await? {
             match by_field(&field) {
-                Some(param) if param.persist == Persist::Allowed => {
-                    layer.insert(param.env.to_string(), value);
-                }
+                Some(param) if param.persist == Persist::Allowed => kept.push((param, value)),
                 Some(param) => {
                     tracing::warn!(
                         "Ignoring stored `{}`: this setting is never read from the database",
@@ -99,7 +103,30 @@ impl ConfigStore {
                 }
             }
         }
-        Ok(layer)
+        Ok(kept)
+    }
+
+    /// The stored settings as a configuration layer, keyed by canonical environment key.
+    pub async fn load(&self) -> Result<Layer> {
+        Ok(self
+            .honoured()
+            .await?
+            .into_iter()
+            .map(|(param, value)| (param.env.to_string(), value))
+            .collect())
+    }
+
+    /// The stored settings as the admin API reports them, keyed by `Config` field name.
+    ///
+    /// Deliberately not [`Self::all`]: this is a response body, and it must describe the
+    /// configuration the server is actually running, not the raw table.
+    pub async fn visible(&self) -> Result<BTreeMap<String, String>> {
+        Ok(self
+            .honoured()
+            .await?
+            .into_iter()
+            .map(|(param, value)| (param.field.to_string(), value))
+            .collect())
     }
 
     /// Reject anything that must not be written, before any of it is.

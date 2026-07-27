@@ -379,8 +379,14 @@ arm, so adding a variant breaks that crate — and a bare `cargo check` will not
 
 #### Step 4: Run Rust Tests
 ```bash
-cargo nextest run
+cargo nextest run --all-features --workspace
 ```
+
+**Use `--all-features` here too.** `src/routes/admin_ui.rs` lives behind the `admin-ui`
+feature, which is off by default, so a bare `cargo nextest run` silently skips its tests —
+including the ones asserting the console ships no third-party script and carries a CSP. CI
+runs the suite with `--all-features`; matching it locally is what stops that gap being
+discovered on a pull request instead of at your desk.
 
 #### Step 5: Run API Tests
 **Note:** Requires server to be running first.
@@ -417,9 +423,9 @@ These steps ensure:
 #### Rust Tests
 
 ```bash
-cargo nextest run                         # Run all tests
-cargo nextest run --lib                   # Unit tests only
-cargo nextest run --test sessions_test    # Integration tests
+cargo nextest run --all-features --workspace   # Run all tests, as CI does
+cargo nextest run --lib                        # Unit tests only
+cargo nextest run --test sessions_test         # Integration tests
 ```
 
 #### API Tests (Bruno)
@@ -441,7 +447,7 @@ cargo run
 cargo run
 
 # Terminal 2: Run all tests
-cargo nextest run
+cargo nextest run --all-features --workspace
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
 

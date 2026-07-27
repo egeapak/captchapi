@@ -332,6 +332,10 @@ async fn main() -> anyhow::Result<()> {
             // `exec_self` only returns on failure; on success this process no longer exists.
             Err(e) => {
                 tracing::error!("Restart failed, exiting instead so a supervisor can retry: {e}");
+                // The file was kept above because an exec preserves the PID. This path does not
+                // exec, so the process is about to end and the PID becomes recyclable — leaving
+                // the file would point `captchapi reload` at whatever claims that PID next.
+                cli::remove_pid_file(&pid_file);
                 result?;
                 std::process::exit(1);
             }

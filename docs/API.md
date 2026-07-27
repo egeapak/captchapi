@@ -509,9 +509,13 @@ question from `editable`: `editable` asks whether the *running* process can take
 editable. Secrets and the database settings are neither.
 
 `shadowed_by` appears only when a value is stored for the field but a higher layer answers
-instead, naming that layer. The stored value is not wasted — it takes effect as soon as the
-variable is dropped — but it is not in effect now, and the API says so rather than implying
+instead, naming that layer. The stored value is not wasted — it takes effect as soon as that
+layer stops answering — but it is not in effect now, and the API says so rather than implying
 otherwise.
+
+Every layer above the store counts, `admin` included. A runtime `PATCH` outranks even the
+command line, so a value stored while an override is live is shadowed by it and comes back
+`"shadowed_by": "admin"` — cleared by the next reload, which is what discards the override.
 
 `pending_restart` lists boot fields whose configured value differs from the running one, so a
 restart would change them. It covers every layer, not just the store: an edited env file shows
@@ -834,9 +838,12 @@ Authorization: Bearer <master_key>
 
 Secrets can never appear here: they are unstorable by construction, and so are `database_url`
 and `database_max_connections` — the settings needed to open the database the store lives in —
-and the `otel_*` trio, which is consumed before the store is read.
+and the `otel_*` trio, which is consumed before the store is read. `stored` is filtered by the
+same rule the configuration stack applies, so a row added by hand that names an unstorable or
+unknown field is left out here exactly as it is left out of the running configuration.
 
-`shadowed` lists stored fields that the command line or environment currently overrides.
+`shadowed` lists stored fields that some higher layer currently answers for, so they are not in
+effect: the command line, the environment, or a runtime override set through `PATCH`.
 
 ---
 
@@ -871,6 +878,10 @@ A field the command line or environment pins is **accepted**, unlike `PATCH`. Th
 symmetric: a runtime override that something shadows is discarded having done nothing, while a
 stored value persists and takes effect the moment that variable is dropped — which is the
 migration path off env-driven configuration. It comes back listed in `shadowed`.
+
+`message` says which of the three things happened to each field written: it is live now, it is
+waiting for a restart, or a higher layer answers for it and it is not in effect at all. Only
+the first reports "all are in effect".
 
 **Error Responses:**
 - `400 config_not_persistable` - Secret, database setting, or telemetry setting

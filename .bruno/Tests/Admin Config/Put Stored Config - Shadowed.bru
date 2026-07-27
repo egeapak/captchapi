@@ -1,0 +1,43 @@
+meta {
+  name: Put Stored Config - Shadowed
+  type: http
+  seq: 15
+}
+
+put {
+  url: {{base_url}}/api/v1/admin/config/stored
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "captcha_compression": 66
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should persist the value anyway", function() {
+    expect(res.body.stored.captcha_compression).to.equal("66");
+  });
+
+  test("should report the value as shadowed, not as applied", function() {
+    expect(res.body.shadowed).to.include("captcha_compression");
+    expect(res.body.message).to.contain("not in effect");
+    expect(res.body.message).to.contain("captcha_compression");
+  });
+}
+
+docs {
+  Storing a value the runtime override from the previous request masks. It is persisted —
+  it takes effect as soon as the override is cleared — but the response must not claim it
+  is in effect, which is what it used to do: `shadowed` only considered the command line
+  and the environment, and `admin` outranks both.
+}

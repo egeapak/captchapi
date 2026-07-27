@@ -1,6 +1,6 @@
 use crate::config::params::{by_env, by_field, Persist, Reload, PARAMS};
 use crate::config::sources::redact;
-use crate::config::sources::Layer;
+use crate::config::sources::{Layer, Sources};
 use crate::config::{Config, ConfigHandle, Source};
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
@@ -110,10 +110,14 @@ pub struct ConfigEntry {
     pub storable: bool,
     /// The layer outranking a stored value for this field, when one exists.
     ///
-    /// A stored value that the command line or environment shadows is not wasted: it persists,
-    /// and takes effect as soon as that variable is dropped, which is the migration path off
-    /// env-driven configuration. What must never happen is storing it and implying it took
-    /// effect, so it is reported rather than refused.
+    /// A stored value that a higher layer shadows is not wasted: it persists, and takes effect
+    /// as soon as that layer stops answering — the command line or environment being dropped,
+    /// or a runtime override being cleared by a reload. What must never happen is storing it
+    /// and implying it took effect, so it is reported rather than refused.
+    ///
+    /// Every layer above `stored` counts, not just the pinned ones. `admin` outranks the
+    /// command line, so a `PATCH` masks a stored value exactly as an environment variable
+    /// does; testing for pinned-ness alone reported that case as being in effect.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadowed_by: Option<&'static str>,
     /// One sentence on what this parameter does, so a client does not have to ship its own
@@ -136,7 +140,11 @@ pub struct ConfigResponse {
 /// The persisted settings, as `GET`/`PUT /config/stored` speak them.
 #[derive(Debug, Serialize)]
 pub struct StoredResponse {
-    /// Field name to raw stored value. Secrets can never appear: they are `Persist::Never`.
+    /// Field name to raw stored value, filtered to the rows the configuration stack honours.
+    ///
+    /// Secrets can never appear. That is true twice over: they are `Persist::Never` so this API
+    /// refuses to store them, and the same rule filters this map, so a row planted by hand is
+    /// dropped here exactly as it is dropped from the running configuration.
     pub stored: BTreeMap<String, String>,
     /// Stored fields a higher layer currently overrides, so they are not in effect.
     pub shadowed: Vec<String>,
@@ -192,9 +200,10 @@ fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
                     source: source.label(),
                     editable: param.reload == Reload::Live && !source.is_pinned(),
                     storable: param.persist == Persist::Allowed,
-                    // Only meaningful when something *is* stored for the field; a pinned field
-                    // with nothing stored is not being shadowed, it simply has no stored value.
-                    shadowed_by: (stored.contains_key(param.env) && source.is_pinned())
+                    // Only meaningful when something *is* stored for the field: a field an
+                    // environment variable answers for, with nothing stored, is not being
+                    // shadowed — it simply has no stored value to shadow.
+                    shadowed_by: (stored.contains_key(param.env) && source != Source::Stored)
                         .then(|| source.label()),
                     description: param.about,
                 },
@@ -242,11 +251,16 @@ fn coerce(req: &BTreeMap<String, serde_json::Value>) -> Result<Vec<(String, Stri
 }
 
 /// Which stored fields a higher layer currently overrides.
+///
+/// The test is "something other than the store answered for this field", not "a pinned layer
+/// did". `Source::Admin` sits above `Source::Cli`, so a runtime override masks a stored value
+/// just as an environment variable does — and reporting that one as in effect made both this
+/// list and the console claim a value the server was demonstrably not using.
 fn shadowed(config: &ConfigHandle, stored: &BTreeMap<String, String>) -> Vec<String> {
     let sources = config.sources();
     let mut names: Vec<String> = stored
         .keys()
-        .filter(|field| sources.is_pinned(field))
+        .filter(|field| sources.get(field) != Source::Stored)
         .cloned()
         .collect();
     names.sort_unstable();
@@ -255,7 +269,10 @@ fn shadowed(config: &ConfigHandle, stored: &BTreeMap<String, String>) -> Vec<Str
 
 /// Render the store, with everything a client needs to know about whether it is in effect.
 async fn describe_stored(state: &AdminState, message: String) -> Result<Json<StoredResponse>> {
-    let stored = state.store.all().await?;
+    // `visible`, not `all`: a row the configuration stack drops must not be echoed here, or the
+    // response describes a server that does not exist — and since every secret is
+    // `Persist::Never`, echoing raw rows is also the one way a secret could reach this API.
+    let stored = state.store.visible().await?;
     Ok(Json(StoredResponse {
         shadowed: shadowed(&state.config, &stored),
         pending_restart: state.config.pending_restart(),
@@ -350,30 +367,59 @@ async fn put_stored(
     }
     state.metrics.system.config_patches.add(1, &[]);
 
-    // Only the fields *this* request touched, intersected with the drift. `outcome.drift` is
-    // every boot field that differs, which can include one an unrelated env-file edit changed —
-    // reporting that as something this write caused would be a plain lie.
+    // Only the fields *this* request touched. `outcome.drift` is every boot field that differs,
+    // which can include one an unrelated env-file edit changed — reporting that as something
+    // this write caused would be a plain lie.
     let touched: Vec<&'static str> = updates
         .iter()
         .filter_map(|(field, _)| by_field(field))
         .map(|param| param.field)
         .collect();
-    let waiting: Vec<&&'static str> = outcome
-        .drift
+    let message = put_message(&touched, &outcome.drift, &state.config.sources());
+    describe_stored(&state, message).await
+}
+
+/// Say what actually happened to the fields a write touched.
+///
+/// A stored value has three possible fates and only one of them is "done": it is live now, or
+/// it is waiting for a restart, or a higher layer answers for the field and it is not in effect
+/// at all. Reporting only the first two is how this endpoint came to answer "all are in effect"
+/// for a field a runtime override was masking.
+fn put_message(touched: &[&'static str], drift: &[&'static str], sources: &Sources) -> String {
+    let masked: Vec<&'static str> = touched
         .iter()
-        .filter(|field| touched.contains(field))
+        .copied()
+        .filter(|field| sources.get(field) != Source::Stored)
+        .collect();
+    // A masked field is not also "pending a restart": the restart would resolve to the same
+    // higher layer and change nothing, so naming it twice would just be noise.
+    let waiting: Vec<&'static str> = drift
+        .iter()
+        .copied()
+        .filter(|field| touched.contains(field) && !masked.contains(field))
         .collect();
 
-    let message = if waiting.is_empty() {
-        format!("Stored {} setting(s); all are in effect", updates.len())
+    let mut notes = Vec::new();
+    if !waiting.is_empty() {
+        notes.push(format!(
+            "{} need(s) a restart to take effect ({})",
+            waiting.len(),
+            waiting.join(", ")
+        ));
+    }
+    if !masked.is_empty() {
+        notes.push(format!(
+            "{} not in effect, shadowed by a higher layer ({})",
+            masked.len(),
+            masked.join(", ")
+        ));
+    }
+
+    if notes.is_empty() {
+        format!("Stored {} setting(s); all are in effect", touched.len())
     } else {
-        format!(
-            "Stored {} setting(s); {} need(s) a restart to take effect",
-            updates.len(),
-            waiting.len()
-        )
-    };
-    describe_stored(&state, message).await
+        format!("Stored {} setting(s); {}", touched.len(), notes.join("; "))
+    }
 }
 
 /// Remove one persisted setting.
@@ -382,25 +428,42 @@ async fn delete_stored(
     axum::extract::Path(field): axum::extract::Path<String>,
 ) -> Result<Json<StoredResponse>> {
     if !state.config.get().admin_config_write {
+        state.metrics.system.config_patch_failures.add(1, &[]);
         return Err(AppError::Forbidden(
             "runtime configuration writes are disabled (ADMIN_CONFIG_WRITE=false)".to_string(),
         ));
     }
 
     let Some(param) = by_field(&field) else {
+        state.metrics.system.config_patch_failures.add(1, &[]);
         return Err(AppError::InvalidConfig(format!(
             "`{field}` is not a configuration field"
         )));
     };
 
+    let mut candidate: Layer = state.config.stored();
+    candidate.remove(param.env);
+
+    // Validate before writing, for the same reason `put_stored` does. Removing a value can fail
+    // to resolve just as setting one can — the layer underneath it is free to have become
+    // invalid since boot — and deleting the row first would leave the store changed while the
+    // request reports failure and the running configuration is untouched.
+    let handle = state.config.clone();
+    let probe = candidate.clone();
+    tokio::task::spawn_blocking(move || handle.dry_run(&probe))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config dry run failed: {e}")))?
+        .map_err(|e| {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            AppError::InvalidConfig(e)
+        })?;
+
     if !state.store.unset(&field).await? {
+        state.metrics.system.config_patch_failures.add(1, &[]);
         return Err(AppError::InvalidConfig(format!(
             "`{field}` is not stored, so there is nothing to remove"
         )));
     }
-
-    let mut candidate: Layer = state.config.stored();
-    candidate.remove(param.env);
 
     let handle = state.config.clone();
     let outcome = tokio::task::spawn_blocking(move || handle.adopt_stored(candidate))
@@ -631,7 +694,7 @@ async fn restart_server(State(state): State<AdminState>) -> Result<Json<RestartR
             applying.join(", ")
         }
     );
-    state.metrics.system.config_reloads.add(1, &[]);
+    state.metrics.system.config_restarts.add(1, &[]);
 
     let message = if first {
         "Restarting; the server will be unavailable briefly".to_string()

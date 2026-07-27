@@ -188,13 +188,20 @@ It is not one of the five verification steps in `CLAUDE.md`, because it needs No
 browser that the Rust and Bruno suites do not. Run it when changing `assets/admin/*` or the
 shape of `GET /api/v1/admin/config`.
 
-### Not done in the prototype
+### Still not done
 
-Deliberately, since this is an evaluation branch: no Bruno coverage, no `docs/API.md`
-section, and no runtime switch — the console is compile-time on or off, with no
-`ADMIN_UI_ENABLED` parameter. If the recommendation is accepted, those three follow, and
-`ADMIN_UI_ENABLED` should be a `Reload::Boot` parameter so it appears in `config show`
-alongside `admin_config_write`.
+The evaluation deferred three things until the recommendation was accepted. Two of them
+have since landed on this branch: Bruno coverage (`.bruno/Tests/Admin Config/`) and the
+`docs/API.md` section for every endpoint the console drives.
+
+The third has not. The console is still compile-time on or off, with no `ADMIN_UI_ENABLED`
+parameter — so a deployment that ships the `admin-ui` feature cannot turn the page off
+without rebuilding. When it is added it should be a `Reload::Boot` parameter, so it appears
+in `config show` alongside `admin_config_write` and is storable like any other boot field.
+
+Note what that does *not* affect: the published images build `--features otel` only
+(`release.yml`, `justfile`), so they do not carry the console at all. The gap matters to
+anyone building their own image with the feature on.
 
 ## Reproducing
 

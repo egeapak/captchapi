@@ -1,7 +1,7 @@
 meta {
   name: Put Stored Config - Success
   type: http
-  seq: 11
+  seq: 12
 }
 
 put {
@@ -30,7 +30,10 @@ tests {
 
   test("a live field should be in effect immediately", function() {
     expect(res.body.pending_restart).to.not.include("captcha_compression");
-    expect(res.body.message).to.contain("in effect");
+    expect(res.body.shadowed).to.not.include("captcha_compression");
+    // "all are in effect", not merely "in effect" — the shadowed message says
+    // "not in effect" and would satisfy the looser assertion.
+    expect(res.body.message).to.contain("all are in effect");
   });
 }
 

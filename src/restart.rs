@@ -86,8 +86,15 @@ impl std::fmt::Display for RestartError {
 /// On success this never returns — the process image is gone. The environment carries across
 /// automatically, so the environment layer is preserved exactly.
 ///
-/// Must be called from the main thread after the runtime has finished: `execve` destroys every
-/// other thread, and anything still holding a lock or mid-write would simply vanish.
+/// **What this actually requires**, since it is narrower than it looks: every resource whose
+/// state outlives the process must already be flushed and closed — the connection pool, the
+/// trace exporter, anything mid-write to disk. `execve` replaces the whole image, so surviving
+/// threads are not a hazard the way they are after `fork`: there is no inherited lock to
+/// deadlock on, only work that silently never finishes. That is why `main` closes the pool and
+/// shuts telemetry down first, and why it is fine for this to run inside `#[tokio::main]` with
+/// the runtime's worker threads still parked. Descriptors are the other half, and they are
+/// already handled: `std` opens sockets `SOCK_CLOEXEC` and SQLite uses `O_CLOEXEC`, so nothing
+/// leaks into the new image.
 #[cfg(unix)]
 pub fn exec_self(argv: &Argv) -> Result<std::convert::Infallible, RestartError> {
     use std::os::unix::process::CommandExt;

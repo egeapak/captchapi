@@ -7,8 +7,9 @@ CREATE TABLE config_settings (
     field      TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
-    -- 'admin-api' or 'cli'. Recorded because this table can change how the service listens
-    -- and how it rate-limits, so a change to it is worth being able to attribute.
+    -- 'admin-api', 'cli', or 'rollback' when a boot restored this row from a confirmed
+    -- snapshot. Recorded because this table can change how the service listens and how it
+    -- rate-limits, so a change to it is worth being able to attribute.
     updated_by TEXT NOT NULL
 );
 

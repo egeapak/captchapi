@@ -928,3 +928,150 @@ async fn test_restart_requires_the_master_key() {
         .await
         .assert_status_unauthorized();
 }
+
+#[tokio::test]
+async fn test_a_stored_value_a_runtime_override_shadows_is_reported_as_shadowed() {
+    // `Source::Admin` outranks even the command line, so a PATCH masks a stored value exactly
+    // as an environment variable does. Reporting only the pinned layers meant this case came
+    // back as `shadowed: []` while the server ran a different value entirely.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 70 }))
+        .await
+        .assert_status_ok();
+
+    server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 90 }))
+        .await
+        .assert_status_ok();
+
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(stored["stored"]["captcha_compression"], "70");
+    assert_eq!(
+        stored["shadowed"][0], "captcha_compression",
+        "the overlay is a higher layer, so the stored value is not in effect"
+    );
+
+    let config: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    let entry = &config["config"]["captcha_compression"];
+    assert_eq!(entry["value"], "90", "the override still wins");
+    assert_eq!(entry["source"], "admin");
+    assert_eq!(entry["shadowed_by"], "admin");
+}
+
+#[tokio::test]
+async fn test_storing_a_value_an_override_masks_does_not_claim_it_is_in_effect() {
+    // The sharpest form of the same bug: the response said "all are in effect" about a value
+    // the server was demonstrably not using.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 90 }))
+        .await
+        .assert_status_ok();
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 70 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let message = body["message"].as_str().unwrap();
+    assert!(
+        message.contains("not in effect"),
+        "the write must not claim an effect it did not have: {message}"
+    );
+    assert!(message.contains("captcha_compression"), "{message}");
+
+    let config: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert_eq!(config["config"]["captcha_compression"]["value"], "90");
+}
+
+#[tokio::test]
+async fn test_storing_a_boot_field_still_reports_it_as_pending_a_restart() {
+    // The other branch of the same message, kept honest: a stored boot field is not shadowed,
+    // it is waiting, and the two must not be confused for one another.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "server_port": 4321 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("restart"), "{message}");
+    assert!(!message.contains("not in effect"), "{message}");
+    assert_eq!(body["pending_restart"][0], "server_port");
+    assert!(
+        body["shadowed"].as_array().unwrap().is_empty(),
+        "nothing outranks the store here"
+    );
+}
+
+#[tokio::test]
+async fn test_a_row_the_configuration_drops_is_not_echoed_by_the_api() {
+    // Only a hand-edit or a downgrade can produce such a row. `load` has always dropped it;
+    // the API that displays the store used to read the raw table instead — and since every
+    // secret is `Persist::Never`, that was also the one way a secret could be read back out.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+
+    sqlx::query(
+        "INSERT INTO config_settings (field, value, updated_at, updated_by)
+         VALUES ('master_api_key', 'planted-secret-value', 0, 'hand-edit')",
+    )
+    .execute(app.storage.pool())
+    .await
+    .expect("plant the row");
+
+    let server = TestServer::new(app.build_app());
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await
+        .json();
+
+    assert!(
+        stored["stored"]["master_api_key"].is_null(),
+        "a row the configuration ignores must not appear here: {}",
+        stored["stored"]
+    );
+    assert!(
+        !serde_json::to_string(&stored)
+            .unwrap()
+            .contains("planted-secret-value"),
+        "the value must not reach the response by any path"
+    );
+}
