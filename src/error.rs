@@ -38,6 +38,11 @@ pub enum AppError {
     #[error("Configuration field is not reloadable: {0}")]
     ConfigNotReloadable(String),
 
+    /// The field cannot be written to the config store: a secret, needed to open the database
+    /// the store lives in, or consumed before the store is read.
+    #[error("Configuration field cannot be stored: {0}")]
+    ConfigNotPersistable(String),
+
     /// The field is reloadable, but this process was given an explicit value for it on the
     /// command line or in the environment, which a runtime override cannot durably replace.
     #[error("Configuration field is pinned by the environment it was started in: {0}")]
@@ -91,6 +96,11 @@ impl IntoResponse for AppError {
             AppError::ConfigNotReloadable(ref msg) => (
                 StatusCode::BAD_REQUEST,
                 "config_not_reloadable",
+                msg.clone(),
+            ),
+            AppError::ConfigNotPersistable(ref msg) => (
+                StatusCode::BAD_REQUEST,
+                "config_not_persistable",
                 msg.clone(),
             ),
             AppError::ConfigPinned(ref msg) => (StatusCode::CONFLICT, "config_pinned", msg.clone()),

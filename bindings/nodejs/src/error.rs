@@ -36,6 +36,10 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
             Status::InvalidArg,
             format!("Configuration field is not reloadable: {}", msg),
         ),
+        AppError::ConfigNotPersistable(msg) => napi::Error::new(
+            Status::InvalidArg,
+            format!("Configuration field cannot be stored: {}", msg),
+        ),
         AppError::ConfigPinned(msg) => napi::Error::new(
             Status::InvalidArg,
             format!(
