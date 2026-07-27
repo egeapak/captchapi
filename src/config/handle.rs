@@ -10,7 +10,7 @@
 //! and a reload reports drift on those rather than pretending to apply it.
 
 use super::params::{by_env, Reload};
-use super::sources::Layer;
+use super::sources::{Layer, Source, Sources};
 use super::{Config, RealEnv};
 use crate::cli::{load_layers, Cli};
 use crate::models::SessionConfig;
@@ -34,6 +34,9 @@ struct ReloadState {
     ///
     /// Ephemeral by design: a reload means "re-read the sources of truth", so it clears these.
     overlay: Layer,
+    /// Which layer answered for each field, as of the last resolve. Kept beside the overlay
+    /// under the same lock so the two can never disagree about what the running config is.
+    sources: Sources,
 }
 
 struct Inner {
@@ -59,7 +62,11 @@ impl std::fmt::Debug for ConfigHandle {
 
 impl ConfigHandle {
     /// Create a handle that can be reloaded from the same arguments the process started with.
-    pub fn new(config: Config, cli: Cli) -> Self {
+    ///
+    /// `sources` is the provenance captured during the boot resolve. It is passed in rather
+    /// than recomputed here so the handle reports the layers this process actually started
+    /// from, not what a second read of the same files would say a moment later.
+    pub fn new(config: Config, cli: Cli, sources: Sources) -> Self {
         let (tx, rx) = watch::channel(Arc::new(config));
         Self {
             rx,
@@ -69,6 +76,7 @@ impl ConfigHandle {
                     cli,
                     env: EnvSource::Process,
                     overlay: Layer::new(),
+                    sources,
                 }),
             }),
         }
@@ -79,12 +87,16 @@ impl ConfigHandle {
     /// Reloading re-resolves from no command-line arguments and no env file, so a test harness
     /// never picks up a developer's local `.env`.
     pub fn from_static(config: Config) -> Self {
+        // No layers, so every field reports `Source::Default` and nothing is pinned. That is
+        // both accurate for a hand-built config and the right default for tests, which should
+        // have to opt into pinning rather than trip over it.
         let handle = Self::new(
             config,
             Cli {
                 no_env_file: true,
                 ..Cli::default()
             },
+            Sources::default(),
         );
         handle
             .inner
@@ -93,6 +105,25 @@ impl ConfigHandle {
             .unwrap_or_else(|e| e.into_inner())
             .env = EnvSource::Empty;
         handle
+    }
+
+    /// Like [`Self::from_static`], but as if the process had been started with these
+    /// command-line values, so a test can exercise provenance and the pinning it drives.
+    ///
+    /// Resolves once to capture that provenance, against an empty environment for the same
+    /// reason `from_static` does: a developer who happens to export `CAPTCHA_COMPRESSION`
+    /// must not be able to change what an unrelated test sees.
+    pub fn from_static_with_cli(config: Config, values: &[(&str, &str)]) -> Result<Self, String> {
+        let handle = Self::from_static(config);
+        {
+            let mut state = handle.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.cli.values = values
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        }
+        handle.reload()?;
+        Ok(handle)
     }
 
     /// Take a snapshot of the current configuration.
@@ -128,12 +159,14 @@ impl ConfigHandle {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let current = self.rx.borrow().clone();
-        let resolved = resolve_with_carry(&state.cli, &current, &Layer::new(), &state.env)?;
+        let (resolved, sources) =
+            resolve_with_carry(&state.cli, &current, &Layer::new(), &state.env)?;
 
         let drift = current.boot_drift(&resolved);
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay.clear();
+        state.sources = sources;
         self.inner.tx.send_replace(merged.clone());
 
         Ok(Outcome {
@@ -168,16 +201,35 @@ impl ConfigHandle {
 
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
+        // Checked under the lock, against the provenance of the last resolve, so a concurrent
+        // reload cannot move a field between pinned and free between the check and the write.
+        for (key, _) in updates {
+            let Some(param) = by_env(key) else { continue };
+            let source = state.sources.get(param.field);
+            if source.is_pinned() {
+                return Err(format!(
+                    "`{}` is set on the {} and cannot be changed at runtime; \
+                     the override would be discarded by the next reload",
+                    param.field,
+                    match source {
+                        Source::Cli => "command line",
+                        _ => "environment",
+                    }
+                ));
+            }
+        }
+
         let mut overlay = state.overlay.clone();
         for (key, value) in updates {
             overlay.insert(key.clone(), value.clone());
         }
 
         let current = self.rx.borrow().clone();
-        let resolved = resolve_with_carry(&state.cli, &current, &overlay, &state.env)?;
+        let (resolved, sources) = resolve_with_carry(&state.cli, &current, &overlay, &state.env)?;
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay = overlay;
+        state.sources = sources;
         self.inner.tx.send_replace(merged.clone());
 
         Ok(merged)
@@ -187,6 +239,12 @@ impl ConfigHandle {
     pub fn overlay_keys(&self) -> Vec<String> {
         let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         state.overlay.keys().cloned().collect()
+    }
+
+    /// Which layer supplied each field, as of the last resolve.
+    pub fn sources(&self) -> Sources {
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.sources.clone()
     }
 }
 
@@ -211,14 +269,13 @@ fn resolve_with_carry(
     current: &Config,
     overlay: &Layer,
     env: &EnvSource,
-) -> Result<Config, String> {
+) -> Result<(Config, Sources), String> {
     let mut layers = load_layers(cli)?;
-    for (key, value) in overlay {
-        layers.cli.insert(key.clone(), value.clone());
-    }
+    layers.overlay = overlay.clone();
     layers.carried = current.boot_layer();
 
-    Config::from_env_provider(&layers.stack(env))
+    let stack = layers.stack(env);
+    Ok((Config::from_env_provider(&stack)?, Sources::capture(&stack)))
 }
 
 /// Where a handle's reload reads environment variables from.
@@ -379,6 +436,124 @@ mod tests {
         );
     }
 
+    /// Build a handle whose environment holds `pairs`, resolved so provenance is real rather
+    /// than hand-stubbed — the pinning check is only worth anything if it reads the same
+    /// provenance a live boot would produce.
+    fn handle_with_env(pairs: &[(&str, &str)]) -> ConfigHandle {
+        let h = handle();
+        with_env(&h, pairs);
+        h.reload().expect("the fixture must resolve");
+        h
+    }
+
+    #[test]
+    fn test_patch_is_refused_for_a_field_set_in_the_environment() {
+        let h = handle_with_env(&[("CAPTCHA_COMPRESSION", "70")]);
+        assert_eq!(h.get().captcha_compression, 70);
+
+        let err = h
+            .patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
+            .unwrap_err();
+
+        assert!(err.contains("environment"), "{err}");
+        assert_eq!(h.get().captcha_compression, 70, "config must be untouched");
+        assert!(h.overlay_keys().is_empty());
+    }
+
+    #[test]
+    fn test_patch_is_refused_for_a_field_set_on_the_command_line() {
+        let h = ConfigHandle::new(
+            Config::for_test(),
+            Cli {
+                values: [("CAPTCHA_COMPRESSION".to_string(), "70".to_string())]
+                    .into_iter()
+                    .collect(),
+                no_env_file: true,
+                ..Cli::default()
+            },
+            Sources::default(),
+        );
+        h.reload().unwrap();
+
+        let err = h
+            .patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
+            .unwrap_err();
+
+        assert!(err.contains("command line"), "{err}");
+        assert_eq!(h.get().captcha_compression, 70);
+    }
+
+    #[test]
+    fn test_a_field_the_environment_does_not_set_stays_patchable() {
+        // The negative control: the refusal above must come from provenance, not from the
+        // mere presence of *some* environment.
+        let h = handle_with_env(&[("CAPTCHA_COMPRESSION", "70")]);
+
+        h.patch(&[("MAX_VALIDATION_ATTEMPTS".into(), "7".into())])
+            .expect("an unpinned field is still patchable");
+
+        assert_eq!(h.get().max_validation_attempts, 7);
+    }
+
+    #[test]
+    fn test_patching_a_field_does_not_pin_it_against_being_patched_again() {
+        // The admin overlay outranks the command line, so if it were merged into that layer a
+        // field would report itself as `cli`-set after one patch and refuse the next.
+        let h = handle();
+        h.patch(&[("CAPTCHA_COMPRESSION".into(), "70".into())])
+            .unwrap();
+
+        assert_eq!(h.sources().get("captcha_compression"), Source::Admin);
+
+        h.patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
+            .expect("a field this API set must remain settable by it");
+        assert_eq!(h.get().captcha_compression, 90);
+    }
+
+    #[test]
+    fn test_a_rejected_batch_leaves_the_unpinned_fields_alone() {
+        let h = handle_with_env(&[("CAPTCHA_COMPRESSION", "70")]);
+
+        let err = h
+            .patch(&[
+                ("MAX_VALIDATION_ATTEMPTS".into(), "7".into()),
+                ("CAPTCHA_COMPRESSION".into(), "90".into()),
+            ])
+            .unwrap_err();
+
+        assert!(err.contains("captcha_compression"), "{err}");
+        assert_eq!(
+            h.get().max_validation_attempts,
+            3,
+            "all or nothing: the whole batch is refused"
+        );
+        assert!(h.overlay_keys().is_empty());
+    }
+
+    #[test]
+    fn test_reload_unpins_a_field_once_the_environment_stops_setting_it() {
+        let h = handle_with_env(&[("CAPTCHA_COMPRESSION", "70")]);
+        assert!(h.sources().get("captcha_compression").is_pinned());
+
+        with_env(&h, &[]);
+        h.reload().unwrap();
+
+        assert!(!h.sources().get("captcha_compression").is_pinned());
+        h.patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
+            .expect("no longer pinned");
+    }
+
+    #[test]
+    fn test_sources_reports_the_layer_each_field_came_from() {
+        let h = handle_with_env(&[("CAPTCHA_COMPRESSION", "70")]);
+        let sources = h.sources();
+
+        assert_eq!(sources.get("captcha_compression"), Source::Env);
+        assert_eq!(sources.get("max_validation_attempts"), Source::Default);
+        // A field nobody has heard of is unpinned, so the check fails open to "editable".
+        assert!(!sources.is_pinned("not_a_field"));
+    }
+
     #[test]
     fn test_overlay_keys_reports_what_was_patched() {
         let h = handle();
@@ -443,6 +618,7 @@ mod tests {
                 no_env_file: true,
                 ..Cli::default()
             },
+            Sources::default(),
         );
 
         let outcome = h.reload().unwrap();
@@ -533,7 +709,7 @@ mod tests {
             "from_static must not read the process environment, but it answered for PATH"
         );
 
-        let live = ConfigHandle::new(Config::for_test(), Cli::default());
+        let live = ConfigHandle::new(Config::for_test(), Cli::default(), Sources::default());
         assert_eq!(
             env_get(&live, "PATH").as_deref(),
             Ok(in_process.as_str()),

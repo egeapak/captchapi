@@ -20,10 +20,13 @@ limiter, and `test_only_per_request_values_are_live` pins that list. So the cons
 **five editable integers**, plus sixteen read-only rows for context, plus three buttons
 (apply / reload / cleanup).
 
-The API it drives already exists and needs no change:
+The API it drives already existed; `source`, `editable` and `description` were added to it
+alongside the console:
 
-- `GET /api/v1/admin/config` → `{config: {field: {value, reloadable, secret}}, overrides: []}`
-- `PATCH /api/v1/admin/config` → same shape back; rejects boot fields and unknown keys
+- `GET /api/v1/admin/config` → `{config: {field: {value, reloadable, secret, source,
+  editable, description}}, overrides: []}`
+- `PATCH /api/v1/admin/config` → same shape back; rejects boot fields, unknown keys, and
+  fields pinned by the command line or environment
 - `POST /api/v1/admin/config/reload` → adds `ignored` (boot-only drift) and `message`
 - `POST /api/v1/admin/cleanup`
 
@@ -46,17 +49,20 @@ three actions — written once per framework.
 | build | bytes | vs baseline |
 |-------|-------:|------------:|
 | baseline `captchapi` (rustc 1.94.1) | 3,930,328 | — |
-| **+ hand-written console** (`--features admin-ui`) | **3,957,016** | **+26,688 (+0.68%)** |
+| + provenance and pinning (core, no console) | 3,949,720 | +19,392 (+0.49%) |
+| **+ hand-written console** (`--features admin-ui`) | **3,973,112** | **+42,784 (+1.09%)** |
 | baseline, rustc 1.95 (control) | 3,916,664 | −13,664 |
 | **+ Topcoat page**, rustc 1.95 | **5,750,808** | **+1,834,144 (+46.8%)** |
 
 The Topcoat row is measured against the 1.95 control, not the 1.94 baseline, so the
 compiler bump is not counted against it.
 
-Of the hand-written console's 26,688 bytes, 14,266 are the HTML and JS themselves, ~2,400 are
-the per-parameter descriptions added to `PARAMS`, and the rest is the Rust that serves the page
-(three routes, the CSP headers). Gzipped — the proxy for what a registry stores and a
-`docker pull` moves — the binary grows 9,866 bytes.
+Two thirds of that total is not the console. Tracking which layer supplied each value, so the
+API can refuse to change one the command line or environment pinned, costs 19,392 bytes in the
+core and is paid by every build whether or not the console is compiled in. The console itself
+accounts for the remaining 23,392: 15,040 of HTML and JS, ~2,400 of per-parameter descriptions
+in `PARAMS`, and the rest the Rust that serves the page. Gzipped — the proxy for what a
+registry stores and a `docker pull` moves — the whole thing grows the binary by 17,980 bytes.
 
 The assets were 7,952 bytes before a design pass added light/dark theming, a narrow-viewport
 layout, and visual separation between live, boot and secret fields. That is the honest price
@@ -76,7 +82,7 @@ What lands in the binary, since assets are embedded:
 
 | stack | raw | gzipped |
 |-------|----:|--------:|
-| **hand-written, no dependencies** | **14,266** | **5,226** |
+| **hand-written, no dependencies** | **15,040** | **5,462** |
 | hand-written + water.css | 30,520 | 6,623 |
 | preact/compat SPA (Vite) | 21,533 | 8,702 |
 | hand-written + pico.css (classless) | 78,892 | 13,380 |

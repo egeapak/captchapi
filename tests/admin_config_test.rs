@@ -54,6 +54,112 @@ async fn test_get_config_returns_values_and_reloadability() {
     assert!(body["overrides"].as_array().unwrap().is_empty());
 }
 
+/// An app whose `captcha_compression` was set on the command line, as a deployment would.
+fn pinned_app(app: &TestApp) -> axum::Router {
+    let handle = captchapi::config::ConfigHandle::from_static_with_cli(
+        captchapi::config::Config {
+            master_api_key: app.master_key.clone(),
+            ..captchapi::config::Config::for_test()
+        },
+        &[("CAPTCHA_COMPRESSION", "70")],
+    )
+    .expect("fixture config must resolve");
+    app.build_app_with_handle(handle)
+}
+
+#[tokio::test]
+async fn test_get_config_reports_the_layer_each_value_came_from() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    assert_eq!(body["config"]["captcha_compression"]["source"], "cli");
+    assert_eq!(
+        body["config"]["max_validation_attempts"]["source"],
+        "default"
+    );
+}
+
+#[tokio::test]
+async fn test_a_value_set_on_the_command_line_is_not_editable() {
+    // Reloadable, but this process was handed an explicit value, so an override would last
+    // only until the next reload. The API says so up front rather than accepting and losing it.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let body: serde_json::Value = response.json();
+
+    assert_eq!(body["config"]["captcha_compression"]["reloadable"], true);
+    assert_eq!(body["config"]["captcha_compression"]["editable"], false);
+    // A live field nobody pinned stays editable, so this is provenance and not a blanket off.
+    assert_eq!(body["config"]["max_validation_attempts"]["editable"], true);
+    // Boot fields were never editable and still are not.
+    assert_eq!(body["config"]["server_port"]["editable"], false);
+}
+
+#[tokio::test]
+async fn test_patching_a_pinned_field_is_refused_with_its_own_error_code() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 90 }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "config_pinned");
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("command line"), "{message}");
+    assert!(message.contains("captcha_compression"), "{message}");
+
+    // And the running value is untouched.
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    assert_eq!(after["config"]["captcha_compression"]["value"], "70");
+    assert!(after["overrides"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_an_unpinned_field_is_still_patchable_on_a_pinned_server() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "max_validation_attempts": 7 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["config"]["max_validation_attempts"]["value"], "7");
+    // The admin API set it, so it reports as `admin` — not `cli`, which would pin it against
+    // ever being patched again.
+    assert_eq!(body["config"]["max_validation_attempts"]["source"], "admin");
+    assert_eq!(body["config"]["max_validation_attempts"]["editable"], true);
+}
+
 #[tokio::test]
 async fn test_get_config_describes_every_parameter() {
     // The console renders these, so a client never ships its own copy of the documentation

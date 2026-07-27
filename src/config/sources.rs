@@ -17,6 +17,12 @@ pub type Layer = BTreeMap<String, String>;
 /// Which layer supplied a value. Reported by `config show` so a layered setup stays debuggable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
+    /// Set at runtime through the admin API. Ephemeral: cleared by the next reload.
+    ///
+    /// Distinct from [`Source::Cli`] even though it outranks it, because the two must not be
+    /// confused: a value the admin API set is by definition one the admin API may set again,
+    /// while a command-line value is pinned for the life of the process.
+    Admin,
     /// A command-line flag.
     Cli,
     /// A process environment variable.
@@ -35,6 +41,7 @@ impl Source {
     /// Short label used in `config show` output.
     pub fn label(&self) -> &'static str {
         match self {
+            Source::Admin => "admin",
             Source::Cli => "cli",
             Source::Env => "env",
             Source::EnvFile => "env-file",
@@ -43,15 +50,72 @@ impl Source {
             Source::Default => "default",
         }
     }
+
+    /// Whether this layer is fixed for the life of the process.
+    ///
+    /// The command line and the process environment are handed to the server at exec time and
+    /// cannot change while it runs — not by editing a file, not by SIGHUP. Every other layer
+    /// can be re-read. That difference is what makes the admin API refuse to override these
+    /// two: the override would work, but only until the next reload discarded it, and there
+    /// would be no way to make it durable short of restarting with different arguments. An
+    /// override that cannot be made to stick is drift between the running server and the
+    /// deployment that declared it, which is exactly what the reload path already refuses to
+    /// create when it reports boot drift instead of applying it.
+    pub fn is_pinned(&self) -> bool {
+        matches!(self, Source::Cli | Source::Env)
+    }
 }
+
+/// Which layer answered for each parameter, captured when the configuration was resolved.
+///
+/// Keyed by `Param::field`, matching what the admin API speaks.
+#[derive(Debug, Clone, Default)]
+pub struct Sources(BTreeMap<&'static str, Source>);
+
+impl Sources {
+    /// Record the layer that answers for every parameter in [`PARAMS`].
+    pub fn capture<E: EnvProvider>(layered: &LayeredEnv<'_, E>) -> Self {
+        Self(
+            PARAMS
+                .iter()
+                .map(|param| (param.field, layered.source_of(param.env)))
+                .collect(),
+        )
+    }
+
+    /// The layer that supplied `field`, or [`Source::Default`] for anything unrecorded.
+    ///
+    /// Defaulting rather than returning an `Option` is deliberate: an unknown field is one no
+    /// layer set, and the one caller that matters — the pinning check — must fail open to
+    /// "editable" rather than locking a field it has no information about.
+    pub fn get(&self, field: &str) -> Source {
+        self.0.get(field).copied().unwrap_or(Source::Default)
+    }
+
+    /// Whether `field` came from a layer that cannot change while the process runs.
+    pub fn is_pinned(&self, field: &str) -> bool {
+        self.get(field).is_pinned()
+    }
+}
+
+/// An empty layer, so `LayeredEnv::new` can leave the overlay unset without every caller
+/// having to invent one.
+static NO_OVERLAY: Layer = Layer::new();
 
 /// The stack of configuration layers, in precedence order.
 ///
-/// `cli` > `env` (process) > `env_file` > `file` (TOML) > `carried` > built-in default.
+/// `overlay` (admin API) > `cli` > `env` (process) > `env_file` > `file` (TOML) > `carried` >
+/// built-in default.
 ///
 /// The env file sits *below* the process environment to preserve today's behaviour: the current
 /// `dotenvy::dotenv()` call does not overwrite variables that are already set.
 pub struct LayeredEnv<'a, E: EnvProvider> {
+    /// Values set at runtime through the admin API. Outranks everything, because an operator
+    /// changing a value through the API means it now — but it is tracked as its own layer
+    /// rather than merged into `cli`, so [`source_of`](Self::source_of) can still tell the two
+    /// apart. Merging them would make a field report itself as command-line-set the moment it
+    /// was patched once, and so pin itself against ever being patched again.
+    pub overlay: &'a Layer,
     pub cli: &'a Layer,
     pub env: &'a E,
     pub env_file: &'a Layer,
@@ -71,6 +135,7 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
         carried: &'a Layer,
     ) -> Self {
         Self {
+            overlay: &NO_OVERLAY,
             cli,
             env,
             env_file,
@@ -79,13 +144,21 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
         }
     }
 
+    /// Put the admin API's runtime overrides on top of the stack.
+    pub fn with_overlay(mut self, overlay: &'a Layer) -> Self {
+        self.overlay = overlay;
+        self
+    }
+
     /// Report which layer would answer `key`, probing in the same order as [`EnvProvider::get`].
     ///
     /// This is a separate pure query rather than something recorded during `get`, because
     /// recording would need interior mutability, and a `RefCell` here would make `LayeredEnv`
     /// `!Sync` — which breaks the moment a reload runs inside an async task.
     pub fn source_of(&self, key: &str) -> Source {
-        if self.cli.contains_key(key) {
+        if self.overlay.contains_key(key) {
+            Source::Admin
+        } else if self.cli.contains_key(key) {
             Source::Cli
         } else if self.env.get(key).is_ok() {
             Source::Env
@@ -103,9 +176,10 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
 
 impl<E: EnvProvider> EnvProvider for LayeredEnv<'_, E> {
     fn get(&self, key: &str) -> Result<String, env::VarError> {
-        self.cli
+        self.overlay
             .get(key)
             .cloned()
+            .or_else(|| self.cli.get(key).cloned())
             .or_else(|| self.env.get(key).ok())
             .or_else(|| self.env_file.get(key).cloned())
             .or_else(|| self.file.get(key).cloned())

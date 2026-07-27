@@ -465,9 +465,21 @@ Authorization: Bearer <master_key>
 ```json
 {
   "config": {
-    "server_port":         { "value": "3000", "reloadable": false, "secret": false },
-    "captcha_compression": { "value": "40",   "reloadable": true,  "secret": false },
-    "api_key_salt":        { "value": "<redacted, 32 bytes>", "reloadable": false, "secret": true }
+    "server_port": {
+      "value": "3000", "reloadable": false, "secret": false,
+      "source": "env", "editable": false,
+      "description": "The TCP port the HTTP listener binds to; 0 asks the operating system for an ephemeral port."
+    },
+    "captcha_compression": {
+      "value": "40", "reloadable": true, "secret": false,
+      "source": "default", "editable": true,
+      "description": "JPEG quality for rendered images, from 1 to 100 and clamped into range; it trades bandwidth against fidelity and is not a security control."
+    },
+    "api_key_salt": {
+      "value": "<redacted, 32 bytes>", "reloadable": false, "secret": true,
+      "source": "cli", "editable": false,
+      "description": "Salt mixed into every stored API key hash, and the fallback key for solution hashing and image encryption; changing it invalidates every existing API key."
+    }
   },
   "overrides": []
 }
@@ -476,10 +488,24 @@ Authorization: Bearer <master_key>
 Secrets are always redacted, including for the master key holder — this endpoint explains the
 server's behaviour, it does not read credentials back out of it.
 
+`description` is a one-sentence explanation of the parameter, so a client does not have to
+ship its own copy of the documentation and let it drift from the running binary.
+
 `reloadable` is `false` for anything captured at startup: the bind address, the database
 settings, the API key salt, the master key, the rate limits and the telemetry settings. Those
 are owned by the listener, the connection pool, the middleware and the rate limiter, and can
 only change with a restart.
+
+`source` names the layer the effective value came from — one of `admin`, `cli`, `env`,
+`env-file`, `file`, `carried` or `default`, in precedence order.
+
+`editable` is what `PATCH` will actually accept, and is the field a UI should drive off. It is
+`false` for everything that is not `reloadable`, and **also** for a reloadable field whose
+`source` is `cli` or `env`. Those two layers are fixed for the life of the process: an override
+would work until the next reload discarded it, and could not be made durable without restarting
+with different arguments. Rather than accept a change it cannot keep, the server refuses it and
+says where the value actually comes from. Change it there and restart, or stop setting it there
+to manage the field from the API.
 
 ---
 
@@ -509,8 +535,13 @@ value.
 `overrides`. Those names match `config`'s keys and this endpoint's request body, so they can be
 fed straight back in.
 
-A patched value outranks every configuration layer, including the command line the server was
-started with, until the next reload clears it.
+A patched value outranks every configuration layer until the next reload clears it, and reports
+its `source` as `admin` while it does — which is why patching a field never pins it against
+being patched again.
+
+**A field this process was given explicitly on the command line or in the environment cannot be
+patched at all**, even when it is reloadable; see `editable` above. `GET /config` says so
+before you try.
 
 **Changes are in-memory only.** They are never written back to a config file, and the next
 reload — SIGHUP, `POST /config/reload`, or a restart — discards them.
@@ -525,6 +556,8 @@ curl -X PATCH http://localhost:3000/api/v1/admin/config \
 
 **Error Responses:**
 - `400 config_not_reloadable` - The field is applied at startup and needs a restart
+- `409 config_pinned` - The field is reloadable, but this process was started with an explicit
+  value for it on the command line or in the environment
 - `400 invalid_config` - Unknown field, unusable value, or empty body
 - `401 unauthorized` - Invalid or missing master key
 - `403 forbidden` - Runtime writes are disabled (`ADMIN_CONFIG_WRITE=false`)
@@ -586,6 +619,7 @@ All errors return JSON responses with this format:
 | `invalid_parameters` | 400 | Bad request parameters |
 | `forbidden` | 403 | Authenticated, but the operation is disabled by configuration |
 | `config_not_reloadable` | 400 | Configuration field is applied at startup and needs a restart |
+| `config_pinned` | 409 | Configuration field is fixed by the command line or environment this server was started with |
 | `invalid_config` | 400 | Unknown configuration field or unusable value |
 | `database_error` | 500 | Internal database error |
 | `internal_error` | 500 | Other internal errors |

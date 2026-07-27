@@ -24,9 +24,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Configuration errors are reported here, before any subscriber exists — which is why they
     // go to stderr with a usage exit code rather than through `tracing`.
-    let (cli_args, config) = match cli::handle(action) {
+    let (cli_args, config, sources) = match cli::handle(action) {
         Ok(Handled::Done) => return Ok(()),
-        Ok(Handled::Serve(cli_args, config)) => (*cli_args, *config),
+        Ok(Handled::Serve(cli_args, config, sources)) => (*cli_args, *config, *sources),
         Err(e) => {
             eprintln!("captchapi: {e}");
             std::process::exit(EXIT_USAGE);
@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
     // The handle owns the running configuration from here on, and retains the parsed arguments
     // so a reload resolves from exactly the same sources as this boot did.
     let pid_file = PathBuf::from(&config.pid_file);
-    let config = ConfigHandle::new(config, cli_args);
+    let config = ConfigHandle::new(config, cli_args, sources);
 
     // Best-effort: a server that cannot write its PID file is still a working server, it just
     // cannot be reached by `captchapi reload` without an explicit --pid.

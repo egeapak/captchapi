@@ -11,7 +11,7 @@
 
 use crate::config::params::{Kind, Reload, PARAMS};
 use crate::config::sources::{
-    load_env_file, load_toml_file, read_secret_file, redact, Layer, LayeredEnv,
+    load_env_file, load_toml_file, read_secret_file, redact, Layer, LayeredEnv, Sources,
 };
 use crate::config::{Config, EnvProvider, RealEnv};
 use std::ffi::OsString;
@@ -255,6 +255,9 @@ fn describe(err: pico_args::Error) -> String {
 /// values (`cli` from a `--*-file` flag, `carried` from `Config::boot_layer`).
 #[derive(Default)]
 pub struct Layers {
+    /// Runtime overrides from the admin API. Above `cli`, but tracked separately so a patched
+    /// field does not report itself as command-line-set and pin itself against further patches.
+    pub overlay: Layer,
     pub cli: Layer,
     pub env_file: Layer,
     pub file: Layer,
@@ -291,6 +294,7 @@ impl Layers {
     /// Borrow the layers as a resolution stack over `env`.
     pub fn stack<'a, E: EnvProvider>(&'a self, env: &'a E) -> LayeredEnv<'a, E> {
         LayeredEnv::new(&self.cli, env, &self.env_file, &self.file, &self.carried)
+            .with_overlay(&self.overlay)
     }
 }
 
@@ -515,8 +519,8 @@ pub fn send_reload_signal(_pid: i32) -> Result<(), String> {
 pub enum Handled {
     /// The command completed; the process should exit successfully.
     Done,
-    /// The server should start with this configuration.
-    Serve(Box<Cli>, Box<Config>),
+    /// The server should start with this configuration, resolved from these layers.
+    Serve(Box<Cli>, Box<Config>, Box<Sources>),
 }
 
 /// Execute an [`Action`], returning what `main` should do next.
@@ -534,8 +538,9 @@ pub fn handle(action: Action) -> Result<Handled, String> {
             Ok(Handled::Done)
         }
         Action::Run(cli) => {
-            let (config, _) = resolve(&cli)?;
-            Ok(Handled::Serve(cli, Box::new(config)))
+            let (config, layers) = resolve(&cli)?;
+            let sources = Sources::capture(&layers.stack(&RealEnv));
+            Ok(Handled::Serve(cli, Box::new(config), Box::new(sources)))
         }
         Action::ConfigCheck(cli) => {
             resolve(&cli)?;

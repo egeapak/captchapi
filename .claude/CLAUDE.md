@@ -118,8 +118,22 @@ Configuration can come from the command line, the environment, an env file or a 
 Precedence, highest first:
 
 ```
-command line > environment > env file (.env) > config file > built-in default
+admin API > command line > environment > env file (.env) > config file > built-in default
 ```
+
+The admin overlay is a real layer rather than something merged into the command line, so
+`source_of` can tell the two apart. Merging them — which is what the code used to do — made a
+field report itself as `cli`-set the moment it was patched once, which under the pinning rule
+below would have pinned it against ever being patched again.
+
+**Pinned fields.** A reloadable field whose effective value came from the command line or the
+process environment is refused by `PATCH /config` with `409 config_pinned`. Those two layers
+are fixed for the life of the process: an override would work until the next reload discarded
+it and could never be made durable without a restart, so accepting it would create drift
+between the running server and the deployment that declared it. Files are different — they can
+be edited and re-read — so an env-file or TOML value stays patchable. `GET /config` reports
+`source` and `editable` per field, and the console drives its inputs off `editable` so it can
+never offer an edit the API would reject.
 
 **Adding a new setting is two edits:** one row in `PARAMS` (`src/config/params.rs`) and one
 field on `Config` (`src/config/mod.rs`). The flag, help text, TOML key, provenance reporting

@@ -1,6 +1,6 @@
 use crate::config::params::{by_env, by_field, Reload, PARAMS};
 use crate::config::sources::redact;
-use crate::config::{Config, ConfigHandle};
+use crate::config::{Config, ConfigHandle, Source};
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
@@ -81,6 +81,14 @@ pub struct ConfigEntry {
     pub reloadable: bool,
     /// Whether the value is hidden because it is a secret.
     pub secret: bool,
+    /// The layer the effective value came from: `admin`, `cli`, `env`, `env-file`, `file`,
+    /// `carried` or `default`.
+    pub source: &'static str,
+    /// Whether PATCH will accept this field. False for boot-only fields, and for reloadable
+    /// fields this process was given explicitly on the command line or in the environment —
+    /// an override there would work until the next reload discarded it, and could never be
+    /// made durable without a restart.
+    pub editable: bool,
     /// One sentence on what this parameter does, so a client does not have to ship its own
     /// copy of the documentation and let it drift from the server's.
     pub description: &'static str,
@@ -118,16 +126,20 @@ fn describe(config: &ConfigHandle) -> ConfigResponse {
 /// concurrent reload cannot make the response describe a different configuration than the one
 /// the request produced.
 fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
+    let sources = config.sources();
     let entries = PARAMS
         .iter()
         .filter_map(|param| {
             let value = snapshot.field_value(param.field)?;
+            let source = sources.get(param.field);
             Some((
                 param.field,
                 ConfigEntry {
                     value: redact(param, &value),
                     reloadable: param.reload == Reload::Live,
                     secret: param.secret,
+                    source: source.label(),
+                    editable: param.reload == Reload::Live && !source.is_pinned(),
                     description: param.about,
                 },
             ))
@@ -192,6 +204,25 @@ async fn patch_config(
             state.metrics.system.config_patch_failures.add(1, &[]);
             return Err(AppError::ConfigNotReloadable(format!(
                 "`{field}` is applied at startup and cannot be changed at runtime; restart with a new value"
+            )));
+        }
+
+        // A reloadable field can still be off limits: if this process was started with an
+        // explicit value on the command line or in the environment, an override would hold
+        // only until the next reload and could never be made durable. Rejected here, ahead of
+        // `ConfigHandle::patch`, so the response carries its own error code rather than being
+        // flattened into `invalid_config` with everything else the handle refuses.
+        let source = state.config.sources().get(param.field);
+        if source.is_pinned() {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            return Err(AppError::ConfigPinned(format!(
+                "`{field}` was set on the {} this server was started with; \
+                 change it there and restart, or remove it to manage `{field}` from here",
+                if source == Source::Cli {
+                    "command line"
+                } else {
+                    "environment"
+                }
             )));
         }
 

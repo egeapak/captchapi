@@ -22,6 +22,25 @@ tests {
     expect(res.body.config.server_port.reloadable).to.equal(false);
   });
 
+  test("should report the layer each value came from", function() {
+    const layers = ["admin", "cli", "env", "env-file", "file", "carried", "default"];
+    Object.keys(res.body.config).forEach(function(field) {
+      expect(layers, field).to.include(res.body.config[field].source);
+    });
+  });
+
+  test("should only mark a field editable if a PATCH would accept it", function() {
+    Object.keys(res.body.config).forEach(function(field) {
+      const entry = res.body.config[field];
+      // Editable implies reloadable, and implies the value was not pinned by the command
+      // line or the environment this server was started with.
+      if (entry.editable) {
+        expect(entry.reloadable, field).to.equal(true);
+        expect(["cli", "env"], field).to.not.include(entry.source);
+      }
+    });
+  });
+
   test("should describe every parameter in a sentence", function() {
     const fields = Object.keys(res.body.config);
     expect(fields.length).to.be.above(0);

@@ -36,6 +36,13 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
             Status::InvalidArg,
             format!("Configuration field is not reloadable: {}", msg),
         ),
+        AppError::ConfigPinned(msg) => napi::Error::new(
+            Status::InvalidArg,
+            format!(
+                "Configuration field is pinned by the environment it was started in: {}",
+                msg
+            ),
+        ),
         AppError::InvalidConfig(msg) => napi::Error::new(
             Status::InvalidArg,
             format!("Invalid configuration: {}", msg),

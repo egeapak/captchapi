@@ -89,6 +89,7 @@ border-left:2px solid transparent}
 .about{display:block;font:.74rem/1.35 var(--sans);letter-spacing:0;color:var(--faint);
 white-space:normal;margin-top:.15rem;max-width:34rem}
 tr.live td.k{color:var(--fg);border-left-color:var(--accent)}
+tr.pinned td.k{border-left-color:var(--warn)}
 tr.dirty td.k{border-left-color:var(--warn)}
 td.v{padding-left:.3rem}
 td.v input{font-family:var(--mono);font-size:.79rem;text-overflow:ellipsis}
@@ -105,6 +106,7 @@ color:var(--faint);background:var(--sunk)}
 .tag::before{content:"";width:.36rem;height:.36rem;border-radius:50%;background:currentColor}
 .tag.live{color:var(--ok);background:var(--ok-soft)}
 .tag.boot{color:var(--info);background:var(--info-soft)}
+.tag.pinned{color:var(--warn);background:0 0;border-color:var(--line);border-style:dashed}
 .tag.dirty{color:var(--warn);background:var(--warn-soft)}
 .tag.secret{color:var(--faint);background:0 0;border-color:var(--line);border-style:dashed}
 
@@ -156,6 +158,7 @@ td.v input{padding:.35rem .5rem;margin-top:.3rem}
     <p class="legend">
       <span class="tag live">live</span> editable now
       <span class="tag boot">boot</span> restart to change
+      <span class="tag pinned">set by cli/env</span> change it there
       <span class="tag secret">secret</span> hidden
     </p>
     <div class="card">

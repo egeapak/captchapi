@@ -38,6 +38,11 @@ pub enum AppError {
     #[error("Configuration field is not reloadable: {0}")]
     ConfigNotReloadable(String),
 
+    /// The field is reloadable, but this process was given an explicit value for it on the
+    /// command line or in the environment, which a runtime override cannot durably replace.
+    #[error("Configuration field is pinned by the environment it was started in: {0}")]
+    ConfigPinned(String),
+
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
@@ -88,6 +93,7 @@ impl IntoResponse for AppError {
                 "config_not_reloadable",
                 msg.clone(),
             ),
+            AppError::ConfigPinned(ref msg) => (StatusCode::CONFLICT, "config_pinned", msg.clone()),
             AppError::InvalidConfig(ref msg) => {
                 (StatusCode::BAD_REQUEST, "invalid_config", msg.clone())
             }

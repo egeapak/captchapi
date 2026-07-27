@@ -38,14 +38,20 @@ function syncButtons() {
   $("bar").className = "bar" + (n ? " dirty" : "");
 }
 
-// Row and tag styling for one field: which of the three classes it is, and whether it is edited.
+// Row and tag styling for one field: which class it is, and whether it is edited.
 // Purely presentational — the class names drive the stylesheet, nothing reads them back.
+//
+// `pinned` is a reloadable field this server was started with an explicit value for, so the
+// API will refuse to change it. It gets its own tag rather than being lumped in with `boot`,
+// because the remedy is different: boot needs a restart, pinned needs the command line or
+// environment changed first.
 function mark(tr, tag, field, entry) {
-  const cls = entry.secret ? "secret" : entry.reloadable ? "live" : "boot";
+  const pinned = entry.reloadable && !entry.editable;
+  const cls = entry.secret ? "secret" : pinned ? "pinned" : entry.reloadable ? "live" : "boot";
   const edited = field in draft;
   tr.className = cls + (edited ? " dirty" : "");
   tag.className = "tag " + (edited ? "dirty" : cls);
-  tag.textContent = edited ? "modified" : cls;
+  tag.textContent = edited ? "modified" : pinned ? "set by " + entry.source : cls;
 }
 
 function render(data) {
@@ -76,8 +82,10 @@ function render(data) {
     v.className = "v";
     const input = document.createElement("input");
     input.value = field in draft ? draft[field] : entry.value;
-    input.disabled = !entry.reloadable;
-    if (entry.reloadable) {
+    // The server is the authority on what it will accept; the console just mirrors it, so
+    // the two cannot drift into offering an edit that PATCH would reject.
+    input.disabled = !entry.editable;
+    if (entry.editable) {
       input.addEventListener("input", () => {
         if (input.value === entry.value) delete draft[field];
         else draft[field] = input.value;
