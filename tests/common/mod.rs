@@ -130,6 +130,7 @@ impl TestApp {
             storage: self.storage.clone(),
             metrics: metrics.clone(),
             config: config.clone(),
+            store: captchapi::services::ConfigStore::new(self.storage.pool().clone()),
         };
 
         Router::new()

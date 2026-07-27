@@ -1,0 +1,35 @@
+meta {
+  name: Put Stored Config - Not Persistable
+  type: http
+  seq: 12
+}
+
+put {
+  url: {{base_url}}/api/v1/admin/config/stored
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "api_key_salt": "should-never-be-written-to-the-database"
+  }
+}
+
+tests {
+  test("should return 400", function() {
+    expect(res.status).to.equal(400);
+  });
+
+  test("should return config_not_persistable", function() {
+    expect(res.body.error).to.equal("config_not_persistable");
+  });
+}
+
+docs {
+  Secrets are never storable: the store is a database file the backup story treats as data.
+  The same refusal covers database_url, which is needed to open the database the store is in.
+}

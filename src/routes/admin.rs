@@ -1,10 +1,11 @@
-use crate::config::params::{by_env, by_field, Reload, PARAMS};
+use crate::config::params::{by_env, by_field, Persist, Reload, PARAMS};
 use crate::config::sources::redact;
+use crate::config::sources::Layer;
 use crate::config::{Config, ConfigHandle, Source};
 use crate::error::{AppError, Result};
 use crate::metrics::Metrics;
 use crate::middleware::MasterKeyMiddleware;
-use crate::services::StorageService;
+use crate::services::{ConfigStore, StorageService, WrittenBy};
 use crate::tasks::cleanup_expired_sessions;
 use axum::{
     extract::State,
@@ -21,6 +22,7 @@ pub struct AdminState {
     pub storage: StorageService,
     pub metrics: Arc<Metrics>,
     pub config: ConfigHandle,
+    pub store: ConfigStore,
 }
 
 pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -> Router {
@@ -28,6 +30,11 @@ pub fn admin_routes(state: AdminState, master_middleware: MasterKeyMiddleware) -
         .route("/cleanup", post(trigger_cleanup))
         .route("/config", get(get_config).patch(patch_config))
         .route("/config/reload", post(reload_config))
+        .route("/config/stored", get(get_stored).put(put_stored))
+        .route(
+            "/config/stored/{field}",
+            axum::routing::delete(delete_stored),
+        )
         .route_layer(middleware::from_fn_with_state(
             master_middleware,
             MasterKeyMiddleware::authenticate,
@@ -89,6 +96,21 @@ pub struct ConfigEntry {
     /// an override there would work until the next reload discarded it, and could never be
     /// made durable without a restart.
     pub editable: bool,
+    /// Whether `PUT /config/stored` will accept this field.
+    ///
+    /// A different question from `editable`, and the console needs both. `editable` asks
+    /// whether the running process can take a new value now; this asks whether one can be made
+    /// to survive a restart. A boot field is storable but never editable; a live field can be
+    /// both. Pinning does *not* disqualify — see `shadowed_by`.
+    pub storable: bool,
+    /// The layer outranking a stored value for this field, when one exists.
+    ///
+    /// A stored value that the command line or environment shadows is not wasted: it persists,
+    /// and takes effect as soon as that variable is dropped, which is the migration path off
+    /// env-driven configuration. What must never happen is storing it and implying it took
+    /// effect, so it is reported rather than refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadowed_by: Option<&'static str>,
     /// One sentence on what this parameter does, so a client does not have to ship its own
     /// copy of the documentation and let it drift from the server's.
     pub description: &'static str,
@@ -100,6 +122,22 @@ pub struct ConfigResponse {
     /// Fields currently overridden through this API, named exactly as `config`'s keys and as
     /// PATCH expects them, so they can be fed straight back in. Cleared by a reload.
     pub overrides: Vec<String>,
+    /// Boot-only fields whose configured value differs from the running one, so a restart
+    /// would change them. Covers every layer, not just the store: an edited env file shows up
+    /// here too.
+    pub pending_restart: Vec<&'static str>,
+}
+
+/// The persisted settings, as `GET`/`PUT /config/stored` speak them.
+#[derive(Debug, Serialize)]
+pub struct StoredResponse {
+    /// Field name to raw stored value. Secrets can never appear: they are `Persist::Never`.
+    pub stored: BTreeMap<String, String>,
+    /// Stored fields a higher layer currently overrides, so they are not in effect.
+    pub shadowed: Vec<String>,
+    /// Stored boot fields that a restart would apply.
+    pub pending_restart: Vec<&'static str>,
+    pub message: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,6 +165,7 @@ fn describe(config: &ConfigHandle) -> ConfigResponse {
 /// the request produced.
 fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
     let sources = config.sources();
+    let stored = config.stored();
     let entries = PARAMS
         .iter()
         .filter_map(|param| {
@@ -140,6 +179,11 @@ fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
                     secret: param.secret,
                     source: source.label(),
                     editable: param.reload == Reload::Live && !source.is_pinned(),
+                    storable: param.persist == Persist::Allowed,
+                    // Only meaningful when something *is* stored for the field; a pinned field
+                    // with nothing stored is not being shadowed, it simply has no stored value.
+                    shadowed_by: (stored.contains_key(param.env) && source.is_pinned())
+                        .then(|| source.label()),
                     description: param.about,
                 },
             ))
@@ -159,7 +203,209 @@ fn describe_config(snapshot: &Config, config: &ConfigHandle) -> ConfigResponse {
     ConfigResponse {
         config: entries,
         overrides,
+        pending_restart: config.pending_restart(),
     }
+}
+
+/// Turn a JSON body into the `(field, raw string)` pairs every layer speaks.
+///
+/// Shared by `PATCH` and `PUT` so both accept `600` and `"600"` identically, and so neither
+/// grows its own idea of what a configuration value looks like.
+fn coerce(req: &BTreeMap<String, serde_json::Value>) -> Result<Vec<(String, String)>> {
+    req.iter()
+        .map(|(field, value)| {
+            let raw = match value {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                serde_json::Value::Bool(b) => b.to_string(),
+                other => {
+                    return Err(AppError::InvalidConfig(format!(
+                        "`{field}` must be a string, number or boolean, not `{other}`"
+                    )))
+                }
+            };
+            Ok((field.clone(), raw))
+        })
+        .collect()
+}
+
+/// Which stored fields a higher layer currently overrides.
+fn shadowed(config: &ConfigHandle, stored: &BTreeMap<String, String>) -> Vec<String> {
+    let sources = config.sources();
+    let mut names: Vec<String> = stored
+        .keys()
+        .filter(|field| sources.is_pinned(field))
+        .cloned()
+        .collect();
+    names.sort_unstable();
+    names
+}
+
+/// Render the store, with everything a client needs to know about whether it is in effect.
+async fn describe_stored(state: &AdminState, message: String) -> Result<Json<StoredResponse>> {
+    let stored = state.store.all().await?;
+    Ok(Json(StoredResponse {
+        shadowed: shadowed(&state.config, &stored),
+        pending_restart: state.config.pending_restart(),
+        stored,
+        message,
+    }))
+}
+
+/// Return the persisted settings.
+async fn get_stored(State(state): State<AdminState>) -> Result<Json<StoredResponse>> {
+    describe_stored(&state, "Stored configuration".to_string()).await
+}
+
+/// Persist settings so they survive a restart.
+///
+/// Live fields take effect immediately, exactly as a `PATCH` would. Boot fields cannot, and
+/// come back in `pending_restart` rather than being silently accepted as though they had.
+async fn put_stored(
+    State(state): State<AdminState>,
+    Json(req): Json<BTreeMap<String, serde_json::Value>>,
+) -> Result<Json<StoredResponse>> {
+    if !state.config.get().admin_config_write {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+        return Err(AppError::Forbidden(
+            "runtime configuration writes are disabled (ADMIN_CONFIG_WRITE=false)".to_string(),
+        ));
+    }
+    if req.is_empty() {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+        return Err(AppError::InvalidConfig(
+            "no fields given; supply at least one storable field".to_string(),
+        ));
+    }
+
+    let updates = coerce(&req).inspect_err(|_| {
+        state.metrics.system.config_patch_failures.add(1, &[]);
+    })?;
+
+    // Refuse anything unstorable before the candidate is assembled, so the error names the
+    // field rather than surfacing as a resolution failure further down.
+    for (field, _) in &updates {
+        match by_field(field) {
+            Some(param) if param.persist == Persist::Allowed => {}
+            Some(param) => {
+                state.metrics.system.config_patch_failures.add(1, &[]);
+                return Err(AppError::ConfigNotPersistable(format!(
+                    "`{}` cannot be stored: it is either a secret, needed to open the database \
+                     the store lives in, or consumed before the store is read",
+                    param.field
+                )));
+            }
+            None => {
+                state.metrics.system.config_patch_failures.add(1, &[]);
+                return Err(AppError::InvalidConfig(format!(
+                    "`{field}` is not a configuration field"
+                )));
+            }
+        }
+    }
+
+    // Validate before writing. Writing first would persist a configuration the server had
+    // already refused, leaving the rollback machinery to undo it on the next restart — a far
+    // worse way to find out a value was a typo.
+    let mut candidate: Layer = state.config.stored();
+    for (field, value) in &updates {
+        if let Some(param) = by_field(field) {
+            candidate.insert(param.env.to_string(), value.clone());
+        }
+    }
+    let handle = state.config.clone();
+    let probe = candidate.clone();
+    tokio::task::spawn_blocking(move || handle.dry_run(&probe))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config dry run failed: {e}")))?
+        .map_err(|e| {
+            state.metrics.system.config_patch_failures.add(1, &[]);
+            AppError::InvalidConfig(e)
+        })?;
+
+    let generation = state.store.set(&updates, WrittenBy::AdminApi).await?;
+
+    // Adopt rather than reload: writing to the store says nothing about whether an unrelated
+    // runtime override should be discarded, so the overlay is left alone.
+    let handle = state.config.clone();
+    let outcome = tokio::task::spawn_blocking(move || handle.adopt_stored(candidate))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config adopt task failed: {e}")))?
+        .map_err(AppError::InvalidConfig)?;
+
+    for (field, value) in &updates {
+        tracing::info!("Stored config change: {field} = {value} (generation {generation})");
+    }
+    state.metrics.system.config_patches.add(1, &[]);
+
+    // Only the fields *this* request touched, intersected with the drift. `outcome.drift` is
+    // every boot field that differs, which can include one an unrelated env-file edit changed —
+    // reporting that as something this write caused would be a plain lie.
+    let touched: Vec<&'static str> = updates
+        .iter()
+        .filter_map(|(field, _)| by_field(field))
+        .map(|param| param.field)
+        .collect();
+    let waiting: Vec<&&'static str> = outcome
+        .drift
+        .iter()
+        .filter(|field| touched.contains(field))
+        .collect();
+
+    let message = if waiting.is_empty() {
+        format!("Stored {} setting(s); all are in effect", updates.len())
+    } else {
+        format!(
+            "Stored {} setting(s); {} need(s) a restart to take effect",
+            updates.len(),
+            waiting.len()
+        )
+    };
+    describe_stored(&state, message).await
+}
+
+/// Remove one persisted setting.
+async fn delete_stored(
+    State(state): State<AdminState>,
+    axum::extract::Path(field): axum::extract::Path<String>,
+) -> Result<Json<StoredResponse>> {
+    if !state.config.get().admin_config_write {
+        return Err(AppError::Forbidden(
+            "runtime configuration writes are disabled (ADMIN_CONFIG_WRITE=false)".to_string(),
+        ));
+    }
+
+    let Some(param) = by_field(&field) else {
+        return Err(AppError::InvalidConfig(format!(
+            "`{field}` is not a configuration field"
+        )));
+    };
+
+    if !state.store.unset(&field).await? {
+        return Err(AppError::InvalidConfig(format!(
+            "`{field}` is not stored, so there is nothing to remove"
+        )));
+    }
+
+    let mut candidate: Layer = state.config.stored();
+    candidate.remove(param.env);
+
+    let handle = state.config.clone();
+    let outcome = tokio::task::spawn_blocking(move || handle.adopt_stored(candidate))
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("config adopt task failed: {e}")))?
+        .map_err(AppError::InvalidConfig)?;
+
+    tracing::info!("Removed stored config: {field}");
+
+    // Same reasoning as `put_stored`: a restart may well be pending for some other field, but
+    // that is not something removing this one did.
+    let message = if outcome.drift.contains(&param.field) {
+        format!("Removed `{field}`; a restart is needed to take effect")
+    } else {
+        format!("Removed `{field}`")
+    };
+    describe_stored(&state, message).await
 }
 
 /// Return the effective configuration.

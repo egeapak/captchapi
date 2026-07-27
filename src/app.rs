@@ -8,7 +8,8 @@ use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
 use crate::services::{
-    AuthService, CaptchaService, ImageCipher, RateLimiterConfig, SolutionHasher, StorageService,
+    AuthService, CaptchaService, ConfigStore, ImageCipher, RateLimiterConfig, SolutionHasher,
+    StorageService,
 };
 use axum::{middleware as axum_middleware, routing::get, Router};
 use governor::DefaultKeyedRateLimiter;
@@ -38,7 +39,8 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
     let boot = config.get();
 
     // Initialize services
-    let storage = StorageService::new(pool);
+    let storage = StorageService::new(pool.clone());
+    let config_store = ConfigStore::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(boot.api_key_salt.clone()));
     // Both secrets are boot-only, like the API key salt: they are captured into these services
@@ -90,6 +92,7 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
         storage: storage.clone(),
         metrics: metrics.clone(),
         config: config.clone(),
+        store: config_store,
     };
 
     // Build base router (without rate-limited sessions routes)

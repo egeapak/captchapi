@@ -67,6 +67,10 @@ bru run \
   "Tests/Admin Config/Patch Config - Invalid Value.bru" \
   "Tests/Admin Config/Patch Config - Success.bru" \
   "Tests/Admin Config/Reload Config - Unauthorized.bru" \
+  "Tests/Admin Config/Get Stored Config.bru" \
+  "Tests/Admin Config/Put Stored Config - Not Persistable.bru" \
+  "Tests/Admin Config/Put Stored Config - Success.bru" \
+  "Tests/Admin Config/Delete Stored Config.bru" \
   "Tests/Admin Config/Reload Config - Success.bru" \
   --env "$ENVIRONMENT"
 

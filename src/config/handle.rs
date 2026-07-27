@@ -37,6 +37,12 @@ struct ReloadState {
     /// Which layer answered for each field, as of the last resolve. Kept beside the overlay
     /// under the same lock so the two can never disagree about what the running config is.
     sources: Sources,
+    /// Boot-only fields whose freshly resolved value differs from the running one.
+    ///
+    /// Recomputed on every resolve, so it answers "what would change if this process
+    /// restarted right now" for *every* layer — a stored value, an edited env file, a TOML
+    /// change — not just for the store.
+    pending_restart: Vec<&'static str>,
     /// The persisted settings, as of the last time a caller read them.
     ///
     /// Retained rather than fetched, because re-resolving happens under this lock in a
@@ -84,6 +90,7 @@ impl ConfigHandle {
                     env: EnvSource::Process,
                     overlay: Layer::new(),
                     sources,
+                    pending_restart: Vec::new(),
                     stored,
                 }),
             }),
@@ -177,12 +184,67 @@ impl ConfigHandle {
         state.overlay.clear();
         state.sources = sources;
         state.stored = stored;
+        state.pending_restart = drift.clone();
         self.inner.tx.send_replace(merged.clone());
 
         Ok(Outcome {
             config: merged,
             drift,
         })
+    }
+
+    /// Adopt a new persisted layer without discarding runtime overrides.
+    ///
+    /// The difference from [`Self::reload`] is deliberate. A reload means "re-read the sources
+    /// of truth", and the ephemeral overlay is not one of those, so it is dropped. Writing to
+    /// the store is a much narrower act: it says nothing about whether an unrelated field an
+    /// operator adjusted a minute ago should be thrown away, so it is left alone.
+    ///
+    /// Live fields move immediately. Boot fields cannot, so the difference is returned as
+    /// drift for the caller to report as pending a restart.
+    ///
+    /// Blocking: reads files. Async callers must wrap this in `spawn_blocking`.
+    pub fn adopt_stored(&self, stored: Layer) -> Result<Outcome, String> {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+
+        let current = self.rx.borrow().clone();
+        let overlay = state.overlay.clone();
+        let (resolved, sources) =
+            resolve_with_carry(&state.cli, &current, &overlay, &stored, &state.env)?;
+
+        let drift = current.boot_drift(&resolved);
+        let merged = Arc::new(current.with_boot_fields_from(&resolved));
+
+        state.sources = sources;
+        state.stored = stored;
+        state.pending_restart = drift.clone();
+        self.inner.tx.send_replace(merged.clone());
+
+        Ok(Outcome {
+            config: merged,
+            drift,
+        })
+    }
+
+    /// Resolve as if `stored` were the persisted layer, publishing nothing.
+    ///
+    /// Lets a write be rejected *before* it reaches the database. Writing first and validating
+    /// afterwards would persist a configuration the server had already refused, leaving it for
+    /// the rollback machinery to undo on the next restart — a much worse way to learn that a
+    /// value was a typo.
+    ///
+    /// Blocking: reads files.
+    pub fn dry_run(&self, stored: &Layer) -> Result<Config, String> {
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let current = self.rx.borrow().clone();
+        let (resolved, _) = resolve_with_carry(
+            &state.cli,
+            &current,
+            &state.overlay.clone(),
+            stored,
+            &state.env,
+        )?;
+        Ok(resolved)
     }
 
     /// Apply an in-memory override to live fields, on top of the resolved configuration.
@@ -265,6 +327,12 @@ impl ConfigHandle {
         self.inner.tx.send_replace(merged.clone());
 
         Ok(merged)
+    }
+
+    /// Boot-only fields whose configured value differs from the running one.
+    pub fn pending_restart(&self) -> Vec<&'static str> {
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.pending_restart.clone()
     }
 
     /// The persisted layer this handle last resolved against.

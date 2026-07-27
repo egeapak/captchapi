@@ -1,0 +1,32 @@
+meta {
+  name: Get Stored Config
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{base_url}}/api/v1/admin/config/stored
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should report the store and whether it is in effect", function() {
+    expect(res.body.stored).to.be.an("object");
+    expect(res.body.shadowed).to.be.an("array");
+    expect(res.body.pending_restart).to.be.an("array");
+  });
+
+  test("should never contain a secret", function() {
+    ["api_key_salt", "master_api_key", "solution_hash_secret", "image_encryption_secret"]
+      .forEach(function(field) {
+        expect(Object.keys(res.body.stored)).to.not.include(field);
+      });
+  });
+}
