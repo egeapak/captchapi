@@ -467,14 +467,34 @@ impl GlyphMask {
 
     /// Coverage at a fractional `x` on an exact row, linearly interpolated.
     ///
-    /// Only `x` needs resampling: every deformation here displaces pixels
+    /// Only `x` needs resampling when the deformation displaces pixels
     /// horizontally as a function of the row, so `y` stays an exact integer
-    /// and a full bilinear filter would only add blur.
+    /// and a full bilinear filter would only add blur. [`displace_rows`] is
+    /// that case; [`displace_and_rotate`] is not, and uses [`sample`] instead.
+    ///
+    /// [`displace_rows`]: GlyphMask::displace_rows
+    /// [`displace_and_rotate`]: GlyphMask::displace_and_rotate
+    /// [`sample`]: GlyphMask::sample
     fn sample_row(&self, x: f32, y: i32) -> f32 {
         let floor = x.floor();
         let frac = x - floor;
         let x0 = floor as i32;
         self.at(x0, y) * (1.0 - frac) + self.at(x0 + 1, y) * frac
+    }
+
+    /// Coverage at a fractional position, bilinearly interpolated.
+    ///
+    /// Coordinates are in index space, so `(0.0, 0.0)` is the centre of the
+    /// top-left pixel rather than its corner — the same convention [`at`] uses.
+    ///
+    /// [`at`]: GlyphMask::at
+    fn sample(&self, x: f32, y: f32) -> f32 {
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (x0, y0) = (x0 as i32, y0 as i32);
+        let top = self.at(x0, y0) * (1.0 - fx) + self.at(x0 + 1, y0) * fx;
+        let bottom = self.at(x0, y0 + 1) * (1.0 - fx) + self.at(x0 + 1, y0 + 1) * fx;
+        top * (1.0 - fy) + bottom * fy
     }
 
     /// Slides each row sideways by `displacement(row)`, resampling as it goes.
@@ -493,15 +513,7 @@ impl GlyphMask {
             return self.clone();
         }
 
-        let offsets: Vec<f32> = (0..self.height).map(|y| displacement(y as f32)).collect();
-        let min = offsets.iter().copied().fold(f32::INFINITY, f32::min);
-        let max = offsets.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-
-        // A row moving left needs room on the left, and vice versa. One extra
-        // column on each side absorbs the interpolation reaching past the
-        // integer offset.
-        let pad_left = (-min).max(0.0).ceil() as u32 + 1;
-        let pad_right = max.max(0.0).ceil() as u32 + 1;
+        let (offsets, pad_left, pad_right) = self.displacement_bounds(&displacement);
         let width = self.width + pad_left + pad_right;
 
         let mut coverage = vec![0.0f32; (width * self.height) as usize];
@@ -520,6 +532,118 @@ impl GlyphMask {
             height: self.height,
             left: self.left - pad_left as i32,
             top: self.top,
+            coverage,
+        }
+    }
+
+    /// The row-displacement geometry [`displace_rows`] and
+    /// [`displace_and_rotate`] share: how far the buffer has to grow on each
+    /// side to hold the displaced glyph, and where each row lands.
+    ///
+    /// [`displace_rows`]: GlyphMask::displace_rows
+    /// [`displace_and_rotate`]: GlyphMask::displace_and_rotate
+    fn displacement_bounds(&self, displacement: &impl Fn(f32) -> f32) -> (Vec<f32>, u32, u32) {
+        let offsets: Vec<f32> = (0..self.height).map(|y| displacement(y as f32)).collect();
+        let min = offsets.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = offsets.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+
+        // A row moving left needs room on the left, and vice versa. One extra
+        // column on each side absorbs the interpolation reaching past the
+        // integer offset.
+        let pad_left = (-min).max(0.0).ceil() as u32 + 1;
+        let pad_right = max.max(0.0).ceil() as u32 + 1;
+        (offsets, pad_left, pad_right)
+    }
+
+    /// Displaces each row by `displacement(row)` and then turns the whole glyph
+    /// by `angle` radians about its own centre, in a single resample.
+    ///
+    /// Rotation cannot be folded into [`displace_rows`] the way the shear and
+    /// the wave fold into each other: those are both horizontal displacements
+    /// that depend only on the row, and a rotation moves pixels vertically as
+    /// well. But it can still share the *resample*, and that is the point of
+    /// this function. Running `displace_rows` and then a separate rotation
+    /// would filter the coverage twice, and two bilinear passes visibly soften
+    /// a glyph — the renderer has a deformation whose entire job is softening
+    /// glyphs, and it is not this one.
+    ///
+    /// The inverse map runs the pipeline backwards: un-rotate the output point
+    /// about the centre to land in displaced space, then subtract that row's
+    /// displacement to land in the source. Sampling is bilinear because the
+    /// un-rotation leaves a fractional row, which is exactly the case
+    /// [`sample_row`] does not cover.
+    ///
+    /// Like [`displace_rows`] and [`blur`], the buffer grows to fit rather than
+    /// clipping, and `left`/`top` move to match, so the caller composites at
+    /// the same pen position. Rotation is about the centre of the *displaced*
+    /// box, so a sheared letter turns about where it now sits rather than
+    /// swinging away from its slot.
+    ///
+    /// [`displace_rows`]: GlyphMask::displace_rows
+    /// [`sample_row`]: GlyphMask::sample_row
+    /// [`blur`]: GlyphMask::blur
+    pub fn displace_and_rotate(&self, displacement: impl Fn(f32) -> f32, angle: f32) -> GlyphMask {
+        if self.height == 0 || self.width == 0 {
+            return self.clone();
+        }
+        if angle == 0.0 {
+            return self.displace_rows(displacement);
+        }
+
+        let (offsets, pad_left, pad_right) = self.displacement_bounds(&displacement);
+        let displaced_width = (self.width + pad_left + pad_right) as f32;
+        let displaced_height = self.height as f32;
+        let displaced_left = (self.left - pad_left as i32) as f32;
+
+        // Rotation centre, in pen coordinates. Pixel `(i, j)` of a buffer whose
+        // corner is at `(l, t)` covers `[l + i, l + i + 1) x [t + j, t + j + 1)`,
+        // so the centre of the whole box is half its extent past its corner.
+        let centre_x = displaced_left + displaced_width / 2.0;
+        let centre_y = self.top as f32 + displaced_height / 2.0;
+
+        let (sin, cos) = angle.sin_cos();
+        // A rotated rectangle's bounding box: each axis picks up the projection
+        // of both of the original extents onto it.
+        let half_width = (cos.abs() * displaced_width + sin.abs() * displaced_height) / 2.0;
+        let half_height = (sin.abs() * displaced_width + cos.abs() * displaced_height) / 2.0;
+
+        // Floor and ceil rather than round, plus a pixel of slack on each side,
+        // so the interpolation never reaches for a sample the buffer does not
+        // have room for.
+        let left = (centre_x - half_width).floor() as i32 - 1;
+        let top = (centre_y - half_height).floor() as i32 - 1;
+        let width = ((centre_x + half_width).ceil() as i32 + 1 - left).max(1) as u32;
+        let height = ((centre_y + half_height).ceil() as i32 + 1 - top).max(1) as u32;
+
+        let mut coverage = vec![0.0f32; (width * height) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                // Output pixel centre, relative to the rotation centre.
+                let dx = (left + x as i32) as f32 + 0.5 - centre_x;
+                let dy = (top + y as i32) as f32 + 0.5 - centre_y;
+
+                // Un-rotate into displaced space, as a position within that box.
+                let px = (dx * cos + dy * sin) + displaced_width / 2.0;
+                let py = (-dx * sin + dy * cos) + displaced_height / 2.0;
+
+                // Back to index space, then undo the row's displacement. The row
+                // is fractional here, so the offset is interpolated between the
+                // two rows it falls between rather than snapped to one of them —
+                // snapping would quantise a shear into visible stair steps.
+                let row = py - 0.5;
+                let shift = interpolate_offset(&offsets, row);
+                let value = self.sample(px - 0.5 - pad_left as f32 - shift, row);
+                if value > 0.0 {
+                    coverage[(y * width + x) as usize] = value;
+                }
+            }
+        }
+
+        GlyphMask {
+            width,
+            height,
+            left,
+            top,
             coverage,
         }
     }
@@ -708,6 +832,29 @@ impl GlyphMask {
         }
         self
     }
+}
+
+/// A row displacement at a fractional row, interpolated between its neighbours
+/// and held flat outside the glyph's own rows.
+///
+/// Clamping rather than extrapolating past the ends matters: a rotation reaches
+/// for rows above and below the source, and extrapolating a shear out there
+/// would drag ink sideways from rows that do not exist.
+fn interpolate_offset(offsets: &[f32], row: f32) -> f32 {
+    if offsets.is_empty() {
+        return 0.0;
+    }
+    let last = offsets.len() - 1;
+    if row <= 0.0 {
+        return offsets[0];
+    }
+    if row >= last as f32 {
+        return offsets[last];
+    }
+    let floor = row.floor();
+    let frac = row - floor;
+    let index = floor as usize;
+    offsets[index] * (1.0 - frac) + offsets[(index + 1).min(last)] * frac
 }
 
 /// Rasterizes a single character into its own coverage buffer.
@@ -1121,6 +1268,172 @@ mod tests {
             shifts.iter().any(|s| *s > 1.0) && shifts.iter().any(|s| *s < -1.0),
             "a sine must displace rows both left and right; shifts were {shifts:?}"
         );
+    }
+
+    /// Ink centroid in *pen* coordinates — where the glyph sits on the canvas,
+    /// as opposed to where it sits in its own buffer. Deformations move the
+    /// buffer around under the glyph, so a buffer-relative centroid would move
+    /// even when nothing visible did.
+    fn centroid(mask: &GlyphMask) -> (f32, f32) {
+        let (mut sx, mut sy, mut total) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 0..mask.height {
+            for x in 0..mask.width {
+                let value = mask.coverage[(y * mask.width + x) as usize];
+                sx += value * (mask.left as f32 + x as f32 + 0.5);
+                sy += value * (mask.top as f32 + y as f32 + 0.5);
+                total += value;
+            }
+        }
+        (sx / total, sy / total)
+    }
+
+    #[test]
+    fn test_a_zero_rotation_is_exactly_the_displacement_path() {
+        let original = glyph();
+        let centre = original.height as f32 / 2.0;
+        let shear = |y: f32| 0.3 * (y - centre);
+
+        let displaced = original.displace_rows(shear);
+        let rotated = original.displace_and_rotate(shear, 0.0);
+
+        // Not "close to" — identical. A caller that switches rotation off must
+        // get the pre-existing rendering back, which is what lets the output
+        // tests and the difficulty-1 contract keep their meaning.
+        assert_eq!(rotated.width, displaced.width);
+        assert_eq!(rotated.height, displaced.height);
+        assert_eq!(rotated.left, displaced.left);
+        assert_eq!(rotated.top, displaced.top);
+        assert_eq!(rotated.coverage, displaced.coverage);
+    }
+
+    #[test]
+    fn test_a_rotation_turns_the_glyph_about_its_own_centre() {
+        let original = glyph();
+        let angle = 0.4f32;
+        let turned = original.displace_and_rotate(|_| 0.0, angle);
+
+        // With no displacement the box grows by the one-column interpolation
+        // margin on each side, so the rotation centre is the plain box centre
+        // shifted by that margin's effect on the width — which cancels, leaving
+        // the original box's centre.
+        let cx = original.left as f32 + original.width as f32 / 2.0;
+        let cy = original.top as f32 + original.height as f32 / 2.0;
+
+        let (bx, by) = centroid(&original);
+        let (sin, cos) = angle.sin_cos();
+        let expected = (
+            cx + (bx - cx) * cos - (by - cy) * sin,
+            cy + (bx - cx) * sin + (by - cy) * cos,
+        );
+
+        let actual = centroid(&turned);
+        assert!(
+            (actual.0 - expected.0).abs() < 0.6 && (actual.1 - expected.1).abs() < 0.6,
+            "the ink centroid should follow the rotation: got {actual:?}, expected {expected:?}"
+        );
+
+        // Interpolation redistributes coverage but must not consume it.
+        let (before, after) = (ink(&original), ink(&turned));
+        assert!(
+            (after - before).abs() / before < 0.02,
+            "rotation should conserve ink: {after} vs {before}"
+        );
+    }
+
+    #[test]
+    fn test_a_quarter_turn_swaps_the_glyphs_extent() {
+        // 'l' is the tallest, narrowest thing in the subset, so a quarter turn
+        // has somewhere obvious to put it.
+        let original =
+            rasterize_char(&font(), 'l', PxScale::from(50.0)).expect("l is in the subset");
+        assert!(
+            original.height > original.width * 2,
+            "test needs a tall glyph"
+        );
+
+        let turned = original.displace_and_rotate(|_| 0.0, std::f32::consts::FRAC_PI_2);
+
+        let extent = |mask: &GlyphMask| {
+            let (mut l, mut t, mut r, mut b) = (u32::MAX, u32::MAX, 0u32, 0u32);
+            for y in 0..mask.height {
+                for x in 0..mask.width {
+                    if mask.coverage[(y * mask.width + x) as usize] > 0.5 {
+                        l = l.min(x);
+                        t = t.min(y);
+                        r = r.max(x);
+                        b = b.max(y);
+                    }
+                }
+            }
+            (r - l + 1, b - t + 1)
+        };
+
+        let (w0, h0) = extent(&original);
+        let (w1, h1) = extent(&turned);
+        assert!(
+            w1.abs_diff(h0) <= 2 && h1.abs_diff(w0) <= 2,
+            "a quarter turn should swap the extents: {w0}x{h0} became {w1}x{h1}"
+        );
+    }
+
+    #[test]
+    fn test_rotating_back_recovers_the_glyph() {
+        let original = glyph();
+        let there = original.displace_and_rotate(|_| 0.0, 0.35);
+        let back = there.displace_and_rotate(|_| 0.0, -0.35);
+
+        // Two bilinear resamples soften the edges, so this compares where the
+        // ink is rather than demanding the exact coverage back.
+        let (ox, oy) = centroid(&original);
+        let (rx, ry) = centroid(&back);
+        assert!(
+            (ox - rx).abs() < 0.6 && (oy - ry).abs() < 0.6,
+            "a rotation and its inverse should land back on the original: \
+             ({rx},{ry}) vs ({ox},{oy})"
+        );
+        assert!(
+            (ink(&back) - ink(&original)).abs() / ink(&original) < 0.04,
+            "a round trip should conserve ink: {} vs {}",
+            ink(&back),
+            ink(&original)
+        );
+    }
+
+    #[test]
+    fn test_rotation_composes_with_the_shear_in_one_pass() {
+        let original = glyph();
+        let centre = original.height as f32 / 2.0;
+        let lean = 0.4;
+
+        let sheared = original.displace_rows(|y| lean * (y - centre));
+        let both = original.displace_and_rotate(|y| lean * (y - centre), 0.5);
+
+        // The shear still happens under rotation — the ink spreads well past
+        // the upright glyph's width — and the ink survives both at once.
+        assert!(
+            both.width > original.width,
+            "a sheared, rotated glyph needs more room than an upright one"
+        );
+        let (before, after) = (ink(&sheared), ink(&both));
+        assert!(
+            (after - before).abs() / before < 0.03,
+            "shear plus rotation should conserve ink: {after} vs {before}"
+        );
+    }
+
+    #[test]
+    fn test_row_offsets_interpolate_between_rows_and_clamp_past_the_ends() {
+        let offsets = [0.0f32, 2.0, 4.0];
+
+        assert!((interpolate_offset(&offsets, 0.5) - 1.0).abs() < 1e-6);
+        assert!((interpolate_offset(&offsets, 1.25) - 2.5).abs() < 1e-6);
+
+        // Past either end the offset holds flat. A rotation reaches for rows
+        // the glyph does not have, and extrapolating a shear out there would
+        // drag ink sideways from nothing.
+        assert!((interpolate_offset(&offsets, -8.0) - 0.0).abs() < 1e-6);
+        assert!((interpolate_offset(&offsets, 99.0) - 4.0).abs() < 1e-6);
+        assert_eq!(interpolate_offset(&[], 3.0), 0.0);
     }
 
     /// Coverage strictly inside the glyph — pixels whose whole 4-neighbourhood

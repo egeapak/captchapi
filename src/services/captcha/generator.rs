@@ -66,6 +66,23 @@ const MAX_SCALE_VARIANCE: f32 = 0.30;
 /// horizontal shift per pixel of height, so 0.40 is roughly 22 degrees.
 const MAX_SKEW: f32 = 0.40;
 
+/// At full intensity, a letter turns by up to this many radians about its own
+/// centre — 0.45 being roughly 26 degrees either way.
+///
+/// Rotation and skew both tilt a letter, but they are not the same deformation
+/// and neither subsumes the other. A shear leaves horizontals horizontal, so
+/// the crossbar of an `A` and the baseline of an `L` stay level and a solver
+/// keeps a reliable horizon; a rotation takes those with it. That is the point
+/// of having it: without rotation every glyph sits on one shared line, and the
+/// line itself is a free segmentation cue — find it, and you know where the
+/// letters are even when you cannot yet read them.
+///
+/// The bound is legibility. Past about 30 degrees the reversible pairs start
+/// trading places — a rotated `N` reads as `Z`, `M` as `W`, `6` as `9` — which
+/// costs a human the character outright while costing a solver that has the
+/// character set nothing it cannot brute-force.
+const MAX_ROTATION: f32 = 0.45;
+
 /// At full intensity, the sine wave pushes a row sideways by up to this
 /// fraction of the font size.
 const MAX_WAVE_AMPLITUDE: f32 = 0.14;
@@ -142,6 +159,24 @@ const MAX_BLUR: f32 = 0.045;
 /// This keeps sigma well inside the thinnest stroke `OUTLINE_STROKE` can draw.
 const MAX_OUTLINE_BLUR: f32 = 0.015;
 
+/// The intensity `blur` is held at for every difficulty above the easiest.
+///
+/// **Blur deliberately does not ramp with difficulty, and it is the only
+/// deformation that does not.** It used to, and that was measured to do
+/// nothing: 3 grids of solver runs — an unpaired one at difficulty 3/5/8/10 and
+/// a paired crossover at 6 and 7 — all came back inside noise. The diagnosis
+/// was that the ramp put the deformation in the wrong place. Sigma reached
+/// about 0.35px at difficulty 3, which is invisible, and full strength only at
+/// 8 and 10 where every arm already scores zero and there is no solve rate left
+/// to take away. So it was absent where it could have helped and saturated
+/// where nothing can.
+///
+/// Holding it flat puts full blur at difficulty 3 and 5, which is the only band
+/// where the measurement has the headroom to detect an effect at all. If it
+/// does not move those, the deformation costs 5-8% of render time for nothing
+/// and should be deleted rather than retuned again.
+const FLAT_BLUR: f32 = 1.0;
+
 /// How strongly each per-letter deformation is applied.
 ///
 /// Every field is an intensity in `0.0..=1.0`, and `0.0` skips that
@@ -162,6 +197,9 @@ pub struct Deformations {
     pub skew: f32,
     /// Sine displacement down each letter, at a random amplitude and phase.
     pub wave: f32,
+    /// Random per-letter turn about its own centre, so the solution does not
+    /// sit on one shared baseline.
+    pub rotation: f32,
     /// How tightly the letters are packed. Higher values shrink the span they
     /// are laid out across, without shrinking the letters, so they overlap.
     pub clustering: f32,
@@ -185,6 +223,7 @@ impl Deformations {
             scale: 0.0,
             skew: 0.0,
             wave: 0.0,
+            rotation: 0.0,
             clustering: 0.0,
             outline: 0.0,
             transparency: 0.0,
@@ -203,9 +242,14 @@ impl Deformations {
     /// with the noise rather than on their own schedule.
     ///
     /// Each deformation has its own cap — `MAX_JITTER`, `MAX_SCALE_VARIANCE`,
-    /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE`, `MAX_OUTLINE_SHARE`, `MIN_OPACITY`,
-    /// `MAX_GRADIENT_HUE_SHIFT`, `MAX_BLUR` — so retuning how strong one gets at a given
-    /// level is a change to that constant, not to this ramp.
+    /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE`, `MAX_ROTATION`, `MAX_OUTLINE_SHARE`,
+    /// `MIN_OPACITY`, `MAX_GRADIENT_HUE_SHIFT`, `MAX_BLUR` — so retuning how strong
+    /// one gets at a given level is a change to that constant, not to this ramp.
+    ///
+    /// `blur` is the one exception to the ramp and is pinned at [`FLAT_BLUR`];
+    /// the reasoning is on that constant. Difficulty 1 still means *no*
+    /// deformation, blur included, because that is the contract the untouched
+    /// output tests rest on.
     pub fn for_difficulty(difficulty: u32) -> Self {
         let intensity = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
         if intensity == 0.0 {
@@ -216,11 +260,12 @@ impl Deformations {
             scale: intensity,
             skew: intensity,
             wave: intensity,
+            rotation: intensity,
             clustering: intensity,
             outline: intensity,
             transparency: intensity,
             gradient: intensity,
-            blur: intensity,
+            blur: FLAT_BLUR,
         }
     }
 }
@@ -531,23 +576,28 @@ fn write_characters(
         } else {
             (1.0, 0.0)
         };
+        let turn = spread(MAX_ROTATION * deform.rotation);
 
         if let Some(mask) = rasterize_char(font, *ch, px) {
-            let mask = if lean != 0.0 || amplitude != 0.0 {
-                // Both deformations are horizontal displacements that depend
-                // only on the row, so they sum into one closure and cost a
-                // single resample. Applying them in sequence would filter the
-                // glyph twice and soften it for no reason.
+            let mask = if lean != 0.0 || amplitude != 0.0 || turn != 0.0 {
+                // The shear and the wave are both horizontal displacements that
+                // depend only on the row, so they sum into one closure. The
+                // rotation cannot join that sum — it moves ink vertically too —
+                // but it shares the same resample, which is what matters:
+                // filtering the glyph twice would soften it for no reason.
                 //
                 // The shear is taken about the letter's middle so it leans in
                 // place, and the wave's period scales with the letter's height
                 // so a tall glyph is not cut into more cycles than a short one.
                 let centre = mask.height as f32 / 2.0;
                 let wavelength = (mask.height as f32 * period).max(1.0);
-                mask.displace_rows(|row| {
-                    lean * (row - centre)
-                        + amplitude * (std::f32::consts::TAU * row / wavelength + phase).sin()
-                })
+                mask.displace_and_rotate(
+                    |row| {
+                        lean * (row - centre)
+                            + amplitude * (std::f32::consts::TAU * row / wavelength + phase).sin()
+                    },
+                    turn,
+                )
             } else {
                 mask
             };
@@ -896,9 +946,11 @@ mod tests {
         write_jpeg(&contact_sheet(&blur, 3), "11-blur.jpg");
 
         // Blur off against blur on at the difficulties a caller asks for. This
-        // is the sheet the keep-or-drop decision rests on: at low difficulty the
-        // linear ramp makes sigma too small to see, and by the time it is strong
-        // the letters are already unreadable for other reasons.
+        // is the sheet the keep-or-drop decision rests on. It used to show
+        // nothing at difficulty 3 — the ramp made sigma too small to see there,
+        // and by the time it was strong the letters were unreadable for other
+        // reasons. `FLAT_BLUR` is the answer to that, so the low-difficulty rows
+        // are now where the difference is actually visible.
         let mut comparison = Vec::new();
         for difficulty in [3u32, 5, 8, 10] {
             let with = Deformations::for_difficulty(difficulty);
@@ -914,25 +966,154 @@ mod tests {
             .map(|d| (*d, Deformations::for_difficulty(*d)))
             .collect();
         write_jpeg(&contact_sheet(&by_difficulty, 3), "13-by-difficulty.jpg");
+
+        let rotation: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        rotation: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&rotation, 3), "14-rotation.jpg");
+
+        // Rotation against the skew it is most easily confused with, at matched
+        // intensity. The distinction the sheet should make visible: under a
+        // shear the crossbars and feet stay level, under a rotation they do not.
+        let mut tilt = Vec::new();
+        for intensity in [0.5f32, 1.0] {
+            tilt.push((
+                1,
+                Deformations {
+                    skew: intensity,
+                    ..Deformations::none()
+                },
+            ));
+            tilt.push((
+                1,
+                Deformations {
+                    rotation: intensity,
+                    ..Deformations::none()
+                },
+            ));
+        }
+        write_jpeg(&contact_sheet(&tilt, 3), "15-skew-vs-rotation.jpg");
+
+        // Rotation off against rotation on at shipping difficulties, the same
+        // shape as the blur comparison and for the same decision.
+        let mut turned = Vec::new();
+        for difficulty in [3u32, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            turned.push((
+                difficulty,
+                Deformations {
+                    rotation: 0.0,
+                    ..with
+                },
+            ));
+            turned.push((difficulty, with));
+        }
+        write_jpeg(&contact_sheet(&turned, 2), "16-rotation-off-vs-on.jpg");
     }
 
-    /// Isolates what `blur` costs: render time and encoded size, blur off
-    /// against blur on with everything else held identical.
+    /// Switches one deformation off, leaving the rest of the level untouched.
+    ///
+    /// The A/B harnesses below both need "this level, minus one deformation",
+    /// and doing it by name keeps them generic — a new deformation becomes
+    /// measurable by adding a line here rather than by copying a test.
+    fn without(deform: Deformations, field: &str) -> Deformations {
+        match field {
+            "jitter" => Deformations {
+                jitter: 0.0,
+                ..deform
+            },
+            "scale" => Deformations {
+                scale: 0.0,
+                ..deform
+            },
+            "skew" => Deformations {
+                skew: 0.0,
+                ..deform
+            },
+            "wave" => Deformations {
+                wave: 0.0,
+                ..deform
+            },
+            "rotation" => Deformations {
+                rotation: 0.0,
+                ..deform
+            },
+            "clustering" => Deformations {
+                clustering: 0.0,
+                ..deform
+            },
+            "outline" => Deformations {
+                outline: 0.0,
+                ..deform
+            },
+            "transparency" => Deformations {
+                transparency: 0.0,
+                ..deform
+            },
+            "gradient" => Deformations {
+                gradient: 0.0,
+                ..deform
+            },
+            "blur" => Deformations {
+                blur: 0.0,
+                ..deform
+            },
+            other => panic!("unknown deformation {other:?}"),
+        }
+    }
+
+    /// Only the named deformation, at `intensity`, with nothing else on.
+    ///
+    /// By name rather than by setter closure — [`only`] covers that case — so
+    /// the measurement harnesses can be pointed at a deformation from the
+    /// command line.
+    fn only_named(field: &str, intensity: f32) -> Deformations {
+        let mut all = Deformations::none();
+        match field {
+            "jitter" => all.jitter = intensity,
+            "scale" => all.scale = intensity,
+            "skew" => all.skew = intensity,
+            "wave" => all.wave = intensity,
+            "rotation" => all.rotation = intensity,
+            "clustering" => all.clustering = intensity,
+            "outline" => all.outline = intensity,
+            "transparency" => all.transparency = intensity,
+            "gradient" => all.gradient = intensity,
+            "blur" => all.blur = intensity,
+            other => panic!("unknown deformation {other:?}"),
+        }
+        all
+    }
+
+    /// Isolates what one deformation costs: render time and encoded size, off
+    /// against on with everything else held identical.
     ///
     /// Ignored because it measures rather than asserts — a timing threshold in
     /// CI would be a flake generator:
     ///
     /// ```text
-    /// cargo test --release --lib blur_impact -- --ignored --nocapture
+    /// CAPTCHA_AB_FIELD=rotation \
+    ///   cargo test --release --lib deformation_impact -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore = "measures render time and encoded size, asserts nothing"]
-    fn blur_impact() {
+    fn deformation_impact() {
         use image::codecs::jpeg::JpegEncoder;
         use std::time::Instant;
 
         const DRAWS: usize = 400;
         const QUALITY: u8 = 40;
+
+        let field = std::env::var("CAPTCHA_AB_FIELD").unwrap_or_else(|_| "blur".to_string());
 
         fn measure(difficulty: u32, deform: Deformations) -> (u128, usize) {
             let mut times = Vec::with_capacity(DRAWS);
@@ -962,15 +1143,14 @@ mod tests {
             Deformations::none(),
         );
 
-        println!("\nblur impact, medians over {DRAWS} draws at quality {QUALITY}\n");
+        println!("\n{field} impact, medians over {DRAWS} draws at quality {QUALITY}\n");
         println!(
             "{:>4} {:>9} {:>9} {:>8}   {:>9} {:>9} {:>8}",
             "diff", "us off", "us on", "delta", "bytes off", "bytes on", "delta"
         );
         for difficulty in [1u32, 3, 5, 8, 10] {
             let with = Deformations::for_difficulty(difficulty);
-            let without = Deformations { blur: 0.0, ..with };
-            let (t_off, s_off) = measure(difficulty, without);
+            let (t_off, s_off) = measure(difficulty, without(with, &field));
             let (t_on, s_on) = measure(difficulty, with);
             let pct = |a: f64, b: f64| 100.0 * (b - a) / a;
             println!(
@@ -980,63 +1160,68 @@ mod tests {
             );
         }
 
-        // Blur alone, no other deformation and no noise, so the primitive's own
+        // The deformation alone, no others and no noise, so the primitive's own
         // cost is visible rather than buried under the gaussian noise pass.
         let (bare_t, bare_s) = measure(1, Deformations::none());
-        let (blur_t, blur_s) = measure(
-            1,
-            Deformations {
-                blur: 1.0,
-                ..Deformations::none()
-            },
-        );
+        let (solo_t, solo_s) = measure(1, only_named(&field, 1.0));
         println!(
-            "\nblur alone at difficulty 1: {bare_t}us -> {blur_t}us ({:+.1}%), \
-             {bare_s}B -> {blur_s}B ({:+.1}%)",
-            100.0 * (blur_t as f64 - bare_t as f64) / bare_t as f64,
-            100.0 * (blur_s as f64 - bare_s as f64) / bare_s as f64
+            "\n{field} alone at difficulty 1: {bare_t}us -> {solo_t}us ({:+.1}%), \
+             {bare_s}B -> {solo_s}B ({:+.1}%)",
+            100.0 * (solo_t as f64 - bare_t as f64) / bare_t as f64,
+            100.0 * (solo_s as f64 - bare_s as f64) / bare_s as f64
         );
     }
 
-    /// Writes a paired blur A/B set for solver evaluation.
+    /// Writes a paired A/B image set for solver evaluation.
     ///
-    /// Two design fixes over measuring blur on an unpaired grid. It targets
-    /// difficulty 6 and 7, the band between "mostly solved" and "never solved"
-    /// where there is headroom to detect anything at all — at 3 the ramp makes
-    /// sigma invisible and at 8 the solve rate is already at the floor. And it
-    /// renders the *same solution text* under both conditions, so per-string
-    /// difficulty cancels instead of adding variance; an unpaired comparison is
-    /// partly measuring whether `VeDY` is harder than `P9tD`.
+    /// Two design points, both learned from getting them wrong. It targets the
+    /// difficulty band where there is headroom to detect anything at all —
+    /// below it every arm solves everything and above it every arm solves
+    /// nothing, so neither end can move. And it renders the *same solution
+    /// text* under both conditions, so per-string difficulty cancels instead of
+    /// adding variance; an unpaired comparison is partly measuring whether
+    /// `VeDY` is harder than `P9tD`.
     ///
     /// Emits both versions of every text. The caller must split them so no
     /// solver sees a string twice — otherwise the second sighting is a memory
     /// test, not a vision test. `pair` in the manifest is what to split on.
     ///
     /// ```text
-    /// CAPTCHA_SAMPLE_DIR=/tmp/blur-ab \
-    ///   cargo test --release --lib blur_ab_set -- --ignored
+    /// CAPTCHA_SAMPLE_DIR=/tmp/rotation-ab CAPTCHA_AB_FIELD=rotation \
+    ///   CAPTCHA_AB_LEVELS=3,5 \
+    ///   cargo test --release --lib deformation_ab_set -- --ignored
     /// ```
     #[test]
     #[ignore = "writes a paired A/B image set, asserts nothing"]
-    fn blur_ab_set() {
+    fn deformation_ab_set() {
         use image::codecs::jpeg::JpegEncoder;
 
         let dir = std::env::var("CAPTCHA_SAMPLE_DIR").unwrap_or_else(|_| "/tmp".to_string());
         std::fs::create_dir_all(&dir).expect("output directory is writable");
+        let field = std::env::var("CAPTCHA_AB_FIELD").unwrap_or_else(|_| "blur".to_string());
+        let levels: Vec<u32> = std::env::var("CAPTCHA_AB_LEVELS")
+            .unwrap_or_else(|_| "6,7".to_string())
+            .split(',')
+            .map(|level| {
+                level
+                    .trim()
+                    .parse()
+                    .expect("difficulty levels are integers")
+            })
+            .collect();
 
         let mut manifest = Vec::new();
         let mut index = 0;
         let mut pair = 0;
 
-        for difficulty in [6u32, 7] {
+        for difficulty in levels {
             for length in [4usize, 5, 6] {
                 for _ in 0..3 {
                     // One text, both conditions — the whole point of the pairing.
                     let text = random_text(length);
                     let with = Deformations::for_difficulty(difficulty);
-                    let without = Deformations { blur: 0.0, ..with };
 
-                    for (condition, deform) in [("off", without), ("on", with)] {
+                    for (condition, deform) in [("off", without(with, &field)), ("on", with)] {
                         let image = render(&text, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
                         let mut bytes = Vec::new();
                         JpegEncoder::new_with_quality(&mut bytes, 40)
@@ -1047,7 +1232,8 @@ mod tests {
                         manifest.push(format!(
                             "  {{\"file\": \"{name}\", \"solution\": \"{text}\", \
                              \"length\": {length}, \"difficulty\": {difficulty}, \
-                             \"blur\": \"{condition}\", \"pair\": {pair}, \"bytes\": {}}}",
+                             \"field\": \"{field}\", \"condition\": \"{condition}\", \
+                             \"pair\": {pair}, \"bytes\": {}}}",
                             bytes.len()
                         ));
                         index += 1;
@@ -1463,6 +1649,66 @@ mod tests {
         );
     }
 
+    /// The whole point of rotation, stated as a measurement: without it every
+    /// letter's foot sits on one shared line, and that line is a free
+    /// segmentation cue. This asserts the feet scatter.
+    ///
+    /// Measured per letter rather than over the whole word, because the word's
+    /// bounding box would also grow under a skew or a scale and would not
+    /// distinguish "the letters are tilted" from "the letters are bigger".
+    #[test]
+    fn test_rotation_takes_letters_off_a_shared_baseline() {
+        // Per-letter bottom edge, sampled in the column band each letter of a
+        // four-character solution is laid out in.
+        let feet = |deform: Deformations| {
+            let pixels = glyph_pixels("KBMX", deform);
+            let (left, _, right, _) = bbox(&pixels);
+            let step = (right - left + 1) as f32 / 4.0;
+            (0..4)
+                .filter_map(|i| {
+                    let lo = left + (i as f32 * step) as u32;
+                    let hi = left + ((i + 1) as f32 * step) as u32;
+                    pixels
+                        .iter()
+                        .filter(|(x, _)| *x >= lo && *x < hi)
+                        .map(|(_, y)| *y)
+                        .max()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Upright, all four feet land on exactly one row — which is precisely
+        // the cue worth removing, and it makes a clean zero to measure against.
+        let level = feet(Deformations::none());
+        let baseline = level[0];
+        assert!(
+            level.iter().all(|foot| *foot == baseline),
+            "an undeformed solution should sit on one line, but the feet were {level:?}"
+        );
+
+        let deform = Deformations {
+            rotation: 1.0,
+            ..Deformations::none()
+        };
+
+        // Mean departure from that line, over every letter of every draw, not a
+        // per-draw threshold: the turn is symmetric, so a single draw can come
+        // out level by chance — the same flakiness the clustering test
+        // documents. Averaging ~100 letters instead makes the statistic stable.
+        let departures: Vec<f32> = (0..24)
+            .flat_map(|_| feet(deform))
+            .map(|foot| foot.abs_diff(baseline) as f32)
+            .collect();
+        let mean = departures.iter().sum::<f32>() / departures.len() as f32;
+
+        assert!(
+            mean > 1.0,
+            "rotation should lift letters off the shared baseline; \
+             mean departure was only {mean:.2}px over {} letters",
+            departures.len()
+        );
+    }
+
     #[test]
     fn test_difficulty_one_deforms_nothing_and_ten_is_full_intensity() {
         assert_eq!(
@@ -1471,37 +1717,70 @@ mod tests {
             "the easiest level must render as it always did"
         );
 
-        // Every field, listed by hand rather than reflected over, so adding a
-        // deformation without ramping it fails here.
-        let fields: [fn(&Deformations) -> f32; 9] = [
-            |d| d.jitter,
-            |d| d.scale,
-            |d| d.skew,
-            |d| d.wave,
-            |d| d.clustering,
-            |d| d.outline,
-            |d| d.transparency,
-            |d| d.gradient,
-            |d| d.blur,
-        ];
+        // Every field is named here, and the destructuring is what makes that
+        // enforceable: add a field to `Deformations` and this stops compiling
+        // until it is classified as either ramping or pinned. The previous
+        // version listed accessors in a fixed-size array, which does not have
+        // that property — a new field simply went unmentioned, and `blur` did
+        // exactly that, uncovered by the one test that exists to catch it.
+        let classify = |d: &Deformations| {
+            let Deformations {
+                jitter,
+                scale,
+                skew,
+                wave,
+                rotation,
+                clustering,
+                outline,
+                transparency,
+                gradient,
+                blur,
+            } = *d;
+            // (ramping, pinned) — `blur` is deliberately flat, for the reason
+            // on `FLAT_BLUR`. Nothing else joins it without a measurement.
+            (
+                vec![
+                    ("jitter", jitter),
+                    ("scale", scale),
+                    ("skew", skew),
+                    ("wave", wave),
+                    ("rotation", rotation),
+                    ("clustering", clustering),
+                    ("outline", outline),
+                    ("transparency", transparency),
+                    ("gradient", gradient),
+                ],
+                vec![("blur", blur, FLAT_BLUR)],
+            )
+        };
 
         let hardest = Deformations::for_difficulty(10);
-        for (i, field) in fields.iter().enumerate() {
-            let value = field(&hardest);
+        for (name, value) in classify(&hardest).0 {
             assert!(
                 (value - 1.0).abs() < 1e-6,
-                "level 10 should be full for field {i}: {value}"
+                "level 10 should be full for {name}: {value}"
             );
         }
 
-        // Monotonic in between, and every deformation moves together.
+        // Monotonic in between, and every ramping deformation moves together.
         let mut previous = Deformations::none();
         for level in 2..=10 {
             let current = Deformations::for_difficulty(level);
-            for (i, field) in fields.iter().enumerate() {
+            let before = classify(&previous).0;
+            for (i, (name, value)) in classify(&current).0.iter().enumerate() {
                 assert!(
-                    field(&current) > field(&previous),
-                    "intensity should rise at every level; field {i} stalled at {level}"
+                    *value > before[i].1,
+                    "intensity should rise at every level; {name} stalled at {level}"
+                );
+            }
+            // The pinned ones sit at their constant from level 2 up, which is
+            // the whole point: full strength at difficulty 3 and 5, where the
+            // solve rate is non-zero and an effect could actually show.
+            for (name, value, expected) in classify(&current).1 {
+                assert!(
+                    (value - expected).abs() < 1e-6,
+                    "{name} should be pinned at {expected} for every level above 1, \
+                     but level {level} gave {value}"
                 );
             }
             previous = current;

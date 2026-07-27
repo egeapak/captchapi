@@ -28,10 +28,14 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 /// image. At difficulty 8 and above, no model solved a single challenge longer
 /// than four characters in 36 attempts.
 ///
-/// The deformations all scale with this value (see
+/// Nearly every deformation scales with this value (see
 /// `services::captcha::generator::Deformations::for_difficulty`), so the
 /// default was landing in the one band where they barely applied. Costs about
 /// 20% more render time and 20% more stored bytes per session.
+///
+/// `blur` is the exception and is held flat at every level above 1 — it ramped
+/// once, measured as doing nothing, and the diagnosis was that the ramp put it
+/// where there was no solve rate left to take away. See `FLAT_BLUR`.
 pub const DEFAULT_DIFFICULTY: i64 = 8;
 pub const DEFAULT_LENGTH: i64 = 5;
 pub const DEFAULT_WIDTH: i64 = 220;
