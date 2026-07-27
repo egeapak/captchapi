@@ -7,7 +7,7 @@ pub mod params;
 pub mod sources;
 
 pub use handle::ConfigHandle;
-pub use params::{Kind, Param, Reload, PARAMS};
+pub use params::{Kind, Param, Persist, Reload, PARAMS};
 pub use sources::{Layer, LayeredEnv, Source, Sources};
 
 /// Trait for providing environment variables (enables testing without modifying global state)
