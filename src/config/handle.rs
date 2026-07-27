@@ -37,6 +37,13 @@ struct ReloadState {
     /// Which layer answered for each field, as of the last resolve. Kept beside the overlay
     /// under the same lock so the two can never disagree about what the running config is.
     sources: Sources,
+    /// The persisted settings, as of the last time a caller read them.
+    ///
+    /// Retained rather than fetched, because re-resolving happens under this lock in a
+    /// synchronous function and the store is async. Callers that know the store has changed —
+    /// a reload, a write to it — pass a fresh layer in; `patch` reuses whatever is here, so an
+    /// ephemeral override always lands on top of the same stored values the server is running.
+    stored: Layer,
 }
 
 struct Inner {
@@ -66,7 +73,7 @@ impl ConfigHandle {
     /// `sources` is the provenance captured during the boot resolve. It is passed in rather
     /// than recomputed here so the handle reports the layers this process actually started
     /// from, not what a second read of the same files would say a moment later.
-    pub fn new(config: Config, cli: Cli, sources: Sources) -> Self {
+    pub fn new(config: Config, cli: Cli, sources: Sources, stored: Layer) -> Self {
         let (tx, rx) = watch::channel(Arc::new(config));
         Self {
             rx,
@@ -77,6 +84,7 @@ impl ConfigHandle {
                     env: EnvSource::Process,
                     overlay: Layer::new(),
                     sources,
+                    stored,
                 }),
             }),
         }
@@ -97,6 +105,7 @@ impl ConfigHandle {
                 ..Cli::default()
             },
             Sources::default(),
+            Layer::new(),
         );
         handle
             .inner
@@ -122,7 +131,7 @@ impl ConfigHandle {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
         }
-        handle.reload()?;
+        handle.reload(Layer::new())?;
         Ok(handle)
     }
 
@@ -153,20 +162,21 @@ impl ConfigHandle {
     ///
     /// Blocking: reads files. Async callers must wrap this in `spawn_blocking`.
     /// On failure the running configuration is left untouched.
-    pub fn reload(&self) -> Result<Outcome, String> {
+    pub fn reload(&self, stored: Layer) -> Result<Outcome, String> {
         // Held across resolve *and* publish, so two concurrent reloads serialise instead of
         // racing to `send_replace` in the wrong order.
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
 
         let current = self.rx.borrow().clone();
         let (resolved, sources) =
-            resolve_with_carry(&state.cli, &current, &Layer::new(), &state.env)?;
+            resolve_with_carry(&state.cli, &current, &Layer::new(), &stored, &state.env)?;
 
         let drift = current.boot_drift(&resolved);
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay.clear();
         state.sources = sources;
+        state.stored = stored;
         self.inner.tx.send_replace(merged.clone());
 
         Ok(Outcome {
@@ -241,7 +251,13 @@ impl ConfigHandle {
         }
 
         let current = self.rx.borrow().clone();
-        let (resolved, sources) = resolve_with_carry(&state.cli, &current, &overlay, &state.env)?;
+        let (resolved, sources) = resolve_with_carry(
+            &state.cli,
+            &current,
+            &overlay,
+            &state.stored.clone(),
+            &state.env,
+        )?;
         let merged = Arc::new(current.with_boot_fields_from(&resolved));
 
         state.overlay = overlay;
@@ -249,6 +265,12 @@ impl ConfigHandle {
         self.inner.tx.send_replace(merged.clone());
 
         Ok(merged)
+    }
+
+    /// The persisted layer this handle last resolved against.
+    pub fn stored(&self) -> Layer {
+        let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.stored.clone()
     }
 
     /// The canonical keys currently overridden through the admin API.
@@ -284,10 +306,12 @@ fn resolve_with_carry(
     cli: &Cli,
     current: &Config,
     overlay: &Layer,
+    stored: &Layer,
     env: &EnvSource,
 ) -> Result<(Config, Sources), String> {
     let mut layers = load_layers(cli)?;
     layers.overlay = overlay.clone();
+    layers.stored = stored.clone();
     layers.carried = current.boot_layer();
 
     let stack = layers.stack(env);
@@ -458,7 +482,7 @@ mod tests {
     fn handle_with_env(pairs: &[(&str, &str)]) -> ConfigHandle {
         let h = handle();
         with_env(&h, pairs);
-        h.reload().expect("the fixture must resolve");
+        h.reload(Layer::new()).expect("the fixture must resolve");
         h
     }
 
@@ -517,8 +541,9 @@ mod tests {
                 ..Cli::default()
             },
             Sources::default(),
+            Layer::new(),
         );
-        h.reload().unwrap();
+        h.reload(Layer::new()).unwrap();
 
         let err = h
             .patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
@@ -581,7 +606,7 @@ mod tests {
         assert!(h.sources().get("captcha_compression").is_pinned());
 
         with_env(&h, &[]);
-        h.reload().unwrap();
+        h.reload(Layer::new()).unwrap();
 
         assert!(!h.sources().get("captcha_compression").is_pinned());
         h.patch(&[("CAPTCHA_COMPRESSION".into(), "90".into())])
@@ -614,7 +639,7 @@ mod tests {
             .unwrap();
         assert_eq!(h.get().captcha_compression, 88);
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert_eq!(
             outcome.config.captcha_compression, 40,
@@ -631,7 +656,7 @@ mod tests {
             ..Config::for_test()
         });
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert_eq!(outcome.config.server_port, 4321);
         assert_eq!(outcome.config.api_key_salt, "a-distinctive-salt-value");
@@ -642,12 +667,12 @@ mod tests {
         // The scenario the carried layer exists for: secrets came from files that have since
         // been rotated away. Reload must still work, because those fields are boot-only.
         let h = handle();
-        assert!(h.reload().is_ok());
+        assert!(h.reload(Layer::new()).is_ok());
     }
 
     #[test]
     fn test_reload_reports_no_drift_when_nothing_changed() {
-        assert!(handle().reload().unwrap().drift.is_empty());
+        assert!(handle().reload(Layer::new()).unwrap().drift.is_empty());
     }
 
     #[test]
@@ -664,9 +689,10 @@ mod tests {
                 ..Cli::default()
             },
             Sources::default(),
+            Layer::new(),
         );
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert!(
             outcome.drift.contains(&"server_port"),
@@ -698,7 +724,7 @@ mod tests {
         let h = handle();
         with_env(&h, &[("CAPTCHA_COMPRESSION", "7")]);
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert_eq!(
             outcome.config.captcha_compression, 7,
@@ -713,7 +739,7 @@ mod tests {
         // Back to what `from_static` installs.
         h.inner.state.lock().unwrap_or_else(|e| e.into_inner()).env = EnvSource::Empty;
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert_eq!(
             outcome.config.captcha_compression, 40,
@@ -754,7 +780,12 @@ mod tests {
             "from_static must not read the process environment, but it answered for PATH"
         );
 
-        let live = ConfigHandle::new(Config::for_test(), Cli::default(), Sources::default());
+        let live = ConfigHandle::new(
+            Config::for_test(),
+            Cli::default(),
+            Sources::default(),
+            Layer::new(),
+        );
         assert_eq!(
             env_get(&live, "PATH").as_deref(),
             Ok(in_process.as_str()),
@@ -787,7 +818,7 @@ mod tests {
             ..Config::for_test()
         });
 
-        let outcome = h.reload().unwrap();
+        let outcome = h.reload(Layer::new()).unwrap();
 
         assert!(outcome.drift.is_empty(), "{:?}", outcome.drift);
         assert_eq!(outcome.config.server_port, 4321);
@@ -813,8 +844,12 @@ mod tests {
         let (a, b) = (h.clone(), h.clone());
 
         let (ra, rb) = tokio::join!(
-            tokio::task::spawn_blocking(move || a.reload().map(|o| o.config.captcha_compression)),
-            tokio::task::spawn_blocking(move || b.reload().map(|o| o.config.captcha_compression)),
+            tokio::task::spawn_blocking(move || a
+                .reload(Layer::new())
+                .map(|o| o.config.captcha_compression)),
+            tokio::task::spawn_blocking(move || b
+                .reload(Layer::new())
+                .map(|o| o.config.captcha_compression)),
         );
 
         assert_eq!(ra.unwrap().unwrap(), 40);
@@ -831,7 +866,9 @@ mod tests {
             tokio::task::spawn_blocking(move || a
                 .patch(&[("CAPTCHA_COMPRESSION".into(), "77".into())])
                 .map(|c| c.captcha_compression)),
-            tokio::task::spawn_blocking(move || b.reload().map(|o| o.config.captcha_compression)),
+            tokio::task::spawn_blocking(move || b
+                .reload(Layer::new())
+                .map(|o| o.config.captcha_compression)),
         );
 
         // Whichever ran last, the published value must be one of the two legitimate outcomes

@@ -288,7 +288,8 @@ async fn reload_config(State(state): State<AdminState>) -> Result<Json<ReloadRes
     tracing::info!("Configuration reload requested through the admin API");
 
     let handle = state.config.clone();
-    let outcome = tokio::task::spawn_blocking(move || handle.reload())
+    let stored = state.config.stored();
+    let outcome = tokio::task::spawn_blocking(move || handle.reload(stored))
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("config reload task failed: {e}")))?
         .map_err(|e| {

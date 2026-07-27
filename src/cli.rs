@@ -338,6 +338,21 @@ pub fn resolve(cli: &Cli) -> Result<(Config, Layers), String> {
     Ok((config, layers))
 }
 
+/// Resolve again with the persisted settings in place, for the second phase of startup.
+///
+/// The store lives in the database, and the database location is itself configured, so the
+/// stored layer cannot exist until a first resolve has already happened and opened the pool.
+/// This is that second pass — and it is a fresh resolve rather than a reload, because at this
+/// point nothing has captured a boot value yet: the listener is unbound and the pool is the
+/// only thing built. A reload would pin the boot fields to the first pass and defeat the whole
+/// purpose of storing `server_port`.
+pub fn resolve_with_stored(cli: &Cli, stored: Layer) -> Result<(Config, Sources), String> {
+    let mut layers = load_layers(cli)?;
+    layers.stored = stored;
+    let stack = layers.stack(&RealEnv);
+    Ok((Config::from_env_provider(&stack)?, Sources::capture(&stack)))
+}
+
 /// Render `--help`, generated from [`PARAMS`] so a new parameter documents itself.
 pub fn help() -> String {
     let mut out = String::new();
