@@ -379,20 +379,40 @@ cargo nextest run
 
    | difficulty | 3 | 5 | 8 (default) | 10 |
    |---|---|---|---|---|
-   | solves, all arms | 10/15 | 5/15 | 1/15 | 0/15 |
+   | vision only, 5 arms | 10/15 | 5/15 | 1/15 | 0/15 |
+   | with image tools, 3 arms | 6/9 | 5/9 | 0/9 | 0/9 |
 
    Difficulty 3 is not a CAPTCHA — every frontier arm cleared it outright. The ramp does its work
-   between 5 and 8, and by 10 nothing was solved. Haiku 4.5 managed one solve in 24 attempts across
-   two runs, all difficulty 3. Reproduce with `examples/challenge_set.rs` and
-   `scripts/solve-challenges.py`; 3 images per cell is a wide error bar, so re-measure with more
-   draws before acting on any single cell.
-9. **Case sensitivity is load-bearing, not a usability wart.** Validation compares case-sensitively,
-   and that is what converts "nearly read it" into a failed solve. Across the grid above the three
-   frontier arms recovered 65-72% of individual characters while solving 1 of 18 at difficulty 8
-   and above — they were reading most of the glyphs and still not producing the string. Several near-misses were
-   case alone: on one difficulty-5 image every frontier arm returned the right four letters and
-   only lower-cased the leading `V`. Making matching case-insensitive would hand back a large part
-   of what the deformations buy, and would do it precisely at the difficulties that currently hold.
+   between 5 and 8: **across all eight arms, difficulty 8 and 10 together yielded 1 solve in 48
+   attempts.** Haiku 4.5 never solved anything above difficulty 3 in three runs.
+
+   The second row is the one to read carefully, because it is the realistic attacker. Those arms had
+   python, Pillow and numpy and were told to crop, upscale, median-filter, split by hue, threshold
+   and template-match — Sonnet spent 170 tool calls and 29 minutes, Opus 164 calls and 52 minutes.
+   Tooling **raised the ceiling at difficulty 5 and moved nothing at 8 or above.** Tool-equipped Opus
+   went 6/6 across difficulty 3 and 5, beating every vision-only arm, and then scored 0/6 at 8 and
+   10 like everyone else. It is also the expensive way to attack: ~331k tokens for Opus and ~187k
+   for Sonnet against ~46k vision-only, so roughly $0.28 per solve against $0.05 — a tooled attacker
+   pays about 6x more per solved CAPTCHA and gains nothing at the difficulty that ships.
+
+   Reproduce with `examples/challenge_set.rs` and `scripts/solve-challenges.py`. Three images per
+   cell is a wide error bar: treat the 8-and-above result as "no arm has yet solved one", not as a
+   measured zero, and re-measure with more draws before acting on any single cell.
+9. **Case sensitivity buys a difficulty band, and only against a solver that cannot preprocess.**
+   Validation compares case-sensitively, which converts "nearly read it" into a failed solve: the
+   frontier arms recovered 65-75% of individual characters while solving 1 of 48 at difficulty 8 and
+   above, and several near-misses were case alone. On one difficulty-5 image every *vision-only* arm
+   returned the right four letters and only lower-cased the leading `V`.
+
+   That advantage does not survive an attacker with image tools. Tool-equipped Opus made **zero**
+   case errors across all 12 challenges — every other arm made one or two — and it was the case fix
+   specifically that took it from the 2/3 the vision arms managed at difficulty 5 to 3/3, including
+   that same `V`. Cropping a glyph and viewing it enlarged beside its neighbours resolves the height
+   cue that decides case, and no amount of deformation prevents that.
+
+   So keep case-sensitive matching: it is free, and it still defeats the cheap attack. But do not
+   file it as a reason difficulty 8 holds. What holds difficulty 8 is the rendering — overlap plus
+   per-letter deformation — and that is where a regression would actually cost something.
 10. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
    An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
    compression artifacts costing a frontier vision model a full solve, but that was on the
