@@ -1,37 +1,56 @@
-# Persisting configuration in SQLite, and applying boot fields by restart
+# Storing configuration in SQLite, and applying boot fields by restart
 
-Design for making every parameter changeable from the admin console — not just the five
-`Reload::Live` ones — by storing values in the database and restarting the process to pick up
-the rest. Nothing here is built yet.
+Implementation plan for making every parameter changeable from the admin console — not just the
+five `Reload::Live` ones — by storing values in the database and restarting the process to pick
+up the rest.
+
+Revised after the provenance work landed: `Source`, `Sources` and the pinning rule now exist,
+and this feature builds on them rather than inventing its own notion of where a value came from.
 
 ## What changes for the operator
 
-Today `PATCH /api/v1/admin/config` rejects boot fields outright, and any live field it accepts
-is lost on the next reload or restart. After this:
+Today `PATCH /api/v1/admin/config` accepts five live fields, refuses anything pinned by the
+command line or environment, and loses every accepted change on the next reload. After this:
 
-- Any non-secret, non-bootstrap parameter can be **stored**, surviving restarts.
-- Boot fields become editable. They do not take effect immediately; the server reports that a
-  restart is pending and lists exactly which fields are waiting.
-- A restart can be triggered from the console, or left to the operator — the two are separate
-  decisions and the second is off by default.
+- Any storable parameter can be **stored**, surviving restarts.
+- Boot fields become settable. They do not take effect immediately; the server reports which
+  ones are waiting and the console shows a pending-restart banner.
+- A restart can be triggered from the console, or left to the operator. Those are separate
+  decisions, and the second is off by default.
 
-## Two constraints that shape everything
+## Four constraints that bound the feature
 
 **1. Configuration cannot fully come from the database, because opening the database is
 configured.** `database_url` and `database_max_connections` are read to open the pool, so they
-can never be read *from* the pool. `main.rs` makes this concrete: config is resolved at line 27,
-the pool is created at line 75. Any stored layer necessarily loads after a first resolution
-has already happened, which forces a two-phase boot (below) and puts a hard floor under what
-is storable.
+can never be read *from* it. `main.rs` makes this concrete: config resolves at line 27, the pool
+opens at line 75.
 
-**2. Secrets must not be stored.** `api_key_salt`, `master_api_key`, `solution_hash_secret` and
-`image_encryption_secret` are deliberately file-only on the CLI and absent from the TOML schema,
-so a checked-in config file is safe by construction. Writing them into a SQLite file that also
-holds session rows — and that the backup story treats as data, not credentials — would undo
-that. They stay unstorable, enforced by the same `param.secret` flag and a `PARAMS` invariant
-test.
+**2. Anything used before the pool opens would apply one boot late.** Between those two lines
+sit `init_tracing` (`log_level`, the three `otel_*`) and the PID file. Storing those would mean
+a value that silently takes effect on the *next* restart — exactly the half-truth this codebase
+refuses elsewhere. They stay unstorable unless subscriber initialisation moves after the pool,
+which loses early-boot logs. See decision D2.
 
-So `Param` gains a column:
+**3. Secrets must not be stored.** They are deliberately file-only on the CLI and absent from
+the TOML schema so a checked-in config file is safe by construction. Writing them into a SQLite
+file that the backup story treats as data would undo that.
+
+**4. A field pinned by the command line or environment is not storable either.** This is new,
+and follows directly from the rule already shipped: `env` outranks `stored`, so a stored value
+for a field set in the environment would never become the effective one. Storing it would be
+recording an override that provably cannot take effect — the same thing `ConfigHandle::patch`
+already refuses to do. `PUT /config/stored` reuses `409 config_pinned`.
+
+**This last one has a sharp edge worth stating before any code is written.** A container
+deployment that passes everything through `-e` / `env:` pins everything, and gets nothing
+storable. The remedy is the one the console already gives for PATCH — stop setting the field in
+the environment and manage it here instead — but it means this feature is only useful to
+deployments willing to hand a subset of settings over to the database. An `.env` file is fine;
+it is a file, and files stay changeable.
+
+## The storable set
+
+`Param` gains a column:
 
 ```rust
 pub enum Persist {
@@ -42,38 +61,44 @@ pub enum Persist {
 }
 ```
 
-with tests asserting every `secret` param is `Never`, and that `DATABASE_URL` and
-`DATABASE_MAX_CONNECTIONS` are `Never`. That is 4 + 2 = 6 of 22 parameters excluded; the other
-16, including all five live ones, become storable.
+11 of the 22 parameters are `Never`:
+
+| excluded | why |
+|----------|-----|
+| `api_key_salt`, `master_api_key`, `solution_hash_secret`, `image_encryption_secret` | constraint 3 |
+| `database_url`, `database_max_connections` | constraint 1 |
+| `pid_file`, `log_level`, `otel_enabled`, `otel_endpoint`, `otel_service_name` | constraint 2 |
+
+Leaving 11 `Allowed`: `server_host`, `server_port`, `default_session_ttl_seconds`,
+`max_session_ttl_seconds`, `max_validation_attempts`, `captcha_compression`,
+`cleanup_interval_seconds`, `rate_limit_requests_per_second`, `rate_limit_burst_size`,
+`rate_limit_reverse_proxy`, `admin_config_write` — every live field, plus the six boot fields an
+operator actually wants to tune.
+
+Tests enforce that every `secret` param is `Never`, that the two database params are `Never`,
+and that the excluded list is exactly the table above, so adding a parameter forces a decision
+rather than defaulting into storability.
 
 ## Precedence
 
-The stored layer slots in below the process-level layers and above the files:
+`stored` slots in below the process-level layers and above the files:
 
 ```
-command line > environment > SQLite (stored) > env file (.env) > config file > default
+admin API > command line > environment > SQLite (stored) > env file > config file > default
 ```
 
-The command line and the environment stay on top **because they are the recovery path**. If a
-stored value makes the service misbehave, `captchapi --port 3000` or `SERVER_PORT=3000` must
-still win without anyone having to open SQLite. Files sit below because they are the deployment
-baseline that durable operator intent is meant to override.
+The command line and environment stay on top because they are the recovery path: a stored value
+that makes the service misbehave must be overridable with `captchapi --port 3000` without anyone
+opening SQLite. Files sit below because they are the deployment baseline that durable operator
+intent is meant to override.
 
-This costs one variant on `Source` (`Stored`, label `"stored"`), one field on `Layers` and
-`LayeredEnv`, and one `.or_else` in `LayeredEnv::get` and `source_of`.
-
-**Shadowing must be reported, not swallowed.** If someone stores `server_port = 8080` while
-`SERVER_PORT=3000` is in the environment, the stored value is real but not effective. The
-codebase already refuses to pretend elsewhere — `ConfigHandle::patch` rejects boot fields rather
-than recording an override that cannot take effect, and a reload reports boot drift rather than
-applying it. The same standard applies here: the config API grows a `source` field per
-parameter, and the console shows stored-but-shadowed rows explicitly. Silently storing a value
-that a higher layer overrides is the one failure mode that would make this feature actively
-misleading.
+Costs one `Source::Stored` variant (label `"stored"`), one field on `Layers` and `LayeredEnv`,
+one arm in `LayeredEnv::get` and `source_of`. `Source::is_pinned` is **unchanged** — `Stored` is
+not pinned, because it is precisely the layer this feature makes changeable.
 
 ## Schema
 
-A new migration, `migrations/2026XXXXXXXXXX_config.sql`:
+`migrations/20260727000000_config_store.sql`:
 
 ```sql
 CREATE TABLE config_settings (
@@ -83,210 +108,221 @@ CREATE TABLE config_settings (
     updated_by  TEXT NOT NULL       -- 'admin-api' | 'cli'
 );
 
--- One row per attempt to boot with a changed stored config, so a config that prevents
--- startup can be rolled back automatically instead of wedging the service.
+-- One row per attempt to boot with changed stored config, so a configuration that prevents
+-- startup rolls back automatically instead of wedging the service.
 CREATE TABLE config_generations (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at INTEGER NOT NULL,
-    snapshot   TEXT NOT NULL,       -- JSON map of config_settings at this generation
+    snapshot   TEXT NOT NULL,       -- JSON map of config_settings as of this generation
     status     TEXT NOT NULL,       -- 'pending' | 'confirmed' | 'rolled_back'
     attempts   INTEGER NOT NULL DEFAULT 0
 );
 ```
 
-Values are stored as raw strings in the same canonical form every other layer produces, so
-parsing and validation stay in `Config::from_env_provider` and nowhere else. Keying by `field`
-rather than by env key matches what the admin API already speaks.
+Values are raw strings in the same canonical form every other layer produces, so parsing and
+validation stay in `Config::from_env_provider` and nowhere else. Keyed by `field`, matching what
+the admin API already speaks.
 
 ## Boot sequence
 
 ```
-1. Parse argv, resolve config from cli/env/env-file/file          (as today)
-2. Open the pool, run migrations                                  (as today)
-3. Read config_generations: if the newest row is 'pending'
-   and attempts >= 1  ->  roll back to the newest 'confirmed'
-                          snapshot, mark it 'rolled_back', log loudly
-   otherwise          ->  increment attempts
-4. Read config_settings into a Layer
-5. Re-resolve config with the stored layer inserted
-   - on failure: log, discard the stored layer, continue with step 1's config
-6. Rebuild anything that reads boot values, then bind and serve
-7. After N seconds of successful serving, mark the generation 'confirmed'
+1. Parse argv, resolve from cli/env/env-file/file                    (unchanged)
+2. init_tracing                                                      (unchanged)
+3. Open the pool, run migrations                                     (unchanged)
+4. Generation bookkeeping:
+     newest generation is 'pending' and attempts >= 1
+       -> restore config_settings from the newest 'confirmed' snapshot
+          (or empty, if there is none), mark it 'rolled_back', log at warn
+     otherwise -> attempts += 1
+5. Read config_settings into a Layer
+6. Re-resolve with the stored layer inserted -> (Config, Sources)
+     on failure: log at error, drop the stored layer, keep step 1's config
+7. Build the handle from the step-6 result and carry on               (unchanged from here)
+8. After 30s of serving, mark the newest 'pending' generation 'confirmed'
 ```
 
-Step 5's re-resolution is why the two-phase shape is unavoidable, and it has a consequence worth
-stating: **everything between steps 1 and 5 uses the pre-stored config.** That is the tracing
-subscriber (`log_level`, `otel_*`) and the PID file path. Those three are technically storable
-but would apply one boot late, which is exactly the kind of half-truth this codebase avoids —
-so `LOG_LEVEL`, `PID_FILE` and the `OTEL_*` trio should also be `Persist::Never` unless we move
-subscriber init after the pool, which is a bigger change and would lose early-boot logs. That
-takes the storable set from 16 to 11, still including every live field and the interesting boot
-ones (`server_host`, `server_port`, `rate_limit_*`, `admin_config_write`).
+Step 6 is why the two-phase shape is unavoidable, and step 4's `attempts` counter is what
+distinguishes "first try at a new configuration" from "we already tried this and did not
+survive". Nothing between steps 1 and 6 may read a storable field — which is constraint 2,
+enforced by the `Persist::Never` list rather than by hope.
 
-Step 3's `attempts` counter is what distinguishes "first try at a new config" from "we already
-tried this and did not survive". It is incremented before the risky part and only cleared by
-reaching step 7.
+## Changes to `ConfigHandle`
+
+`reload()` currently re-reads files. It must now also re-read the store, but it is a sync
+function called under `spawn_blocking` and sqlx is async. Rather than give the handle a database
+connection, the caller fetches and passes:
+
+```rust
+pub fn reload(&self, stored: Layer) -> Result<Outcome, String>
+```
+
+`ReloadState` retains the layer so `patch()` re-resolves against the same stored values without
+another round trip. Call sites: the SIGHUP task, `POST /config/reload`, and the tests — all
+already async or trivially able to supply an empty layer.
+
+This keeps the handle database-agnostic, which is what makes it testable without a pool, and it
+puts freshness in the type system: you cannot reload without having decided what the store says.
 
 ## The restart mechanism
 
-The proposal was a supervisor process that spawns a child and kills/restarts it on command.
-Three options, and I do not think the supervisor is the right one here.
+Re-exec, as evaluated in the previous revision of this document and unchanged: at the end of
+`main`, after graceful shutdown, replace the process image with a fresh copy of itself. Same
+PID, so `docker stop`, Kubernetes, systemd and the PID file keep working untouched, and no
+supervisor inherits PID 1's reaping and signal-forwarding obligations.
 
-### Option A — re-exec in place (recommended)
+Concretely:
 
-At the end of `main`, after graceful shutdown, after the pool is closed and telemetry is
-flushed, replace the process image with a fresh copy of itself:
+- **Capture `args_os()` at startup**, before parsing consumes it, and keep it for the exec. The
+  environment carries across `execv` automatically, preserving the env layer.
+- **Trigger**: a `RestartHandle { flag: AtomicBool, token: CancellationToken }` in `AdminState`.
+  `POST /admin/restart` sets the flag and cancels the token; `shutdown_signal` gains a third
+  select arm on it, so the existing graceful-shutdown path runs unchanged.
+- **Order at the end of `main`**: stop background tasks, **close the pool** (so WAL is
+  checkpointed rather than left for recovery — SQLite's VFS already opens with `O_CLOEXEC`, so
+  this is about flushing, not leaking), flush telemetry, **skip PID-file removal** because the
+  PID does not change, then exec from the main thread with the runtime finished.
+- **`current_exe()` guard**: on Linux this resolves `/proc/self/exe`, which yields a path
+  suffixed `(deleted)` if the binary was replaced on disk. If the path does not exist, log at
+  error and exit normally instead — a service that exits is recoverable by an orchestrator; one
+  that execs a nonexistent path is not.
 
-```rust
-// argv captured at startup, before anything consumed it
-std::os::unix::process::CommandExt::exec(&mut Command::new(current_exe).args(argv))
-```
+In-flight requests are dropped at the exec boundary. True zero-downtime needs overlapping
+processes with socket handoff, which is a separate and much larger feature.
 
-The environment carries over automatically, so the env layer is preserved.
-
-- **Same PID.** `docker stop`, Kubernetes, systemd and the PID file all keep working with zero
-  extra code. This is the big one: the service stays a single process and stays PID 1 in a
-  container, so nothing about signal handling changes.
-- No second process to write, supervise, or reason about.
-- Existing shutdown path is reused verbatim; the only new thing is a flag that says "exec
-  instead of returning".
-
-Cost: in-flight requests are dropped at the exec boundary. Not graceful, but neither is any
-restart short of socket handoff with overlapping processes.
-
-Details that need care: capture `args_os()` at startup rather than reconstructing from `Cli`;
-close the pool before exec so WAL is flushed and no fd leaks into the new image; skip the PID
-file removal on this path since the PID is unchanged; call exec from the main thread after the
-tokio runtime has finished, never from inside a task.
-
-### Option B — supervisor parent (the proposal)
-
-A parent that spawns the real server as a child and restarts it on demand.
-
-Genuinely better at one thing: if the child fails to start, the parent still exists and can
-retry with the previous config. Option A has no such observer — the process is simply gone.
-
-Against it: the parent becomes PID 1 in a container and inherits PID 1's obligations — reaping
-orphans, and forwarding SIGTERM/SIGINT to the child, because `docker stop` signals PID 1 only.
-Getting that wrong means containers that ignore `docker stop` and take the 10-second SIGKILL
-every time. The PID file now names the wrong process for `captchapi reload`. And the "single
-static binary, no shell, distroless or scratch" story now contains a process supervisor, which
-is the part of this design most likely to have a subtle bug that only shows up in production.
-
-Its one advantage is recoverable without it: the `config_generations` table with the `attempts`
-counter gives automatic rollback on the *next* boot, which covers the same failure with a few
-seconds more downtime and none of the PID 1 complexity. Combined with pre-flight checks (below)
-that catch the realistic failures *before* restarting at all, the residual risk is small.
-
-Where a supervisor would genuinely win is true zero-downtime restarts — two overlapping children
-sharing a listening socket, draining the old one. That is a much larger feature and a separate
-decision; if it is wanted, it should be designed as such rather than arrived at sideways.
-
-### Option C — exit and let the orchestrator restart
-
-Persist, then exit with a distinct code. Correct behaviour under systemd `Restart=always`,
-Kubernetes, or `docker run --restart`. Zero new machinery.
-
-Fails for a bare `cargo run` or a plain `docker run`, and in Kubernetes a non-zero exit looks
-like a crash in every dashboard.
-
-### Recommendation
-
-Option A, with Option C available as a configuration choice (`ADMIN_RESTART_MODE=exec|exit`,
-default `exec`). Reject Option B unless overlapping zero-downtime restart becomes a requirement.
-
-## Not restarting into a broken config
+## Not restarting into a broken configuration
 
 Four layers, cheapest first:
 
-1. **Validate.** Run the candidate through `Config::from_env_provider` before writing anything.
-   This is the existing validation path and catches every type and range error. Reject with 400.
-2. **Pre-flight the resources validation cannot see.** If `server_host`/`server_port` changed,
-   attempt a bind on the new address and release it; reject with 409 if it is taken. This is the
-   realistic failure — "port already in use" is precisely what someone editing `server_port`
-   through a web form will hit, and it is invisible to validation.
-3. **Generations with automatic rollback**, as in the boot sequence above. Covers whatever the
-   first two missed.
-4. **Escape hatches that need no database access:** `--ignore-stored-config` (also
+1. **Validate** the candidate through `Config::from_env_provider` before writing anything.
+   Catches every type and range error. `400 invalid_config`.
+2. **Pre-flight the resource checks validation cannot do.** If `server_host`/`server_port`
+   changed, bind the new address and release it; `409 address_unavailable` if taken. This is the
+   realistic failure — "port already in use" is exactly what someone editing `server_port` in a
+   web form hits, and it is invisible to validation. Skipped when the address is unchanged,
+   since this process already holds it.
+3. **Generations with automatic rollback**, per the boot sequence. Covers whatever the first two
+   missed.
+4. **Escape hatches needing no database access**: `--ignore-stored-config` (also
    `IGNORE_STORED_CONFIG=true`), plus `captchapi config unset <field>` and
-   `captchapi config clear` for offline repair.
+   `captchapi config clear` for offline repair. These matter more than usual here: the
+   distroless and scratch images have no shell and no `sqlite3`, so without them a bad stored
+   value could only be fixed by rebuilding the image.
 
-Worth calling out: storing `admin_config_write = false` locks the console out of its own
-settings. The CLI escape hatch covers it, and the console should warn before letting someone do
-it.
+Storing `admin_config_write = false` locks the console out of its own settings. The CLI hatch
+covers it; the console should confirm before allowing it.
 
 ## API surface
 
-The durable store becomes its own resource rather than overloading the existing PATCH, which
-keeps today's ephemeral-override semantics working and unbroken:
+The durable store becomes its own resource rather than overloading `PATCH`, so today's
+ephemeral-override semantics keep working unchanged:
 
 | method | path | effect |
 |--------|------|--------|
-| `GET` | `/api/v1/admin/config` | as today, plus `source` and `stored` per field |
-| `PATCH` | `/api/v1/admin/config` | **unchanged** — ephemeral, live fields only, cleared by reload |
-| `GET` | `/api/v1/admin/config/stored` | the stored layer, secrets absent by construction |
-| `PUT` | `/api/v1/admin/config/stored` | store fields; 202 with `pending_restart` if any is boot-only |
+| `GET` | `/api/v1/admin/config` | as today, plus `storable` and `pending_restart` |
+| `PATCH` | `/api/v1/admin/config` | **unchanged** — ephemeral, live fields, cleared by reload |
+| `GET` | `/api/v1/admin/config/stored` | the stored layer; secrets absent by construction |
+| `PUT` | `/api/v1/admin/config/stored` | store fields; live ones apply at once, boot ones land in `pending_restart` |
 | `DELETE` | `/api/v1/admin/config/stored/{field}` | remove one stored field |
 | `POST` | `/api/v1/admin/restart` | graceful shutdown then re-exec; **off by default** |
 
-`POST /restart` is a remote kill switch for the service. It should be gated by its own
-parameter (`ADMIN_RESTART_ENABLED`, default false), master-key only, audit-logged, and counted
-in metrics. `ADMIN_CONFIG_WRITE=false` disables the stored writes too, matching how it already
-disables PATCH.
+`ConfigEntry` gains `storable: bool` alongside the existing `editable: bool`. The two are
+different questions and the console needs both:
 
-New `AppError` variants (`ConfigNotPersistable`, `RestartNotEnabled`, `AddressUnavailable`)
-**will break `bindings/nodejs`**, which matches `AppError` exhaustively with no wildcard arm.
-Build with `--workspace`, as CLAUDE.md already warns.
+- `editable` — `PATCH` will take it: live, and not pinned.
+- `storable` — `PUT /stored` will take it: `Persist::Allowed`, and not pinned.
 
-`POST /config/reload` gains a wrinkle worth being deliberate about: it clears the ephemeral
-overlay, but it should *re-read* the stored layer, because the stored layer is now a source of
-truth rather than an override. Reload means "re-read the sources"; the store is one.
+A live field can be both. A boot field can be storable but never editable. Neither is true for
+anything pinned or secret.
+
+`PUT` re-resolves and publishes immediately, so a stored live field takes effect at once — the
+same way `PATCH` does — while a stored boot field only changes what a restart would produce.
+`pending_restart` is computed by comparing each stored boot field against the running config.
+
+`POST /config/reload` re-reads the store as well as the files: the store is now a source of
+truth, and reload means "re-read the sources". It still clears the ephemeral overlay.
+
+New `AppError` variants — `ConfigNotPersistable` (400), `RestartNotEnabled` (403),
+`AddressUnavailable` (409) — **will break `bindings/nodejs`**, which matches `AppError`
+exhaustively with no wildcard arm. Build with `--workspace`.
+
+New parameter: `ADMIN_RESTART_ENABLED` (bool, `Reload::Boot`, default `false`). A remote restart
+endpoint is an availability lever and a DoS amplifier if the master key ever leaks, so it is
+opt-in, master-key only, audit-logged and counted in metrics. `ADMIN_CONFIG_WRITE=false`
+disables the stored writes too, matching how it already disables `PATCH`.
 
 ## Console changes
 
-- A third state per row: effective value, stored value, and where the effective one came from.
-  Rows whose stored value is shadowed by CLI or environment get an explicit marker — this is the
-  honesty requirement from the precedence section, and it is the main new UI concept.
-- Boot rows become editable, tagged `restart to apply` instead of `restart to change`.
-- A pending-restart banner listing the waiting fields, with a Restart button when the endpoint
-  is enabled.
-- Storable vs ephemeral needs to be visible without a manual: a per-row toggle is probably too
-  fussy for 11 fields, so a single "store these changes" checkbox next to Apply is likely
-  better. Worth prototyping both.
+- A **stored value** column, distinct from the effective one, and a `stored` tag for rows whose
+  effective value comes from the store.
+- **Boot rows become editable** when storable, tagged `restart to apply` rather than
+  `restart to change`.
+- A **pending-restart banner** listing the waiting fields, with a Restart button when the
+  endpoint is enabled.
+- Apply gains a **"store these changes"** checkbox. A per-row toggle is too fussy for 11 fields;
+  one checkbox next to Apply chooses between ephemeral `PATCH` and durable `PUT`.
+- A confirm step before storing `admin_config_write = false`.
 
-## Delivery
+Budget: roughly +3 KB of assets, keeping the pair under 20 KB.
 
-Three changes, each shippable and useful alone:
+## Work breakdown
 
-1. **Persistence and precedence.** Migration, `Persist` column, stored layer, two-phase boot,
-   `source`/`stored` in the config API, the `/config/stored` endpoints, CLI verbs,
-   `--ignore-stored-config`. After this, boot fields are editable and apply on whatever restart
-   the operator already performs. No restart machinery at all.
-2. **Self-restart.** Generations table, rollback, pre-flight bind check, `POST /restart`,
-   re-exec, `ADMIN_RESTART_ENABLED` / `ADMIN_RESTART_MODE`.
-3. **Console.** Shadow reporting, editable boot rows, pending-restart banner, restart button.
+Ordered so each step compiles, passes, and is independently reviewable.
+
+1. **`Persist` column and the storable set** — `params.rs`, plus the three invariant tests.
+   No behaviour change.
+2. **`Source::Stored` and the layer** — `sources.rs`, `cli.rs` (`Layers.stored`), unit tests for
+   precedence and for `Stored` not being pinned.
+3. **`ConfigStore` service** — `src/services/config_store.rs`: read the layer, upsert, delete,
+   and the generation bookkeeping. Tests against an in-memory pool, as the other services do.
+4. **Two-phase boot** — `main.rs` steps 4-6 plus the confirm task, and `ConfigHandle::reload`
+   taking a `Layer`. Integration test that a stored value survives a simulated restart.
+5. **Stored endpoints** — `GET`/`PUT`/`DELETE /config/stored`, `storable` and `pending_restart`
+   on `GET /config`, the new error variants and the NAPI arms. Rust integration tests + Bruno.
+6. **Rollback** — generations table wired into boot, with a test that writes a `pending`
+   generation with `attempts = 1` and an unbootable value and asserts it rolls back.
+7. **Restart** — `ADMIN_RESTART_ENABLED`, `POST /admin/restart`, the shutdown-token arm,
+   pre-flight bind check, and the exec itself.
+8. **CLI hatches** — `--ignore-stored-config`, `config unset`, `config clear`.
+9. **Console** — stored column, pending banner, restart button, store checkbox; Playwright
+   coverage for each.
+10. **Docs** — `docs/API.md`, `CLAUDE.md` (precedence, schema, the new parameter),
+    `.env.example`, `captchapi.toml.example`, and the size table in
+    `docs/ADMIN_UI_EVALUATION.md`.
 
 ## Testing
 
-The existing gates cover most of it, with three things needing new kinds of test:
+The existing gates cover most of it. Three things need new kinds of test:
 
-- **Precedence and shadowing** — unit tests on the layer stack, in the style of the existing
-  `handle.rs` tests, including that a `Persist::Never` field is refused and that a shadowed
-  stored value is reported as shadowed.
-- **Rollback** — write a `pending` generation with `attempts = 1` and an unbootable value,
-  then assert the boot path rolls it back. Testable without any process machinery.
-- **Re-exec** — not unit-testable. Needs an integration test that spawns the real binary,
-  stores a boot field, calls restart, and re-queries the config on the new image, asserting the
-  PID is unchanged. This is the one genuinely new test harness in the plan.
+- **Precedence and storability** — unit tests on the layer stack, that a `Persist::Never` field
+  is refused, and that a field pinned by cli/env is refused with `config_pinned`.
+- **Rollback** — write a `pending` generation with `attempts = 1` and a value that cannot boot,
+  then assert the boot path restores the last confirmed snapshot. No process machinery needed.
+- **Re-exec** — not unit-testable. Needs an integration test that spawns the real binary, stores
+  a boot field, calls restart, and re-queries on the new image asserting the PID is unchanged.
+  This is the one genuinely new harness, and the one most likely to be flaky in CI; it should be
+  `#[ignore]`d by default and run explicitly if it proves unstable.
 
-Plus Bruno coverage for the new endpoints, and `docs/API.md`, `CLAUDE.md` (precedence table,
-schema section), `.env.example` and `captchapi.toml.example` updates.
+Plus Bruno coverage for the four new endpoints and Playwright coverage for the console changes.
 
-## Open questions
+## Decisions taken, and the ones worth confirming
 
-1. Is losing in-flight requests on restart acceptable? If not, the answer is overlapping
-   processes with socket handoff, which is a materially bigger project than any option above.
-2. Should `LOG_LEVEL` / `PID_FILE` / `OTEL_*` be storable at the cost of moving subscriber
-   initialization after the pool opens, and losing early-boot logs in the process?
-3. Should `PUT /config/stored` optionally restart in the same request, or always leave the
-   restart as a separate deliberate call?
+**D1 — restart drops in-flight requests.** Accepted. The alternative is overlapping processes
+with socket handoff, a separate feature several times this size.
+
+**D2 — `log_level`, `pid_file` and the `otel_*` trio stay unstorable.** Recommended: the
+alternative is moving subscriber initialisation after the pool opens and losing early-boot logs,
+which is a bad trade for three rarely-changed settings. Worth confirming, since it means the
+console cannot change the log level — arguably the setting an operator most wants to change
+live.
+
+**D3 — `PUT /config/stored` does not restart.** Storing and restarting stay separate calls, so
+storing several fields costs one restart rather than several.
+
+**D4 — pinned fields are not storable.** This follows from precedence and from the rule already
+shipped, but it is the decision most likely to disappoint: a fully env-driven container
+deployment gets nothing storable. Called out above under constraint 4.
+
+**Scope.** This roughly doubles the pull request, which is already +2015/−33 across 27 files. It
+is a coherent unit — the console is the reason to want stored boot fields — but it is a lot to
+review at once, and steps 1-6 are useful without steps 7-9. Splitting at that seam is worth
+considering if review latency matters more than shipping it whole.
