@@ -5,8 +5,13 @@
 //! what the HTTP API actually serves, not against a prettier test render.
 //!
 //! ```text
-//! cargo run --release --example challenge_set -- <out-dir> [draws-per-cell]
+//! cargo run --release --example challenge_set -- <out-dir> [draws-per-cell] [difficulties]
 //! ```
+//!
+//! `difficulties` is a comma-separated list, defaulting to the full 3/5/8/10
+//! grid. Narrow it when the question is about one level — a decision about
+//! whether the default difficulty holds does not need the levels either side of
+//! it, and solver runs are the expensive part of this pipeline.
 //!
 //! Produces `<out-dir>/NNN.jpg` plus `<out-dir>/manifest.json` mapping each
 //! file to its solution, length and difficulty. **The solutions are written to
@@ -25,13 +30,21 @@ const DIFFICULTIES: [i64; 4] = [3, 5, 8, 10];
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = args.next().unwrap_or_else(|| {
-        eprintln!("usage: challenge_set <out-dir> [draws-per-cell]");
+        eprintln!("usage: challenge_set <out-dir> [draws-per-cell] [difficulties]");
         std::process::exit(2);
     });
     let draws: usize = args
         .next()
         .map(|n| n.parse().expect("draws-per-cell must be a number"))
         .unwrap_or(1);
+    let difficulties: Vec<i64> = args
+        .next()
+        .map(|list| {
+            list.split(',')
+                .map(|level| level.trim().parse().expect("difficulties are integers"))
+                .collect()
+        })
+        .unwrap_or_else(|| DIFFICULTIES.to_vec());
 
     std::fs::create_dir_all(&dir).expect("output directory is writable");
 
@@ -39,13 +52,13 @@ fn main() {
     let mut manifest = Vec::new();
     let mut index = 0;
 
-    for difficulty in DIFFICULTIES {
+    for difficulty in &difficulties {
         for length in LENGTHS {
             for _ in 0..draws {
                 let (solution, jpeg) = service
                     .generate(
                         length,
-                        difficulty,
+                        *difficulty,
                         DEFAULT_WIDTH,
                         DEFAULT_HEIGHT,
                         false,
@@ -74,9 +87,8 @@ fn main() {
 
     // Deliberately no solutions here.
     println!(
-        "wrote {index} challenges to {dir}/ ({} per cell, lengths {LENGTHS:?}, \
-         difficulties {DIFFICULTIES:?}) at {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} quality \
-         {DEFAULT_COMPRESSION}",
-        draws
+        "wrote {index} challenges to {dir}/ ({draws} per cell, lengths {LENGTHS:?}, \
+         difficulties {difficulties:?}) at {DEFAULT_WIDTH}x{DEFAULT_HEIGHT} quality \
+         {DEFAULT_COMPRESSION}"
     );
 }
