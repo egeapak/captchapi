@@ -363,10 +363,11 @@ cargo nextest run
    either, since `gradient` ramps hue and lightness across it, and `outline` means "filled" is not
    a property a solver can assume. Outline stroke widths are drawn from a continuous range and the
    erosion is subpixel precisely so that they do not collapse onto a handful of enumerable values.
-8. **Deformations are per-letter and mutually independent.** Nine of them — jitter, scale, skew,
-   wave, clustering, outline, transparency, gradient, blur — all ramp linearly with difficulty from
-   nothing at level 1 to full at level 10, and each is drawn separately for every letter, so no
-   single rule describes a whole solution. The legibility floors are load-bearing and were set by
+8. **Deformations are per-letter and mutually independent.** Ten of them — jitter, scale, skew,
+   wave, rotation, clustering, outline, transparency, gradient, blur — and each is drawn separately
+   for every letter, so no single rule describes a whole solution. All but one ramp linearly with
+   difficulty from nothing at level 1 to full at level 10; `blur` is pinned flat at every level
+   above 1, for the reason below. The legibility floors are load-bearing and were set by
    measurement, not taste: `MIN_OPACITY` is what survives difficulty-10 gaussian noise, and
    `MIN_OUTLINE_OPACITY` is higher because a hollow letter has an order of magnitude less ink to
    lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
@@ -399,21 +400,102 @@ cargo nextest run
    cell is a wide error bar: treat the 8-and-above result as "no arm has yet solved one", not as a
    measured zero, and re-measure with more draws before acting on any single cell.
 
-   **`blur` is the one deformation with no measured benefit, and it is carried on that basis.** The
-   same grid re-rendered with blur on, attempted by the same three vision arms, moved solves from
-   12/36 to 10/36 and characters from 61% to 55% — a difference of 0.06 +/- 0.11, indistinguishable
-   from noise, and confounded by the two conditions using different random images. It costs 5-8% of
-   render time at difficulty 3-10 (3615us -> 3915us at difficulty 8) and changes encoded size by
-   under 1%. Isolated from the noise pass it is expensive (191us -> 420us) and does shrink the JPEG
-   5.7%, but at shipping difficulties the gaussian noise dominates the entropy and that saving
-   disappears.
+   **To evaluate a single deformation, use the paired A/B pipeline instead** — the grid above cannot
+   attribute a change to one deformation, and an unpaired comparison spends most of its statistical
+   power on whether one set of random strings happened to be harder than another:
 
-   The likely reason it does nothing is the linear ramp: sigma reaches roughly 0.35px at difficulty
-   3, which is invisible, and full strength only at 8 and 10 where the solve rate is already at
-   zero. So the deformation lands where there is no headroom and is absent where solve rates are
-   high. Before spending more on blur, test a profile that does *not* track difficulty — and if that
-   does not move difficulty 3 or 5, remove it rather than paying 8% for nothing. Measure with
-   `cargo test --release --lib blur_impact -- --ignored --nocapture`.
+   ```bash
+   CAPTCHA_SAMPLE_DIR=/tmp/ab CAPTCHA_AB_FIELD=rotation CAPTCHA_AB_LEVELS=3,5 \
+     cargo test --release --lib deformation_ab_set -- --ignored
+   python3 scripts/split-ab.py /tmp/ab /tmp/blind      # crossover into two blind arms
+   # ... solve /tmp/blind-A and /tmp/blind-B, one JSON file of answers per arm ...
+   python3 scripts/score-ab.py /tmp/ab/manifest.json <answers dir>
+   ```
+
+   Three things about that pipeline are load-bearing. It renders the *same solution text* under both
+   conditions, so per-string difficulty cancels. The crossover split guarantees no solver sees a
+   string twice, which would make the second sighting a memory test. And the blind arm directories
+   contain images and lengths only — no manifest, no solutions, nothing to read an answer off.
+
+   Read the **flip counts** the scorer prints, not the totals. A deformation that flips as many
+   solves on as it flips off is noise however the totals fall, and that is exactly what killed
+   `blur`. Choose the difficulty band with headroom: below it every arm solves everything and above
+   it every arm solves nothing, so neither end can move whatever you do.
+
+   **`blur` has now failed to show a benefit under three separate designs, and the last one was
+   the pre-registered decider. It should be removed.** The history is worth keeping because the
+   sequence is what makes the conclusion trustworthy rather than a single disappointing run:
+
+   | design | result |
+   |---|---|
+   | unpaired grid, difficulty 3/5/8/10, ramped | 12/36 -> 10/36 solves, 61% -> 55% chars |
+   | paired crossover, difficulty 6 and 7, ramped | 11/36 -> 9/36, flips 8 lost / 6 gained |
+   | paired crossover, difficulty 3 and 5, **flat** | 29/36 -> 27/36, flips 5 lost / 3 gained, p = 0.73 |
+
+   The first was confounded — the two conditions used different random images, so part of what it
+   measured was whether one set of strings happened to be harder. The second fixed that by rendering
+   the *same* text under both conditions, and came back symmetric: blur flipped individual solves in
+   both directions about equally, which is what noise looks like. The diagnosis then was that the
+   linear ramp put the deformation where it could not help — sigma reached about 0.35px at
+   difficulty 3, invisible, and full strength only at 8 and 10 where every arm already scores zero.
+   So the third design pinned it flat (`FLAT_BLUR`), putting full blur at difficulty 3 and 5, the
+   only band with headroom to detect anything.
+
+   It still did nothing. **Difficulty 5 was identical, 12/18 both ways**, with flips 2-2. Difficulty
+   3 moved 17/18 to 15/18, three lost against one gained, p = 0.63. Nothing here is distinguishable
+   from noise, and this was the test agreed in advance to settle it.
+
+   Meanwhile the flat profile made it *more* expensive, exactly as expected: 13-16% of render time
+   at difficulty 3-10, against 5-8% when it ramped. It does shrink the JPEG 0.5-2.7%, and isolated
+   from the noise pass it shrinks it 5.7% — but at shipping difficulties the gaussian noise
+   dominates the entropy and that saving disappears.
+
+   The one hypothesis left standing is that blur is *the wrong kind* of deformation here rather than
+   the wrong strength: it removes high-frequency detail, and every other deformation in the set
+   moves ink instead. If someone wants to try again, the thing to vary is what it does, not how much
+   of it there is. Do not retune the magnitude a fourth time. Measure with
+   `CAPTCHA_AB_FIELD=blur cargo test --release --lib deformation_impact -- --ignored --nocapture`.
+
+   **`rotation` is the counter-example, and it is what a deformation that works looks like.** Same
+   harness, same two models, same paired crossover, 72 attempts over 18 texts:
+
+   | | rotation off | rotation on |
+   |---|---|---|
+   | difficulty 3 | 13/18 solved, 92% chars | 14/18 solved, 94% chars |
+   | difficulty 5 | 9/18 solved, 83% chars | **4/18 solved, 73% chars** |
+   | overall | 22/36, 88% chars | 18/36, 84% chars |
+
+   Difficulty 3 showed nothing, which is expected and is itself a check on the method: rotation
+   ramps with difficulty, so there is barely any of it at level 3. Difficulty 5 is where it lands,
+   and it lands hard — the solve rate more than halves, the flips run 7 lost against 2 gained
+   (p = 0.18), and both models move the same way, Opus 11/18 to 9/18 and Sonnet the same. The
+   character rate is the more trustworthy half of that, since it is 90 characters rather than 18
+   images: 83% to 73%.
+
+   Treat p = 0.18 as "consistent and worth keeping", not as proof. Eighteen texts is a small sample,
+   the two models are correlated so the effective n is nearer 18 than 36, and the single most
+   informative cell rests on 9 discordant pairs.
+
+   Rotation is not skew with extra steps, and that distinction is the reason to have it. A shear
+   leaves horizontals horizontal, so the crossbar of an `A` and the foot of an `L` stay level and an
+   undeformed solution puts every letter on exactly one row.
+   `test_rotation_takes_letters_off_a_shared_baseline` asserts that line exists before asserting the
+   deformation breaks it. A shared baseline is a free segmentation cue: findable before any glyph is
+   read, and worth more to a solver than any individual letter.
+
+   `MAX_ROTATION` is 0.45 radians, about 26 degrees, and the bound is legibility rather than taste.
+   Past roughly 30 degrees the reversible pairs start trading places — a rotated `N` reads as `Z`,
+   `M` as `W`, `6` as `9` — which costs a human the character outright while costing a solver that
+   already knows the character set nothing it cannot brute-force. It costs 6-11% of render time and
+   nothing measurable in encoded size.
+
+   Implementation note worth not undoing: rotation goes through
+   `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row
+   displacement into a *single* resample. It cannot fold into `displace_rows` — that function
+   samples on exact integer rows, which a rotation violates — but it shares the pass, because two
+   bilinear resamples visibly soften a glyph. Zero rotation delegates to `displace_rows` and returns
+   a byte-identical buffer, which is what keeps the difficulty-1 contract and the pinned output
+   tests meaningful.
 9. **Case sensitivity buys a difficulty band, and only against a solver that cannot preprocess.**
    Validation compares case-sensitively, which converts "nearly read it" into a failed solve: the
    frontier arms recovered 65-75% of individual characters while solving 1 of 48 at difficulty 8 and
@@ -837,6 +919,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-07-26
+**Last Updated**: 2026-07-27
 **Version**: 1.0.1
 **Rust Edition**: 2021
