@@ -881,13 +881,39 @@ mod tests {
             .collect();
         write_jpeg(&contact_sheet(&painted, 3), "10-outline-fade-gradient.jpg");
 
+        let blur: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        blur: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&blur, 3), "11-blur.jpg");
+
+        // Blur off against blur on at the difficulties a caller asks for. This
+        // is the sheet the keep-or-drop decision rests on: at low difficulty the
+        // linear ramp makes sigma too small to see, and by the time it is strong
+        // the letters are already unreadable for other reasons.
+        let mut comparison = Vec::new();
+        for difficulty in [3u32, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            comparison.push((difficulty, Deformations { blur: 0.0, ..with }));
+            comparison.push((difficulty, with));
+        }
+        write_jpeg(&contact_sheet(&comparison, 2), "12-blur-off-vs-on.jpg");
+
         // Everything on, at the difficulty levels a caller actually asks for,
         // so the noise and the deformations ramp together.
         let by_difficulty: Vec<_> = [1u32, 3, 5, 7, 10]
             .iter()
             .map(|d| (*d, Deformations::for_difficulty(*d)))
             .collect();
-        write_jpeg(&contact_sheet(&by_difficulty, 3), "11-by-difficulty.jpg");
+        write_jpeg(&contact_sheet(&by_difficulty, 3), "13-by-difficulty.jpg");
     }
 
     /// Isolates what `blur` costs: render time and encoded size, blur off
@@ -970,6 +996,73 @@ mod tests {
             100.0 * (blur_t as f64 - bare_t as f64) / bare_t as f64,
             100.0 * (blur_s as f64 - bare_s as f64) / bare_s as f64
         );
+    }
+
+    /// Writes a paired blur A/B set for solver evaluation.
+    ///
+    /// Two design fixes over measuring blur on an unpaired grid. It targets
+    /// difficulty 6 and 7, the band between "mostly solved" and "never solved"
+    /// where there is headroom to detect anything at all — at 3 the ramp makes
+    /// sigma invisible and at 8 the solve rate is already at the floor. And it
+    /// renders the *same solution text* under both conditions, so per-string
+    /// difficulty cancels instead of adding variance; an unpaired comparison is
+    /// partly measuring whether `VeDY` is harder than `P9tD`.
+    ///
+    /// Emits both versions of every text. The caller must split them so no
+    /// solver sees a string twice — otherwise the second sighting is a memory
+    /// test, not a vision test. `pair` in the manifest is what to split on.
+    ///
+    /// ```text
+    /// CAPTCHA_SAMPLE_DIR=/tmp/blur-ab \
+    ///   cargo test --release --lib blur_ab_set -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "writes a paired A/B image set, asserts nothing"]
+    fn blur_ab_set() {
+        use image::codecs::jpeg::JpegEncoder;
+
+        let dir = std::env::var("CAPTCHA_SAMPLE_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        std::fs::create_dir_all(&dir).expect("output directory is writable");
+
+        let mut manifest = Vec::new();
+        let mut index = 0;
+        let mut pair = 0;
+
+        for difficulty in [6u32, 7] {
+            for length in [4usize, 5, 6] {
+                for _ in 0..3 {
+                    // One text, both conditions — the whole point of the pairing.
+                    let text = random_text(length);
+                    let with = Deformations::for_difficulty(difficulty);
+                    let without = Deformations { blur: 0.0, ..with };
+
+                    for (condition, deform) in [("off", without), ("on", with)] {
+                        let image = render(&text, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
+                        let mut bytes = Vec::new();
+                        JpegEncoder::new_with_quality(&mut bytes, 40)
+                            .encode_image(&image)
+                            .expect("encodes");
+                        let name = format!("{index:03}.jpg");
+                        std::fs::write(format!("{dir}/{name}"), &bytes).expect("image writes");
+                        manifest.push(format!(
+                            "  {{\"file\": \"{name}\", \"solution\": \"{text}\", \
+                             \"length\": {length}, \"difficulty\": {difficulty}, \
+                             \"blur\": \"{condition}\", \"pair\": {pair}, \"bytes\": {}}}",
+                            bytes.len()
+                        ));
+                        index += 1;
+                    }
+                    pair += 1;
+                }
+            }
+        }
+
+        std::fs::write(
+            format!("{dir}/manifest.json"),
+            format!("[\n{}\n]\n", manifest.join(",\n")),
+        )
+        .expect("manifest writes");
+        println!("wrote {index} images ({pair} texts x 2 conditions) to {dir}/");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
