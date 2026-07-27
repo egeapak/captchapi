@@ -76,6 +76,17 @@ print()
 for kind in ("vision", "tooled"):
     summarise(f"all {kind}", [r for r in rows if r["kind"] == kind])
 print()
+for difficulty in sorted({r["difficulty"] for r in rows}):
+    for kind in ("vision", "tooled"):
+        summarise(
+            f"  difficulty {difficulty}, {kind}",
+            [r for r in rows if r["difficulty"] == difficulty and r["kind"] == kind],
+        )
+    summarise(
+        f"  difficulty {difficulty}, POOLED",
+        [r for r in rows if r["difficulty"] == difficulty],
+    )
+print()
 for length in sorted({r["length"] for r in rows}):
     for kind in ("vision", "tooled"):
         summarise(
