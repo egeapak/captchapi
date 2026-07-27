@@ -545,12 +545,47 @@ cargo nextest run
    is the exponent: 0.8 is a milder version of the same shape.
 
    **`DEFAULT_DIFFICULTY` came back down to 5 as a consequence of the two changes above**, having
-   been raised to 8 when level 5 was still solvable. Level 5 now measures 0/18 against both frontier
-   vision models, which is the floor level 8 was needed for, so the default was paying about 20% more
-   render time and 20% more stored bytes for a solve rate that was already zero. The caveat is on the
-   constant itself: that zero is vision-only, and tool-equipped arms have historically done better at
-   difficulty 5 than vision-only ones, so a solver with python and Pillow is the arm that should
-   decide whether 5 holds.
+   been raised to 8 when level 5 was still solvable. What level 5 measures on the current renderer,
+   pooled over every set solved against it — 84 attempts on 30 distinct images, Opus 5 and Sonnet 5:
+
+   | arm | solved | 95% CI | P(defeat one session in 3 tries) |
+   |---|---|---|---|
+   | vision only | 4/60 = 6.7% | [2.6%, 15.9%] | [8%, 41%] |
+   | with image tools | 3/24 = 12.5% | [4.3%, 31.0%] | [13%, 67%] |
+   | **pooled** | **7/84 = 8.3%** | **[4.1%, 16.2%]** | **[12%, 41%]** |
+
+   **Level 5 is a real CAPTCHA against frontier models but it is not a wall, and the interval is what
+   to quote.** Two individual sets came back 0/18 and calling that a floor was a mistake worth not
+   repeating: a zero on 18 attempts has a 95% upper bound near 18% by itself, and a third set of
+   fresh images then drew 4/24. Pool the sets; do not quote the lucky cell.
+
+   **What justifies 5 anyway is that image processing stopped working.** A tooled arm was run
+   specifically to decide this, with python, Pillow, numpy, a description of every deformation and
+   the bundled font to template-match against:
+
+   | arm | solved | chars | cost |
+   |---|---|---|---|
+   | vision Opus | 1/12 | 65% | 49k tokens, 22 calls |
+   | vision Sonnet | 3/12 | 67% | 52k tokens, 16 calls |
+   | tooled Opus | 3/12 | 73% | 319k tokens, 138 calls, 39 min |
+   | tooled Sonnet | 0/12 | 60% | 255k tokens, 238 calls, 32 min |
+
+   Paired per image and per model: tools won 3, looking won 4, neither solved 17 — **p = 1.0, no
+   effect**, at 5-6x the token cost. On the old renderer tooling was decisive at this level (3/3
+   against 2/3 vision-only) and it is what forced the default up to 8 in the first place.
+
+   `gradient` and the post-composite blur are the reason it stopped working, and this is the clearest
+   evidence either of them has produced. Hue splitting was the tooled attack's whole segmentation
+   strategy — every glyph had its own random hue, so isolating a hue band isolated a letter. A letter
+   no longer has one hue, and its boundary with the next letter is a hue gradient rather than a step.
+   Tooled Sonnet's own summary lists "hue-based letter isolation" among the techniques it applied
+   before scoring zero.
+
+   Two things not to over-read. Every arm recovers 60-73% of characters, so these are near-misses
+   held back by case-sensitive validation, not failures to see the letters — that margin is thinner
+   than the solve rate suggests. And **current levels 6, 7 and 8 are unmeasured.** The old renderer's
+   1/24 at level 8 does not transfer to a renderer whose intensity ramp has changed shape, so if 8.3%
+   is too high for a given deployment, measure the level chosen rather than assuming the old numbers.
 
    Implementation note worth not undoing: rotation goes through
    `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row
@@ -565,15 +600,24 @@ cargo nextest run
    above, and several near-misses were case alone. On one difficulty-5 image every *vision-only* arm
    returned the right four letters and only lower-cased the leading `V`.
 
-   That advantage does not survive an attacker with image tools. Tool-equipped Opus made **zero**
-   case errors across all 12 challenges — every other arm made one or two — and it was the case fix
-   specifically that took it from the 2/3 the vision arms managed at difficulty 5 to 3/3, including
-   that same `V`. Cropping a glyph and viewing it enlarged beside its neighbours resolves the height
-   cue that decides case, and no amount of deformation prevents that.
+   On the renderer as it stood then, that advantage did not survive an attacker with image tools:
+   tool-equipped Opus made **zero** case errors across 12 challenges where every other arm made one
+   or two, and the case fix specifically took it from the 2/3 the vision arms managed at difficulty 5
+   to 3/3. Cropping a glyph and viewing it enlarged beside its neighbours resolves the height cue that
+   decides case.
 
-   So keep case-sensitive matching: it is free, and it still defeats the cheap attack. But do not
-   file it as a reason difficulty 8 holds. What holds difficulty 8 is the rendering — overlap plus
-   per-letter deformation — and that is where a regression would actually cost something.
+   **That no longer reproduces.** Re-measured at difficulty 5 after rotation, the concave ramp and the
+   post-composite blur, case-only misses ran 1 for tooled Opus, 1 for tooled Sonnet, 1 for vision
+   Sonnet and 0 for vision Opus — the tooled arms are no longer the ones getting case right. Rotation
+   is the plausible reason: the height cue that decides case is read against a shared baseline, and
+   rotation is the deformation that removes one.
+
+   Either way, keep case-sensitive matching and do not file it as the reason any difficulty holds. It
+   is free and it converts near-misses into failures — the arms recover 60-73% of characters at
+   difficulty 5 while solving 8% — but what holds a difficulty level is the rendering, overlap plus
+   per-letter deformation, and that is where a regression would actually cost something. The flip side
+   is worth stating too: a 60-73% character rate means the margin is thinner than the solve rate
+   makes it look, and it is case sensitivity holding much of that gap.
 10. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
    An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
    compression artifacts costing a frontier vision model a full solve, but that was on the

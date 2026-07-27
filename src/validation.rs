@@ -35,17 +35,37 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 /// Two later changes moved that band down. `INTENSITY_CURVE` made the ramp
 /// concave, so level 5 now carries the intensity the linear ramp gave level 7,
 /// and the blur moved after the composite, where it smears clustered letters
-/// into each other instead of softening their edges. Measured after both, on
-/// paired crossover sets at the shipped JPEG quality, **difficulty 5 was solved
-/// 0 times in 18 attempts by Opus 5 and Sonnet 5** — the same floor difficulty 8
-/// used to be needed for. Holding the default at 8 was paying about 20% more
-/// render time and 20% more stored bytes for a solve rate that was already zero.
+/// into each other instead of softening their edges.
 ///
-/// The caveat on that zero, kept because it is the thing that would reverse this:
-/// it is vision-only. Tool-equipped arms have historically done better at
-/// difficulty 5 than vision-only ones — 3/3 against 2/3 on one earlier grid — so
-/// a solver with python and Pillow is the arm that should decide whether 5 holds.
-/// If it does not, raise this rather than reaching for another deformation.
+/// **What level 5 actually measures, pooled over every set solved against the
+/// current renderer — 84 attempts on 30 distinct images, vision-only and
+/// tool-equipped, Opus 5 and Sonnet 5:**
+///
+/// ```text
+/// vision-only          4/60  =  6.7%   95% CI [2.6%, 15.9%]
+/// with image tools     3/24  = 12.5%   95% CI [4.3%, 31.0%]
+/// pooled               7/84  =  8.3%   95% CI [4.1%, 16.2%]
+/// ```
+///
+/// With `MAX_VALIDATION_ATTEMPTS` at 3 that is an 12-41% chance of defeating one
+/// session, and the honest summary is that **level 5 is a real CAPTCHA against
+/// frontier models but not a wall.** Two individual sets came back 0/18 and it
+/// would have been wrong to call that a floor: a zero on 18 attempts has a 95%
+/// upper bound near 18% on its own, and a third set of fresh images drew 4/24.
+/// Quote the pooled interval, not a lucky cell.
+///
+/// The reason 5 is nonetheless defensible as the default is what the tooled arms
+/// found. Image processing **stopped helping**: paired per image and per model,
+/// tools won 3 and lost 4, p = 1.0, at 5-6x the token cost (255-319k against
+/// ~50k). On the old renderer tooling was decisive at this level, 3/3 against
+/// 2/3. `gradient` and the post-composite blur are why — hue splitting was the
+/// tooled attack's main weapon, and a letter no longer has one hue while its
+/// boundary with the next letter is now a hue gradient rather than a step.
+///
+/// If this needs to be lower, raise the difficulty rather than adding a
+/// deformation, and measure the level you pick: current 6/7/8 are unmeasured,
+/// and the old renderer's 1/24 at level 8 does not transfer to a renderer whose
+/// intensity ramp has changed shape.
 ///
 /// `blur` does not scale with this value; it is held flat at every level above
 /// 1. See `FLAT_BLUR`.
