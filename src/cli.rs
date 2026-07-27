@@ -259,6 +259,9 @@ pub struct Layers {
     /// field does not report itself as command-line-set and pin itself against further patches.
     pub overlay: Layer,
     pub cli: Layer,
+    /// Settings persisted in the database. Empty until the pool is open and the store read,
+    /// which is why every layer below is resolved twice during boot.
+    pub stored: Layer,
     pub env_file: Layer,
     pub file: Layer,
     /// Boot-only values carried over from a running config during a reload.
@@ -295,6 +298,7 @@ impl Layers {
     pub fn stack<'a, E: EnvProvider>(&'a self, env: &'a E) -> LayeredEnv<'a, E> {
         LayeredEnv::new(&self.cli, env, &self.env_file, &self.file, &self.carried)
             .with_overlay(&self.overlay)
+            .with_stored(&self.stored)
     }
 }
 

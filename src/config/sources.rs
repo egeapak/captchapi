@@ -27,6 +27,13 @@ pub enum Source {
     Cli,
     /// A process environment variable.
     Env,
+    /// The `config_settings` table in the database.
+    ///
+    /// Below the command line and the environment, which are the recovery path: a stored value
+    /// that misbehaves must be overridable with `captchapi --port 3000` without anyone having
+    /// to open SQLite. Above the files, which are the deployment baseline that durable operator
+    /// intent is meant to override.
+    Stored,
     /// An env file (`.env` or `--env-file`).
     EnvFile,
     /// The TOML config file.
@@ -44,6 +51,7 @@ impl Source {
             Source::Admin => "admin",
             Source::Cli => "cli",
             Source::Env => "env",
+            Source::Stored => "stored",
             Source::EnvFile => "env-file",
             Source::File => "file",
             Source::Carried => "carried",
@@ -98,14 +106,15 @@ impl Sources {
     }
 }
 
-/// An empty layer, so `LayeredEnv::new` can leave the overlay unset without every caller
-/// having to invent one.
+/// Empty layers, so `LayeredEnv::new` can leave the optional ones unset without every caller
+/// having to invent them.
 static NO_OVERLAY: Layer = Layer::new();
+static NO_STORED: Layer = Layer::new();
 
 /// The stack of configuration layers, in precedence order.
 ///
-/// `overlay` (admin API) > `cli` > `env` (process) > `env_file` > `file` (TOML) > `carried` >
-/// built-in default.
+/// `overlay` (admin API) > `cli` > `env` (process) > `stored` (database) > `env_file` >
+/// `file` (TOML) > `carried` > built-in default.
 ///
 /// The env file sits *below* the process environment to preserve today's behaviour: the current
 /// `dotenvy::dotenv()` call does not overwrite variables that are already set.
@@ -118,6 +127,9 @@ pub struct LayeredEnv<'a, E: EnvProvider> {
     pub overlay: &'a Layer,
     pub cli: &'a Layer,
     pub env: &'a E,
+    /// Values persisted in `config_settings`. Durable, unlike the overlay, and overridable by
+    /// the two process-level layers above it, which is what keeps them a recovery path.
+    pub stored: &'a Layer,
     pub env_file: &'a Layer,
     pub file: &'a Layer,
     /// Boot-only values carried over from the running config during a reload, so a reload cannot
@@ -138,6 +150,7 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
             overlay: &NO_OVERLAY,
             cli,
             env,
+            stored: &NO_STORED,
             env_file,
             file,
             carried,
@@ -147,6 +160,12 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
     /// Put the admin API's runtime overrides on top of the stack.
     pub fn with_overlay(mut self, overlay: &'a Layer) -> Self {
         self.overlay = overlay;
+        self
+    }
+
+    /// Insert the persisted settings, below the process-level layers and above the files.
+    pub fn with_stored(mut self, stored: &'a Layer) -> Self {
+        self.stored = stored;
         self
     }
 
@@ -162,6 +181,8 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
             Source::Cli
         } else if self.env.get(key).is_ok() {
             Source::Env
+        } else if self.stored.contains_key(key) {
+            Source::Stored
         } else if self.env_file.contains_key(key) {
             Source::EnvFile
         } else if self.file.contains_key(key) {
@@ -181,6 +202,7 @@ impl<E: EnvProvider> EnvProvider for LayeredEnv<'_, E> {
             .cloned()
             .or_else(|| self.cli.get(key).cloned())
             .or_else(|| self.env.get(key).ok())
+            .or_else(|| self.stored.get(key).cloned())
             .or_else(|| self.env_file.get(key).cloned())
             .or_else(|| self.file.get(key).cloned())
             .or_else(|| self.carried.get(key).cloned())
@@ -521,6 +543,104 @@ mod tests {
 
         assert_eq!(l.get("CAPTCHA_COMPRESSION").unwrap(), "70");
         assert_eq!(l.source_of("CAPTCHA_COMPRESSION"), Source::Cli);
+    }
+
+    /// The whole stack, top to bottom, in one assertion.
+    ///
+    /// Precedence is the thing most likely to be broken by a careless edit to `get`, and the
+    /// per-pair tests below each cover only one boundary. This covers every boundary at once by
+    /// removing layers from the top and watching the next one take over.
+    #[test]
+    fn test_every_layer_yields_to_the_one_above_it() {
+        let key = "CAPTCHA_COMPRESSION";
+        let overlay = layer(&[(key, "1")]);
+        let cli = layer(&[(key, "2")]);
+        let env = MockEnv::new().with(key, "3");
+        let stored = layer(&[(key, "4")]);
+        let env_file = layer(&[(key, "5")]);
+        let file = layer(&[(key, "6")]);
+        let carried = layer(&[(key, "7")]);
+
+        let full = LayeredEnv::new(&cli, &env, &env_file, &file, &carried)
+            .with_overlay(&overlay)
+            .with_stored(&stored);
+        assert_eq!(full.get(key).unwrap(), "1");
+        assert_eq!(full.source_of(key), Source::Admin);
+
+        let no_overlay =
+            LayeredEnv::new(&cli, &env, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_overlay.get(key).unwrap(), "2");
+        assert_eq!(no_overlay.source_of(key), Source::Cli);
+
+        let empty = Layer::new();
+        let no_cli = LayeredEnv::new(&empty, &env, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_cli.get(key).unwrap(), "3");
+        assert_eq!(no_cli.source_of(key), Source::Env);
+
+        let none = MockEnv::new();
+        let no_env =
+            LayeredEnv::new(&empty, &none, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_env.get(key).unwrap(), "4", "stored answers below env");
+        assert_eq!(no_env.source_of(key), Source::Stored);
+
+        let no_stored = LayeredEnv::new(&empty, &none, &env_file, &file, &carried);
+        assert_eq!(
+            no_stored.get(key).unwrap(),
+            "5",
+            "env-file answers below stored"
+        );
+        assert_eq!(no_stored.source_of(key), Source::EnvFile);
+
+        let no_env_file = LayeredEnv::new(&empty, &none, &empty, &file, &carried);
+        assert_eq!(no_env_file.get(key).unwrap(), "6");
+        assert_eq!(no_env_file.source_of(key), Source::File);
+
+        let only_carried = LayeredEnv::new(&empty, &none, &empty, &empty, &carried);
+        assert_eq!(only_carried.get(key).unwrap(), "7");
+        assert_eq!(only_carried.source_of(key), Source::Carried);
+
+        let nothing = LayeredEnv::new(&empty, &none, &empty, &empty, &empty);
+        assert!(nothing.get(key).is_err());
+        assert_eq!(nothing.source_of(key), Source::Default);
+    }
+
+    /// The two boundaries that define what "stored" means, stated on their own.
+    ///
+    /// Above the files, so durable operator intent overrides the deployment baseline. Below the
+    /// environment, so `SERVER_PORT=3000 captchapi` remains a way back from a stored value that
+    /// prevents the service from working.
+    #[test]
+    fn test_stored_beats_files_but_yields_to_the_environment() {
+        let key = "SERVER_PORT";
+        let (empty, stored) = (Layer::new(), layer(&[(key, "8080")]));
+        let file = layer(&[(key, "9090")]);
+
+        let none = MockEnv::new();
+        let no_env = LayeredEnv::new(&empty, &none, &empty, &file, &empty).with_stored(&stored);
+        assert_eq!(no_env.get(key).unwrap(), "8080");
+
+        let env = MockEnv::new().with(key, "3000");
+        let with_env = LayeredEnv::new(&empty, &env, &empty, &file, &empty).with_stored(&stored);
+        assert_eq!(
+            with_env.get(key).unwrap(),
+            "3000",
+            "the recovery path holds"
+        );
+        assert_eq!(with_env.source_of(key), Source::Env);
+    }
+
+    #[test]
+    fn test_a_stored_value_is_not_pinned() {
+        // The point of the layer: unlike cli and env, a stored value is one the admin API may
+        // change. If `Stored` were ever pinned, storing a value would lock it.
+        assert!(!Source::Stored.is_pinned());
+
+        let stored = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let empty = Layer::new();
+        let none = MockEnv::new();
+        let l = LayeredEnv::new(&empty, &none, &empty, &empty, &empty).with_stored(&stored);
+
+        assert!(!Sources::capture(&l).is_pinned("captcha_compression"));
     }
 
     #[test]
