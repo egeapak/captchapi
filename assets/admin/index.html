@@ -95,6 +95,8 @@ tr:last-child td{border-bottom:0}
 tr.live:hover td{background:var(--sunk)}
 td.k{font:.79rem/1.4 var(--mono);letter-spacing:-.01em;white-space:nowrap;color:var(--dim);
 border-left:2px solid transparent}
+.stored{display:block;font:.72rem/1.3 var(--sans);color:var(--info);margin-top:.3rem}
+.stored.shadow{color:var(--warn)}
 .about{display:block;font:.74rem/1.35 var(--sans);letter-spacing:0;color:var(--faint);
 white-space:normal;margin-top:.15rem;max-width:34rem}
 tr.live td.k{color:var(--fg);border-left-color:var(--accent)}
@@ -155,7 +157,7 @@ td.v input{padding:.35rem .5rem;margin-top:.3rem}
   </header>
 
   <div id="msg" class="msg"></div>
-  <div id="restart" class="restart hide"></div>
+  <div id="pending" class="restart hide"></div>
 
   <form id="gate" class="gate">
     <input id="key" type="password" autocomplete="current-password" aria-label="Master API key"
@@ -178,11 +180,13 @@ td.v input{padding:.35rem .5rem;margin-top:.3rem}
       </table>
     </div>
     <div class="bar" id="bar">
-      <button id="apply" class="primary" disabled>Apply changes</button>
+      <button id="apply" class="primary" disabled>Apply</button>
+      <button id="persist" disabled>Apply &amp; store</button>
       <button id="revert" disabled>Revert</button>
       <span id="pend"></span>
       <span class="spacer"></span>
       <button id="reload">Reload from sources</button>
+      <button id="restart" class="hide">Restart</button>
       <button id="cleanup">Run cleanup</button>
       <button id="lock">Lock</button>
     </div>

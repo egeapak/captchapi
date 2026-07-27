@@ -10,6 +10,7 @@ const API = "/api/v1/admin";
 let key = "";
 let state = null; // last ConfigResponse from the server
 let draft = {}; // field -> edited string, only for live fields
+let stored = {}; // field -> raw stored value, from GET /config/stored
 
 function say(text, kind) {
   const el = $("msg");
@@ -34,6 +35,7 @@ function syncButtons() {
   const n = Object.keys(draft).length;
   $("apply").disabled = !n;
   $("revert").disabled = !n;
+  $("persist").disabled = !n;
   $("pend").textContent = n + (n === 1 ? " unsaved edit" : " unsaved edits");
   $("bar").className = "bar" + (n ? " dirty" : "");
 }
@@ -52,6 +54,25 @@ function mark(tr, tag, field, entry) {
   tr.className = cls + (edited ? " dirty" : "");
   tag.className = "tag " + (edited ? "dirty" : cls);
   tag.textContent = edited ? "modified" : pinned ? "set by " + entry.source : cls;
+}
+
+// A stored value only deserves a line of its own when it is not already the effective one:
+// otherwise the row would repeat itself, and repeating a value is how a reader learns to stop
+// reading. Shadowed values are exactly the case that has to be said out loud.
+function storedNote(field, entry) {
+  if (!(field in stored)) return null;
+  const note = document.createElement("span");
+  if (entry.shadowed_by) {
+    note.className = "stored shadow";
+    note.textContent = "stored: " + stored[field] + " — not in effect, set by " + entry.shadowed_by;
+  } else if (stored[field] !== entry.value) {
+    note.className = "stored";
+    note.textContent = "stored: " + stored[field] + " — applies on restart";
+  } else {
+    note.className = "stored";
+    note.textContent = "stored";
+  }
+  return note;
 }
 
 function render(data) {
@@ -94,6 +115,8 @@ function render(data) {
       });
     }
     v.appendChild(input);
+    const note = storedNote(field, entry);
+    if (note) v.appendChild(note);
 
     mark(tr, tag, field, entry);
 
@@ -104,7 +127,7 @@ function render(data) {
   // Boot fields that a restart would change. Stored or not: an edited env file shows up here
   // too, so the wording says what a restart would do rather than naming a cause.
   const waiting = data.pending_restart || [];
-  const restart = $("restart");
+  const restart = $("pending");
   restart.replaceChildren();
   if (waiting.length) {
     const label = document.createElement("b");
@@ -115,6 +138,9 @@ function render(data) {
     restart.append(label, names);
   }
   restart.classList.toggle("hide", !waiting.length);
+  // The button only appears when there is something for it to apply, so it never reads as a
+  // general-purpose "bounce the server" control.
+  $("restart").classList.toggle("hide", !waiting.length);
 
   // Only say something when there is something to say — "no overrides active" is the
   // normal state and does not need a line of its own.
@@ -133,8 +159,19 @@ function gated(on) {
 }
 
 async function load() {
-  render(await call("/config"));
+  // Fetched before rendering so the first paint already knows which rows carry a stored value;
+  // rendering first and patching afterwards would flash rows that then change under the cursor.
+  const [config, store] = await Promise.all([call("/config"), call("/config/stored")]);
+  stored = store.stored;
+  render(config);
   gated(false);
+}
+
+// Every mutation re-reads both, because a write to one changes what the other reports.
+async function refresh() {
+  const store = await call("/config/stored");
+  stored = store.stored;
+  render(await call("/config"));
 }
 
 $("gate").addEventListener("submit", async (e) => {
@@ -153,10 +190,37 @@ $("gate").addEventListener("submit", async (e) => {
 $("apply").addEventListener("click", async () => {
   try {
     const sent = Object.keys(draft).join(", ");
-    const data = await call("/config", { method: "PATCH", body: JSON.stringify(draft) });
+    await call("/config", { method: "PATCH", body: JSON.stringify(draft) });
     draft = {};
-    render(data);
-    say("Applied: " + sent, "ok");
+    await refresh();
+    say("Applied until the next reload: " + sent, "ok");
+  } catch (err) {
+    say(String(err.message || err), "err");
+  }
+});
+
+// The durable counterpart to Apply. Separate buttons rather than a checkbox because the two
+// do genuinely different things — one survives a restart and one does not — and a checkbox
+// makes that a mode the operator has to remember they are in.
+$("persist").addEventListener("click", async () => {
+  try {
+    const sent = Object.keys(draft).join(", ");
+    const data = await call("/config/stored", { method: "PUT", body: JSON.stringify(draft) });
+    draft = {};
+    await refresh();
+    say(data.message + " (" + sent + ")", "ok");
+  } catch (err) {
+    say(String(err.message || err), "err");
+  }
+});
+
+$("restart").addEventListener("click", async () => {
+  try {
+    const data = await call("/restart", { method: "POST" });
+    say(data.message, "");
+    // The server is going away, so there is nothing useful to poll for; the operator reloads
+    // the page when it is back. Claiming success we cannot observe would be worse.
+    $("panel").classList.add("hide");
   } catch (err) {
     say(String(err.message || err), "err");
   }
@@ -172,7 +236,7 @@ $("reload").addEventListener("click", async () => {
   try {
     const data = await call("/config/reload", { method: "POST" });
     draft = {};
-    render(data);
+    await refresh();
     say(
       data.message + (data.ignored.length ? " — needs a restart: " + data.ignored.join(", ") : ""),
       data.ignored.length ? "" : "ok",
@@ -193,6 +257,7 @@ $("cleanup").addEventListener("click", async () => {
 $("lock").addEventListener("click", () => {
   key = "";
   draft = {};
+  stored = {};
   state = null;
   $("key").value = "";
   gated(true);

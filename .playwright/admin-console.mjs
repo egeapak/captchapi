@@ -48,9 +48,12 @@ const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 }, d
 const p = await ctx.newPage();
 
 const errors = [];
-// The wrong-key step below deliberately provokes one 401, and the browser logs every non-2xx
-// fetch as a console error. Expect exactly that one rather than ignoring 401s in general, so
-// a real auth failure anywhere else still fails the run.
+// The wrong-key step below deliberately provokes 401s, and the browser logs every non-2xx
+// fetch as a console error. Expect exactly as many as unlocking makes rather than ignoring
+// 401s in general, so a real auth failure anywhere else still fails the run.
+//
+// Two, because unlocking fetches the configuration and the store together.
+const UNLOCK_REQUESTS = 2;
 let expect401 = 0;
 const expected = (t) => t.includes('401') && expect401-- > 0;
 p.on('console', m => { if (m.type() === 'error' && !expected(m.text())) errors.push(m.text()); });
@@ -66,7 +69,7 @@ ok('input is labelled for a11y', (await p.getAttribute('#key', 'aria-label')) ==
 await p.screenshot({ path: `${OUT}/gate-dark.png` });
 
 console.log('\n-- wrong key is rejected --');
-expect401 = 1;
+expect401 = UNLOCK_REQUESTS;
 await p.fill('#key', 'not-the-master-key');
 await p.click('#gate button');
 await p.waitForSelector('#msg.err', { timeout: 5000 });
@@ -127,6 +130,45 @@ if (pinnedFields.length) {
   console.log('  SKIP  pinned-field refusal: no field on this server is set by cli/env');
   console.log('        re-run with e.g. CAPTCHA_COMPRESSION=70 in the server\'s environment');
 }
+
+console.log('\n-- the config store --');
+const storeBefore = await (await fetch(`${BASE}/api/v1/admin/config/stored`, { headers: { authorization: 'Bearer ' + KEY } })).json();
+ok('stored endpoint answers', typeof storeBefore.stored === 'object');
+const storable = Object.entries(api.config).filter(([, e]) => e.storable && e.editable);
+ok('something is storable and editable', storable.length > 0);
+
+if (storable.length) {
+  const [field] = storable[0];
+  const inputFor = (f) => p.locator(`#rows tr:has(td.k:text-is("${f}")) input`);
+  await inputFor(field).fill('33');
+  ok('Apply & store is enabled by an edit', await p.isEnabled('#persist'));
+  await p.click('#persist');
+  await p.waitForSelector('#msg.ok', { timeout: 5000 });
+
+  const after = await (await fetch(`${BASE}/api/v1/admin/config/stored`, { headers: { authorization: 'Bearer ' + KEY } })).json();
+  ok(`storing ${field} reaches the database`, after.stored[field] === '33', JSON.stringify(after.stored));
+  ok('the row now shows a stored note',
+    (await p.locator(`#rows tr:has(td.k:text-is("${field}")) .stored`).count()) === 1);
+
+  // Clean up so the run is repeatable against the same server.
+  const del = await fetch(`${BASE}/api/v1/admin/config/stored/${field}`, {
+    method: 'DELETE', headers: { authorization: 'Bearer ' + KEY },
+  });
+  ok('the stored value can be removed again', del.ok);
+  await p.click('#reload');
+  await p.waitForTimeout(300);
+} else {
+  console.log('  SKIP  storing a value: nothing on this server is both storable and editable');
+}
+
+console.log('\n-- restart control --');
+// Only offered when there is something for it to apply, so it never reads as a general
+// "bounce the server" button.
+const pendingNow = (await (await fetch(`${BASE}/api/v1/admin/config`, { headers: { authorization: 'Bearer ' + KEY } })).json()).pending_restart;
+ok('restart button matches whether anything is pending',
+  (await p.isVisible('#restart')) === pendingNow.length > 0,
+  `pending=${JSON.stringify(pendingNow)}`);
+ok('pending banner matches too', (await p.isVisible('#pending')) === pendingNow.length > 0);
 
 console.log('\n-- the three scope classes are visually distinct --');
 const colourOf = (sel) => p.locator(sel).first().evaluate((el) => {
