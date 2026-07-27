@@ -295,11 +295,21 @@ cargo nextest run
 
 ```bash
 # Terminal 1: Start server
-cargo run
+RATE_LIMIT_REQUESTS_PER_SECOND=100 RATE_LIMIT_BURST_SIZE=200 cargo run
 
 # Terminal 2: Run API tests
 ./.bruno/Tests/Scripts/test-bruno-full.sh
 ```
+
+**The default rate limit is too low for this suite.** It fires ~20 requests at the session
+endpoints back to back, against a default of 2/s with a burst of 10, so the tail of the run
+returns `429` and about seven requests fail. That is the rate limiter working, not a
+regression. Start the server with the limits raised, as `ci.yml` does:
+
+```bash
+RATE_LIMIT_REQUESTS_PER_SECOND=100 RATE_LIMIT_BURST_SIZE=200 cargo run
+```
+
 
 **All five steps must pass with no errors before committing.**
 
