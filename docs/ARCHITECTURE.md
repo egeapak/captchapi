@@ -98,8 +98,20 @@ HTTP Request
 
 ## Configuration
 
-Settings resolve through four layers, highest precedence first: the command line, the process
-environment, an env file, then a TOML config file, falling back to built-in defaults.
+Settings resolve through six layers, highest precedence first: the admin API overlay, the
+command line, the process environment, the SQLite config store, an env file, then a TOML config
+file, falling back to built-in defaults.
+
+```
+admin API > command line > environment > SQLite store > env file (.env) > config file > default
+```
+
+The admin overlay is a distinct layer rather than something merged into the command line, so
+`source_of` can tell the two apart: merging them would make a field report itself as `cli`-set
+the moment it was patched once, which under the pinning rule would then refuse every later
+patch. The store sits below the command line and the environment because those are the recovery
+path — a stored value that breaks startup must be overridable without opening SQLite — and above
+the files, which are the deployment baseline that durable operator intent should outrank.
 
 The key design decision is that **the command line is not a second configuration system**.
 Every layer resolves the same canonical keys — the environment variable names — so the CLI

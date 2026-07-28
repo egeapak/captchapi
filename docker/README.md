@@ -85,6 +85,34 @@ which workflow run and which commit produced a digest:
 gh attestation verify oci://ghcr.io/egeapak/captchapi:2.0.0 --repo egeapak/captchapi
 ```
 
+### Pinning by digest
+
+Every tag above is a *pointer*, and even `1.2.3` is only immutable by convention — a digest is
+immutable by construction, because it is the SHA-256 of the manifest itself. Production
+deployments should pin it:
+
+```bash
+# Resolve the digest of a tag
+docker buildx imagetools inspect ghcr.io/egeapak/captchapi:2.0.0 \
+  --format '{{json .Manifest.Digest}}'
+
+# Deploy that exact image
+docker pull ghcr.io/egeapak/captchapi@sha256:<digest>
+```
+
+No digest tag needs to be published for this: the registry content-addresses every manifest on
+push, so `image@sha256:...` resolves the moment the image exists. Pin the digest of the
+*index* — the value the release run reports — not a per-architecture one, so a single reference
+keeps working on both `linux/amd64` and `linux/arm64`.
+
+> **The `sha256-<hex>` tags in the Packages UI are not images — do not pull them.** Note the
+> shape: `:sha256-abc…`, with a colon and a hyphen, where a digest reference is `@sha256:abc…`.
+> They are *tags*, because `:` is not a legal character inside a tag name. Each one holds the
+> **provenance attestation** for the image whose digest it names, parked there by
+> `actions/attest-build-provenance` with `push-to-registry: true` under the OCI referrers
+> fallback convention, for registries without Referrers API support. Verify them with `gh
+> attestation verify` above; they are not a way to pin an image.
+
 > **Note for forks.** A package that GitHub Actions creates on ghcr.io starts **private**, and
 > nothing in the workflow can change that — `GITHUB_TOKEN` may write packages but may not set
 > their visibility. Until someone flips it, every `docker pull` above fails with `unauthorized`
