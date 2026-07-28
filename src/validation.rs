@@ -62,10 +62,19 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 /// tooled attack's main weapon, and a letter no longer has one hue while its
 /// boundary with the next letter is now a hue gradient rather than a step.
 ///
-/// If this needs to be lower, raise the difficulty rather than adding a
-/// deformation, and measure the level you pick: current 6/7/8 are unmeasured,
-/// and the old renderer's 1/24 at level 8 does not transfer to a renderer whose
-/// intensity ramp has changed shape.
+/// **Raising this would not help much, and that was measured too.** A 6/7/8
+/// ladder on the current renderer, same four arms, came back 25%, 8.3% and 4.2%
+/// — not monotonic, because 24 attempts per level cannot resolve differences
+/// this small. Level 5 and level 8 have almost completely overlapping intervals,
+/// so choosing 8 buys an unmeasurable amount of safety for 20% more render time
+/// and 20% more stored bytes.
+///
+/// **`DEFAULT_LENGTH` is the lever instead.** Pooled over difficulty 5-8 and
+/// every arm, length 4 and length 5 both went 8/40 = 20% while **length 6 went
+/// 0/40, 95% CI [0%, 8.8%]**. Solving needs every character and these arms sit
+/// at 44-64% per character, so the solve rate falls geometrically with length
+/// while render time barely moves. If this service needs a lower rate than 8.3%,
+/// raise the length before the difficulty.
 ///
 /// `blur` does not scale with this value; it is held flat at every level above
 /// 1. See `FLAT_BLUR`.

@@ -581,11 +581,46 @@ cargo nextest run
    Tooled Sonnet's own summary lists "hue-based letter isolation" among the techniques it applied
    before scoring zero.
 
-   Two things not to over-read. Every arm recovers 60-73% of characters, so these are near-misses
-   held back by case-sensitive validation, not failures to see the letters — that margin is thinner
-   than the solve rate suggests. And **current levels 6, 7 and 8 are unmeasured.** The old renderer's
-   1/24 at level 8 does not transfer to a renderer whose intensity ramp has changed shape, so if 8.3%
-   is too high for a given deployment, measure the level chosen rather than assuming the old numbers.
+   Every arm recovers 60-73% of characters, so these are near-misses held back by case-sensitive
+   validation, not failures to see the letters — that margin is thinner than the solve rate suggests.
+
+   **The ladder above 5, measured the same way — 4 arms, 18 fresh images, 72 attempts:**
+
+   | level | solved | characters | note |
+   |---|---|---|---|
+   | 5 | 7/84 = 8.3% | 66% | pooled over three sets |
+   | 6 | 6/24 = 25% | 63% | |
+   | 7 | 2/24 = 8.3% | 38% | |
+   | 8 | 1/24 = 4.2% | 37% | |
+
+   **Do not read the solve column as a ladder — it is not monotonic and it cannot be, at 24 attempts
+   per level.** Level 6 came back higher than level 5. The character rate is the statistic to trust
+   here, because it rests on 120 characters per level rather than 24 images, and it *is* monotonic:
+   66, 63, 38, 37. The rendering gets steadily harder; the solve counts are too sparse to show it.
+
+   The practical consequence is that **the difficulty dial cannot be tuned on this evidence between 5
+   and 8.** Their confidence intervals overlap almost completely ([4.1%, 16.2%] against [0.7%,
+   20.2%]), so picking 8 over 5 buys an unmeasurable amount of safety for 20% more render time and
+   20% more stored bytes. If a deployment needs a demonstrably lower rate, the lever is not here.
+
+   **Solution length is the lever, and it is not close.** Pooled over difficulty 5-8 and every arm:
+
+   | length | solved | characters |
+   |---|---|---|
+   | 4 | 8/40 = 20% | 58% |
+   | 5 | 8/40 = 20% | 64% |
+   | **6** | **0/40 = 0%**, 95% CI [0%, 8.8%] | 44% |
+
+   **Zero solves in 40 attempts at length 6**, against 20% at the current `DEFAULT_LENGTH` of 5. The
+   mechanism is arithmetic rather than mysterious: solving requires every character, so the solve
+   rate is roughly the per-character rate raised to the length, and these arms sit at 44-64% per
+   character. It costs almost nothing — length 3 to 12 moves the median render from 6.6ms to 7.9ms,
+   so 5 to 6 is about 2% — and it is far gentler on a human than cranking difficulty, since a longer
+   string of legible letters beats a shorter string of mangled ones.
+
+   Raising `DEFAULT_LENGTH` to 6 has **not** been done here; it is a user-facing default and the call
+   is the operator's. But it is the first thing to reach for, ahead of difficulty and well ahead of
+   another deformation.
 
    Implementation note worth not undoing: rotation goes through
    `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row
