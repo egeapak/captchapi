@@ -955,6 +955,29 @@ for six query shapes that touch none of it. `SQLITE_DQS=0` additionally
 rejects double-quoted string literals, so a mistyped identifier errors
 instead of silently becoming a string.
 
+**The same file sets `SQLX_OFFLINE=true`, and that is load-bearing for anyone
+with an older checkout.** `sqlx::query_as!` verifies its SQL at compile time, and
+given a reachable `DATABASE_URL` it prefers that database over the committed
+`.sqlx/` metadata. A developer whose `data/captchapi.db` predates a migration
+therefore got a *compile* error naming a column the code is right about —
+`no such column: solution_hash` — despite `.sqlx/` being present and correct all
+along. The failure is upstream of everything that would fix it: migrations run at
+startup in `main.rs`, but the build must succeed before there is a binary to
+start, so `cargo run` cannot break the cycle. Deployments were never affected —
+they ship a prebuilt binary — which is why it can sit unnoticed.
+
+`force = false`, so `SQLX_OFFLINE=false` still wins. That override is what
+regenerating the metadata needs after changing a `query!` macro's SQL:
+
+```bash
+cargo sqlx migrate run                              # bring the database current
+SQLX_OFFLINE=false cargo sqlx prepare --workspace   # regenerate .sqlx/
+```
+
+Commit `.sqlx/`. CI's `sqlx-check` job runs `cargo sqlx prepare --check
+--workspace` against a freshly migrated database, so metadata that drifts from
+the queries fails there rather than silently validating stale SQL.
+
 **`.cargo/config.toml` is tracked on purpose, against a `.gitignore` rule that
 would otherwise swallow it.** napi-rs generates its own `.cargo/config.toml`
 when cross-compiling, so `.cargo/` is ignored; for a while that silently caught

@@ -3,6 +3,34 @@
 # and CI.
 
 [env]
+# Build against the committed query metadata in `.sqlx/`, not a live database.
+#
+# `sqlx::query_as!` verifies its SQL at compile time. Given a reachable
+# DATABASE_URL it prefers that database over `.sqlx/` -- so a developer whose
+# local data/captchapi.db predates a migration gets a *compile* error naming a
+# column that current code is right about, e.g.
+#
+#     error: no such column: solution_hash  --> src/services/storage.rs
+#
+# That failure is worse than it looks, because it is upstream of everything
+# that would fix it: migrations run at startup (main.rs), but the build has to
+# succeed before there is a binary to start. `cargo run` cannot break the
+# cycle. The database is a developer artifact and deployments were never
+# affected -- they ship a prebuilt binary -- which is exactly why it survives
+# unnoticed.
+#
+# `force = false` so an explicit `SQLX_OFFLINE=false` still wins, which is what
+# regenerating the metadata needs:
+#
+#     cargo sqlx migrate run                      # bring the database current
+#     SQLX_OFFLINE=false cargo sqlx prepare --workspace
+#
+# Do that whenever a query! macro's SQL changes, and commit `.sqlx/`. CI runs
+# `cargo sqlx prepare --check --workspace` against a freshly migrated database
+# (see the sqlx-check job), so metadata that drifts from the queries fails
+# there rather than silently validating stale SQL.
+SQLX_OFFLINE = { value = "true", force = false }
+
 # Trim the bundled SQLite amalgamation down to what CaptchAPI actually uses.
 #
 # libsqlite3-sys hardcodes a broad set of -DSQLITE_ENABLE_* flags in its
