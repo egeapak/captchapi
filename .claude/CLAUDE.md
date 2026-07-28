@@ -19,7 +19,7 @@ This file provides project overview, architecture, and development workflow. For
 - **Database**: SQLite via SQLx 0.9 (async, compile-time checked queries)
 - **CAPTCHA Generation**: In-tree renderer (`src/services/captcha/generator.rs`) with in-tree drawing primitives (`drawing.rs`), on `image` with the JPEG feature only
 - **Authentication**: API key-based with SHA256 hashing
-- **Deployment**: Static musl binary in distroless container (6.90 MB unpacked / 2.59 MB pulled)
+- **Deployment**: Static musl binary, published multi-arch (amd64 + arm64) in two variants — distroless on the bare tags (7.33 MB unpacked / 2.77 MB pulled) and scratch on `scratch-` prefixed ones (4.43 MB / 2.17 MB)
 
 ### Key Features
 
@@ -891,49 +891,60 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ### Image Size
 
-Measured from `docker/Dockerfile.static` with the binary built as `release.yml`
-builds it (`--release --features otel`, musl target):
+**Both variants are published, both multi-arch.** `Dockerfile.multiarch`
+(distroless) takes the bare tags and is the default; `Dockerfile.scratch` takes
+`scratch-` prefixed ones. `Dockerfile.static` is the local-development
+equivalent of the former and is not published.
 
-| layer | unpacked | compressed |
-|-------|----------|------------|
-| captchapi binary | 3.89 MB | 1.93 MB |
-| distroless base, of which tzdata is 2.42 MB | 3.00 MB | 0.67 MB |
-| migrations + /data + WORKDIR | 0.01 MB | 0.00 MB |
-| **total** | **6.90 MB** | **2.59 MB** |
+Measured at `b9051ee` with the binaries built exactly as `release.yml` builds
+them — `cross build --release --features otel`, both musl targets — and pushed
+to a registry, so the compressed column is what a `docker pull` really transfers:
 
-The compressed column is what a registry stores and a pull downloads; the
-unpacked column is the sum of the layer tars. `docker images` reports ~11.8 MB
-for the same image — that is the overlayfs on-disk footprint with block
-rounding, not layer content, so the two will never agree. Reproduce with
-`docker save`, summing the gzip blobs listed in `manifest.json`.
+| variant | platform | pull | unpacked |
+|---------|----------|------|----------|
+| distroless (default) | linux/amd64 | 2,766,300 B (2.77 MB) | 7,333,888 B (7.33 MB) |
+| distroless (default) | linux/arm64 | 2,716,969 B (2.72 MB) | — |
+| scratch | linux/amd64 | 2,167,208 B (2.17 MB) | 4,428,800 B (4.43 MB) |
+| scratch | linux/arm64 | 2,117,873 B (2.12 MB) | — |
 
-`docker/Dockerfile.scratch` is the same binary on `scratch` instead, and it
-works — verified end to end: health, session creation (render, encrypt, SQLite
-write) and image retrieval all succeed on an empty filesystem, because the
-binary is static-pie with no libc dependency.
+The binary is 4,228,016 B on amd64 and 3,543,232 B on arm64; compressed it is
+2,059,727 B, so it is **74% of the distroless pull and 95% of the scratch pull**.
+The base is not where a remaining win is — any further size work has to happen
+in the Rust build.
 
-| | unpacked | pulled |
-|---|----------|--------|
-| `Dockerfile.static` (distroless) | 6.90 MB | 2.59 MB |
-| `Dockerfile.scratch` | 4.08 MB | 2.02 MB |
+Scratch is 22% off the pull and 40% off unpacked, essentially all of it tzdata:
+2.42 MB unpacked for a service that stores unix timestamps.
 
-That is 41% off unpacked and 22% off the pull, essentially all of it tzdata.
-The CA bundle is staged in — alpine already ships it, so no `apk add` and no
-network is needed at build time — because the OTLP exporter cannot verify TLS
-against an https collector without it.
+**Three numbers exist for "size" and they never agree; say which you mean.**
+*Pull* is the sum of the compressed layer blobs, per platform, read from the
+registry manifest — that is the table above. *Unpacked* is the flattened
+filesystem, `docker export $(docker create <image>) | wc -c`. And `docker
+images` reports a third, larger figure that is the overlayfs on-disk footprint
+with block rounding, not layer content. Quoting the third is how the previously
+advertised "7.42 MB" drifted out of date.
 
-It is not the default because of what has to be hand-staged to replace what
-distroless provides: `/data` and `/tmp` created in a builder stage since there
-is no shell, and a numeric `USER` because there is no `/etc/passwd` to resolve
-a name against. Verified end to end with `OTEL_ENABLED=true` — health, session
-creation and image retrieval all succeed.
+Do not hand-maintain these numbers. `release.yml` measures both, per variant per
+platform, on every tag and writes them to the run summary; check a release
+rather than trusting this table.
 
-Two things worth knowing before trying to shrink it further. The binary is
-already 73% of the *pull* size, so the base is not where the remaining win is.
-And `tzdata` alone is 2.42 MB unpacked — 35% of the image — for a service that
-stores unix timestamps; moving to `scratch` would recover it, at the cost of
-the CA bundle the OTLP exporter needs and the passwd/group entries that make
-the `nonroot` user resolvable.
+Both variants are verified end to end before publication, not merely built —
+health, a full CAPTCHA round-trip (render, encrypt, SQLite write, decrypt,
+serve), `/data` volume placement and SIGHUP reload. Scratch needs that more than
+distroless does: everything distroless provides has to be hand-staged there —
+`/data` and `/tmp` created in a builder stage since there is no shell, a numeric
+`USER` because there is no `/etc/passwd` to resolve a name against, and the CA
+bundle the OTLP exporter needs against an https collector. The CA bundle comes
+from the alpine base rather than an `apk add`, so the build needs no network.
+
+That hand-staging is why distroless stays the default: there is more to get
+wrong on scratch and no shell in which to find out. The binary itself needs none
+of it — it is static-pie with no libc dependency and runs on an empty filesystem.
+
+Both `datadir`/`staging` stages are pinned with `FROM --platform=$BUILDPLATFORM`.
+All they produce is a directory with an owner, two lines of passwd/group text
+and a PEM bundle, none of which is architecture-specific, so building them for
+the *target* would mean emulating aarch64 under qemu to run `mkdir` — slow, and
+a dependency on binfmt being registered on the runner for no gain.
 
 ### SQLite Build Flags
 
@@ -1199,5 +1210,5 @@ For issues, questions, or contributions, please refer to the project repository.
 ---
 
 **Last Updated**: 2026-07-28
-**Version**: 1.0.1
+**Version**: 2.0.0
 **Rust Edition**: 2021

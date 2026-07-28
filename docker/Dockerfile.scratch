@@ -1,14 +1,27 @@
 # ============================================================
-# CaptchAPI - scratch build (experimental)
+# CaptchAPI - scratch build (multi-architecture)
 # ============================================================
-# Same expectation as Dockerfile.static: a pre-built musl binary at
-# docker/bin/captchapi-musl.
+# Published under `scratch-` prefixed tags: `scratch-latest`, `scratch-1.2.3`,
+# and so on. The bare tags (`latest`, `1.2.3`) are Dockerfile.multiarch, the
+# distroless image, which remains the default. Both are built for
+# linux/amd64 + linux/arm64 by .github/workflows/release.yml.
 #
-# This exists to answer "how small can it get". `distroless/static` is 3.00 MB
-# unpacked, of which tzdata alone is 2.42 MB — dead weight for a service that
-# stores unix timestamps. Starting from scratch drops all of it.
+# Expects pre-built musl binaries at:
+#   - docker/bin/captchapi-amd64 (for linux/amd64)
+#   - docker/bin/captchapi-arm64 (for linux/arm64)
 #
-# WHAT YOU GIVE UP, and why each line below exists:
+# This used to take `docker/bin/captchapi-musl`, which pinned it to whichever
+# architecture happened to be staged; TARGETARCH is what lets one
+# `docker buildx build --platform linux/amd64,linux/arm64` produce both.
+#
+# `distroless/static` is 3.00 MB unpacked, of which tzdata alone is 2.42 MB —
+# dead weight for a service that stores unix timestamps. Starting from scratch
+# drops all of it: 22% off the pull and 40% off unpacked.
+#
+# WHAT YOU GIVE UP by being on scratch, and why each line below exists. Every
+# one of these is hand-staged here, which is precisely why release.yml runs the
+# image and serves a CAPTCHA from it before publishing — there is no shell in
+# here to work out afterwards which one was forgotten:
 #
 #   * No shell, no mkdir, no chown. `/data` has to be staged in a builder and
 #     copied in with ownership already set.
@@ -28,7 +41,12 @@
 # The binary itself needs none of this: it is static-pie linked with no libc
 # dependency, so it runs on an empty filesystem.
 
-FROM alpine:latest AS staging
+# `--platform=$BUILDPLATFORM` pins this stage to the machine doing the building. Everything it
+# produces — a directory with an owner, two lines of passwd/group text, a PEM bundle — is
+# architecture-independent, so building it for the *target* would mean emulating aarch64 under
+# qemu to run `mkdir`. That is slow, and it makes the build depend on binfmt being registered
+# on the runner for no gain.
+FROM --platform=$BUILDPLATFORM alpine:latest AS staging
 # No `apk add` here on purpose: the alpine base already ships
 # ca-certificates-bundle, and installing would need network the build may not
 # have. Staging from the base keeps this buildable offline.
@@ -38,6 +56,9 @@ RUN mkdir -p /staged/data && chown 65532:65532 /staged/data && \
     printf 'nonroot:x:65532:\n' > /staged/group
 
 FROM scratch
+
+# Set automatically by buildx to "amd64" or "arm64".
+ARG TARGETARCH
 
 WORKDIR /app
 
@@ -50,14 +71,26 @@ COPY --from=staging /staged/group /etc/group
 COPY --from=staging /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 COPY --chown=65532:65532 migrations /app/migrations
-COPY --chown=65532:65532 docker/bin/captchapi-musl /app/captchapi
+COPY --chown=65532:65532 docker/bin/captchapi-${TARGETARCH} /app/captchapi
 
 ENV DATABASE_URL=sqlite:/data/captchapi.db
 ENV PID_FILE=/data/captchapi.pid
+
+# The distroless base sets this; scratch inherits nothing, so set it explicitly. The bundle is
+# already at the compiled-in default path above, but a dependency that consults only the
+# environment variable would otherwise find no roots at all.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 3000
 
 # Numeric, because there is no name resolution here.
 USER 65532:65532
+
+# Same labels as Dockerfile.multiarch. `image.source` is what links the published package to
+# this repository on ghcr.io; without it the package page has no route back to the source.
+LABEL org.opencontainers.image.source="https://github.com/egeapak/captchapi"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.title="CaptchAPI"
+LABEL org.opencontainers.image.description="REST API for CAPTCHA challenges (scratch variant)"
 
 ENTRYPOINT ["/app/captchapi"]

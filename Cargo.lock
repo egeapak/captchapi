@@ -259,7 +259,7 @@ checksum = "3d7c8918969267b2932ffd5655509bbbea0833823058c378876953217f5fc50e"
 
 [[package]]
 name = "captchapi"
-version = "1.0.1"
+version = "2.0.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "captchapi-napi"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "captchapi",
  "napi",

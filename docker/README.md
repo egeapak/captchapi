@@ -43,7 +43,7 @@ Pre-built multi-platform images are available on GitHub Container Registry:
 docker pull ghcr.io/egeapak/captchapi:latest
 
 # Pull specific version
-docker pull ghcr.io/egeapak/captchapi:1.0.0
+docker pull ghcr.io/egeapak/captchapi:2.0.0
 
 # Run
 docker run -p 3000:3000 \
@@ -52,26 +52,90 @@ docker run -p 3000:3000 \
   ghcr.io/egeapak/captchapi:latest
 ```
 
+### Published Tags
+
+`.github/workflows/release.yml` publishes on every `v*` tag. **Two variants, both built for
+`linux/amd64` and `linux/arm64`, from the same binaries.** A tag of `v1.2.3` produces:
+
+| tag | variant | moves | pull this when |
+|-----|---------|-------|----------------|
+| `1.2.3` | distroless | never | you want a reproducible, pinned deployment |
+| `1.2` | distroless | on each patch | you accept patch updates |
+| `1` | distroless | on each minor | you accept minor updates |
+| `latest` | distroless | on each stable release | you are evaluating, or always want the newest |
+| `scratch-1.2.3` | scratch | never | as above, but you want the smallest possible image |
+| `scratch-1.2` | scratch | on each patch | |
+| `scratch-1` | scratch | on each minor | |
+| `scratch-latest` | scratch | on each stable release | |
+
+**The bare tags are the distroless image and stay that way** — nothing about existing `latest`
+deployments changes. The `scratch-` tags are the same binary and the same behaviour on an empty
+filesystem: 22% smaller to pull and 40% smaller unpacked, see [Size](#size). Take them if image
+size matters more to you than having tzdata, a CA bundle and an `/etc/passwd` in the image.
+
+**A pre-release tag moves none of the moving tags.** `v2.0.0-rc.1` publishes `2.0.0-rc.1` and
+`scratch-2.0.0-rc.1` and nothing else, so no one tracking `latest`, `1` or `2.0` is upgraded
+onto a release candidate by accident. The same tag also marks the GitHub release as a
+pre-release.
+
+Every push is accompanied by a signed build provenance attestation, so a consumer can establish
+which workflow run and which commit produced a digest:
+
+```bash
+gh attestation verify oci://ghcr.io/egeapak/captchapi:2.0.0 --repo egeapak/captchapi
+```
+
+> **Note for forks.** A package that GitHub Actions creates on ghcr.io starts **private**, and
+> nothing in the workflow can change that — `GITHUB_TOKEN` may write packages but may not set
+> their visibility. Until someone flips it, every `docker pull` above fails with `unauthorized`
+> for anyone who is not a collaborator. Fix it once at
+> *Packages → captchapi → Package settings → Danger Zone → Change visibility → Public*.
+> This has already been done for `ghcr.io/egeapak/captchapi`.
+
 ---
 
 ## Image Details
 
-- **Base**: `gcr.io/distroless/static-debian12:nonroot`
-- **Size**: 8.49 MB unpacked, 3.36 MB to pull (compressed), of which the binary is 5.39 MB
-- **Binary**: Fully static musl (no dependencies)
-- **User**: nonroot (UID 65532)
-- **Security**: Maximum (no shell, no libraries, minimal attack surface)
+- **Base**: `gcr.io/distroless/static-debian12:nonroot` (bare tags) or `scratch` (`scratch-` tags)
+- **Binary**: Fully static musl, no runtime dependencies at all
+- **User**: nonroot, UID 65532
+- **Security**: no shell, no package manager, no libraries — minimal attack surface
 
-Measured on `linux/amd64` at v1.0.1 with:
+### Size
 
-```bash
-just docker amd64
-docker export $(docker create captchapi:latest) | wc -c   # unpacked
-docker save captchapi:latest | gzip -c | wc -c            # pull size
-```
+Measured at commit `b9051ee`, binaries built exactly as the release workflow builds them
+(`cross build --release --features otel`):
 
-Quote whichever number you mean — `docker images` reports a third, larger figure that includes
-storage-driver overhead, which is how the previously advertised "7.42 MB" drifted out of date.
+| variant | platform | pull (compressed) | unpacked |
+|---------|----------|-------------------|----------|
+| **distroless** (default) | linux/amd64 | **2.77 MB** (2,766,300 B) | **7.33 MB** (7,333,888 B) |
+| **distroless** (default) | linux/arm64 | **2.72 MB** (2,716,969 B) | — |
+| scratch | linux/amd64 | 2.17 MB (2,167,208 B) | 4.43 MB (4,428,800 B) |
+| scratch | linux/arm64 | 2.12 MB (2,117,873 B) | — |
+
+Scratch is 22% smaller to pull and 40% smaller unpacked. Essentially all of the difference is
+tzdata, which distroless carries and this service — which stores unix timestamps — never reads.
+
+The static binary itself is 4,228,016 B on amd64 and 3,543,232 B on arm64. Compressed, it is
+2,059,727 B of the distroless image's 2,766,300 B — **74% of the pull is the binary**, and 95%
+of the scratch image's. The base is not where a remaining win is; any further size work has to
+happen in the Rust build.
+
+**Three different numbers exist for "size"; say which one you mean.**
+
+- *Pull* is the sum of the compressed layer blobs the registry actually serves. This is what a
+  `docker pull` transfers, and the number worth quoting. Get it from the registry, per platform:
+  ```bash
+  docker buildx imagetools inspect ghcr.io/egeapak/captchapi:latest --raw   # find the platform digest
+  docker buildx imagetools inspect ghcr.io/egeapak/captchapi@<digest> --raw | jq '[.layers[].size] | add'
+  ```
+- *Unpacked* is the flattened filesystem: `docker export $(docker create <image>) | wc -c`.
+- *`docker images`* reports a third, larger figure that includes storage-driver overhead and
+  matches neither. It is how the previously advertised "7.42 MB" drifted out of date. Do not
+  quote it.
+
+The release workflow measures the first two on every tag and writes them to the run summary, so
+this table can be checked against the release rather than trusted.
 
 ---
 
