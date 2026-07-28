@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: 'Publish the packages to npm (irreversible — a published version cannot be reused)'
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -198,10 +203,17 @@ jobs:
       - name: Run tests
         run: npm test
 
-  # Publish to npm on release
+  # Publishing to npm is opt-in and manual.
+  #
+  # This used to fire on every published release, which coupled cutting a container release to
+  # pushing three npm packages. That is the wrong coupling in both directions: an npm version
+  # can never be reused once published, so a release cut to fix a Dockerfile would burn a
+  # version on npm, and a mistake there cannot be undone by re-tagging. Run this workflow from
+  # the Actions tab with `publish_npm` checked when the npm packages are actually meant to go
+  # out. The build/test matrix still runs on every release, so the bindings stay verified.
   publish:
     name: Publish to npm
-    if: github.event_name == 'release'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_npm
     needs: [test, universal-macos]
     runs-on: ubuntu-latest
     permissions:
@@ -291,9 +303,41 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # Attaching the prebuilt native modules to the GitHub release is independent of npm, and is
+  # the half that should still happen automatically. It lived inside `publish` until that job
+  # became manual; left there it would both stop running on releases and fail on a
+  # workflow_dispatch run, where there is no release to upload to.
+  release-assets:
+    name: Attach native modules to the release
+    if: github.event_name == 'release'
+    needs: [test, universal-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        # Reset the workflow-level `bindings/nodejs`. An action's `path`/`files` inputs are
+        # resolved against the workspace root regardless of `defaults.run`, so leaving the
+        # default in place would have `run` steps looking for the downloaded artifacts one
+        # directory below where download-artifact actually put them.
+        working-directory: .
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Collect .node files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -name '*.node' -exec cp {} dist/ \;
+          ls -lh dist/
+          [ -n "$(ls -A dist/)" ] || { echo "::error::no .node binaries were produced"; exit 1; }
+
       - name: Upload binaries to GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: bindings/nodejs/*.node
+          files: dist/*.node
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
