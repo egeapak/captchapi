@@ -858,6 +858,30 @@ dependency because `src/metrics.rs` builds every counter and histogram on it.
 Only the SDK, the OTLP exporter and `tracing-opentelemetry` are gated, so the
 instruments compile and run in every build.
 
+**Two things about the exporter are load-bearing and neither is obvious**, both
+found only by pointing a real collector at v2.0.0-rc.1:
+
+*The HTTP client must be the blocking one.* `BatchSpanProcessor` and
+`PeriodicReader` each run a dedicated OS thread with no Tokio reactor, so the
+async `reqwest-client` feature panics on the first export — `there is no reactor
+running`. That panic is not contained: with `panic = "abort"` in the release
+profile it took the process down about three seconds after startup, so
+`OTEL_ENABLED=true` was a crash loop, not merely missing telemetry.
+`reqwest-blocking-client` is what the crate itself defaults to, and
+`test_otlp_exporter_survives_export_from_the_readers_own_thread` holds it. That
+test is fussier than it looks: the reader owns a private thread and `force_flush`
+only messages it, so a panic there is invisible to `join` or `catch_unwind` — two
+earlier versions of the test passed against the broken build. It asserts instead
+that a *second* flush still reaches a live thread.
+
+*`with_endpoint` takes a complete URL, not a base.* The SDK appends `/v1/metrics`
+only when it reads the endpoint from the environment itself; a value handed to
+the builder is used verbatim. Passing `http://collector:4318` therefore POSTed
+everything to `/` and collected a **404** on every export — configured,
+connected, silently rejected, with the error visible only in the SDK's own
+`opentelemetry-otlp` debug logs, which the default filter excludes.
+`signal_endpoint` appends the path and leaves an already-complete URL alone.
+
 **They only reach a collector in an `otel` build with `OTEL_ENABLED=true`**,
 and that is worth stating plainly because the failure is silent. Instruments
 are created from `global::meter()`, which binds to whatever `MeterProvider` is

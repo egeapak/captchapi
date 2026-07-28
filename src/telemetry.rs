@@ -255,6 +255,32 @@ where
         .build()
 }
 
+/// Append a signal path to a base OTLP endpoint.
+///
+/// **`with_endpoint` takes a complete URL, not a base.** The SDK only appends
+/// `/v1/metrics` or `/v1/traces` when it reads the endpoint from the
+/// environment itself; an endpoint passed to the builder is used verbatim (see
+/// `test_not_append_signal_path_to_signal_env` upstream). Passing
+/// `http://collector:4318` therefore POSTs every payload to `/`, which a
+/// collector answers with **404** — so telemetry was configured, connected,
+/// and silently rejected. Nothing in the service surfaced it: the export error
+/// only appears in the SDK's own `opentelemetry-otlp` debug logs, which the
+/// default filter excludes.
+///
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` is conventionally a *base* — that is what
+/// every collector's documentation shows, and what `.env.example` documents —
+/// so the base form is what this accepts. An endpoint that already carries the
+/// signal path is passed through unchanged, so an operator who writes the full
+/// URL is not punished for it.
+#[cfg(feature = "otel")]
+fn signal_endpoint(base: &str, signal_path: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with(signal_path) {
+        return trimmed.to_string();
+    }
+    format!("{trimmed}{signal_path}")
+}
+
 /// Should telemetry actually be initialised?
 ///
 /// `config.otel_enabled` says whether the operator asked for it; this adds the
@@ -311,7 +337,7 @@ pub fn init_telemetry(config: &Config) -> anyhow::Result<Tracer> {
     // Configure OTLP exporter
     let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
-        .with_endpoint(&config.otlp_endpoint)
+        .with_endpoint(signal_endpoint(&config.otlp_endpoint, "/v1/traces"))
         .with_timeout(Duration::from_secs(3))
         .build()?;
 
@@ -319,6 +345,12 @@ pub fn init_telemetry(config: &Config) -> anyhow::Result<Tracer> {
     // the provider via the shared build_tracer_provider helper. As of
     // opentelemetry 0.28 the batch processor runs its own background thread and no
     // longer takes an async runtime argument.
+    //
+    // That thread has no Tokio reactor, which is why the exporter must be built on
+    // a *blocking* HTTP client — see the `reqwest-blocking-client` note in
+    // Cargo.toml. Switching back to the async client compiles, starts, logs
+    // "OpenTelemetry initialized successfully", and then aborts the process on the
+    // first export tick.
     let batch_processor = BatchSpanProcessor::builder(otlp_exporter).build();
     let tracer_provider = build_tracer_provider_with_processor(&config, batch_processor);
 
@@ -335,7 +367,7 @@ pub fn init_telemetry(config: &Config) -> anyhow::Result<Tracer> {
     // path; the cost of an instrument at runtime stays an atomic add.
     let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
-        .with_endpoint(&config.otlp_endpoint)
+        .with_endpoint(signal_endpoint(&config.otlp_endpoint, "/v1/metrics"))
         .with_timeout(Duration::from_secs(3))
         .build()?;
 
@@ -425,6 +457,154 @@ mod metrics_export_tests {
         assert!(
             names.iter().any(|n| n == "sessions.created"),
             "recorded instrument missing from export; got {names:?}"
+        );
+    }
+
+    /// A real OTLP exporter must survive being driven from a background thread.
+    ///
+    /// Every other test here uses an in-memory exporter, which never performs I/O
+    /// — so none of them can see the failure this one exists for. The OTLP
+    /// exporter built with the *async* reqwest client panics the moment it is
+    /// used from `PeriodicReader`'s dedicated thread, which carries no Tokio
+    /// reactor:
+    ///
+    ///     there is no reactor running, must be called from the context of a Tokio 1.x runtime
+    ///
+    /// That panic aborted the process seconds after startup, so `OTEL_ENABLED=true`
+    /// shipped as a crash loop in v2.0.0-rc.1 while every test passed.
+    ///
+    /// No collector runs during tests, so the export *fails* — that is fine and is
+    /// not what is under test. A connection error is a returned `Err`; the
+    /// regression is a panic that unwinds the exporting thread.
+    ///
+    /// **What makes this observable is subtle enough to be worth spelling out.**
+    /// `PeriodicReader` owns a private thread and `force_flush` merely *messages*
+    /// it; the export runs over there. So a panic is contained to that thread —
+    /// `join`ing a thread of one's own, or catching unwind around the flush,
+    /// sees nothing. Two earlier versions of this test did exactly that and
+    /// passed against the broken configuration.
+    ///
+    /// The signal that does survive: once the reader's thread has died, it is no
+    /// longer receiving, so a subsequent `force_flush` cannot succeed. With a
+    /// working exporter the flush is *attempted* — it returns `Err` here because
+    /// nothing is listening on port 1 — but the thread stays alive and keeps
+    /// answering. The test therefore flushes twice and asserts the reader is
+    /// still there for the second one.
+    ///
+    /// Note also that `panic = "abort"` in the release profile means this panic
+    /// is only ever *contained* in a test build. In the shipped binary it took
+    /// the whole process down.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_otlp_exporter_survives_export_from_the_readers_own_thread() {
+        let config = TelemetryConfig {
+            // Port 1 is reserved and nothing listens there, so the export fails
+            // fast instead of hanging on a real endpoint.
+            otlp_endpoint: "http://127.0.0.1:1".to_string(),
+            service_name: "captchapi-reactor-test".to_string(),
+        };
+
+        let exporter = opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .with_endpoint(&config.otlp_endpoint)
+            .with_timeout(Duration::from_millis(200))
+            .build()
+            .expect("exporter builds");
+
+        let provider = build_meter_provider(&config, exporter);
+
+        use opentelemetry::metrics::MeterProvider as _;
+        let counter = provider
+            .meter("captchapi")
+            .u64_counter("reactor.probe")
+            .build();
+
+        // First export: this is what panicked the reader thread under the async
+        // client. The returned value is not the assertion — connection refused
+        // is expected — the point is what state the reader is left in.
+        counter.add(1, &[]);
+        let _ = provider.force_flush();
+
+        // Second export: only reachable if the reader thread is still alive.
+        counter.add(1, &[]);
+        let second = provider.force_flush();
+
+        // Both outcomes are an `Err` here and the distinction is in the message,
+        // which is the only thing the SDK exposes:
+        //
+        //   dead thread  -> "sending on a closed channel"   (the regression)
+        //   live thread  -> "Failed to flush"               (connection refused,
+        //                                                    which is expected —
+        //                                                    nothing listens on
+        //                                                    port 1)
+        //
+        // Matching on the string is unlovely, but the alternative is asserting
+        // `is_ok()`, which would demand a live collector in unit tests.
+        let detail = format!("{second:?}");
+        assert!(
+            !detail.contains("closed channel"),
+            "the PeriodicReader thread did not survive the first export, so the \
+             exporter panicked on it — the OTLP exporter must be built on a \
+             blocking HTTP client (see `reqwest-blocking-client` in Cargo.toml). \
+             Got: {detail}"
+        );
+
+        provider.shutdown().ok();
+    }
+
+    /// The signal path must reach the URL, or every export is a 404.
+    ///
+    /// `with_endpoint` is verbatim — it does not append `/v1/metrics` the way
+    /// the SDK's own environment handling does. Posting a configured
+    /// `http://collector:4318` straight to the builder sent everything to `/`,
+    /// which collectors reject with 404, and the only trace of it was in the
+    /// SDK's internal debug logs. v2.0.0-rc.1 shipped that way.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_signal_endpoint_appends_the_signal_path_to_a_base() {
+        assert_eq!(
+            signal_endpoint("http://collector:4318", "/v1/metrics"),
+            "http://collector:4318/v1/metrics"
+        );
+        assert_eq!(
+            signal_endpoint("http://collector:4318", "/v1/traces"),
+            "http://collector:4318/v1/traces"
+        );
+    }
+
+    /// A trailing slash is the commonest way to write a base URL and must not
+    /// produce a double slash, which some collectors route differently.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_signal_endpoint_normalises_a_trailing_slash() {
+        assert_eq!(
+            signal_endpoint("http://collector:4318/", "/v1/metrics"),
+            "http://collector:4318/v1/metrics"
+        );
+    }
+
+    /// An operator who already wrote the full URL must not get it twice.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_signal_endpoint_leaves_a_complete_url_alone() {
+        assert_eq!(
+            signal_endpoint("http://collector:4318/v1/metrics", "/v1/metrics"),
+            "http://collector:4318/v1/metrics"
+        );
+        assert_eq!(
+            signal_endpoint("http://collector:4318/v1/metrics/", "/v1/metrics"),
+            "http://collector:4318/v1/metrics"
+        );
+    }
+
+    /// The two signals must not collide: a traces path is not a metrics path.
+    #[cfg(feature = "otel")]
+    #[test]
+    fn test_signal_endpoint_keeps_the_two_signals_distinct() {
+        let base = "http://collector:4318";
+        assert_ne!(
+            signal_endpoint(base, "/v1/metrics"),
+            signal_endpoint(base, "/v1/traces")
         );
     }
 

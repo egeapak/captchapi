@@ -76,9 +76,22 @@ opentelemetry = "0.32"
 # path that is inert unless OTEL_ENABLED is set at runtime.
 tracing-opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.32", optional = true }
+# `reqwest-blocking-client`, not `reqwest-client`, and the distinction is
+# load-bearing rather than stylistic. `BatchSpanProcessor` and `PeriodicReader`
+# each run their own dedicated OS thread — since 0.28 they no longer take a
+# runtime argument — and those threads carry no Tokio reactor. The async
+# reqwest client needs one, so the first export attempt panicked with
+#
+#     there is no reactor running, must be called from the context of a Tokio 1.x runtime
+#
+# on both the metrics and the traces thread. A panic there is not contained:
+# it aborted the process a few seconds after startup, so `OTEL_ENABLED=true`
+# turned the service into a crash loop rather than merely losing telemetry.
+# The blocking client is what the crate itself defaults to, precisely because
+# it is what the dedicated-thread processors are built for.
 opentelemetry-otlp = { version = "0.32", features = [
     "http-proto",
-    "reqwest-client",
+    "reqwest-blocking-client",
 ], optional = true }
 opentelemetry-semantic-conventions = { version = "0.32", optional = true }
 
