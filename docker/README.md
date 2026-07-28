@@ -43,7 +43,7 @@ Pre-built multi-platform images are available on GitHub Container Registry:
 docker pull ghcr.io/egeapak/captchapi:latest
 
 # Pull specific version
-docker pull ghcr.io/egeapak/captchapi:1.0.1
+docker pull ghcr.io/egeapak/captchapi:2.0.0
 
 # Run
 docker run -p 3000:3000 \
@@ -82,14 +82,15 @@ Every push is accompanied by a signed build provenance attestation, so a consume
 which workflow run and which commit produced a digest:
 
 ```bash
-gh attestation verify oci://ghcr.io/egeapak/captchapi:1.0.1 --repo egeapak/captchapi
+gh attestation verify oci://ghcr.io/egeapak/captchapi:2.0.0 --repo egeapak/captchapi
 ```
 
-> **One-time setup.** A package that GitHub Actions creates on ghcr.io starts **private**, and
+> **Note for forks.** A package that GitHub Actions creates on ghcr.io starts **private**, and
 > nothing in the workflow can change that — `GITHUB_TOKEN` may write packages but may not set
 > their visibility. Until someone flips it, every `docker pull` above fails with `unauthorized`
 > for anyone who is not a collaborator. Fix it once at
 > *Packages → captchapi → Package settings → Danger Zone → Change visibility → Public*.
+> This has already been done for `ghcr.io/egeapak/captchapi`.
 
 ---
 

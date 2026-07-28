@@ -1210,5 +1210,5 @@ For issues, questions, or contributions, please refer to the project repository.
 ---
 
 **Last Updated**: 2026-07-28
-**Version**: 1.0.1
+**Version**: 2.0.0
 **Rust Edition**: 2021

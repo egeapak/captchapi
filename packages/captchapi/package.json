@@ -1,6 +1,6 @@
 {
   "name": "captchapi",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "High-performance CAPTCHA generation and validation library for Node.js, powered by Rust",
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",
@@ -49,7 +49,7 @@
     "test": "node dist/cjs/index.js"
   },
   "dependencies": {
-    "@captchapi/core": "1.0.0"
+    "@captchapi/core": "2.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
