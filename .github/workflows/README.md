@@ -82,10 +82,12 @@ Runs on every push and pull request to `main`/`master` branches.
 - Duration: ~2-3 minutes
 
 **4. coverage**
-- Generates code coverage report
-- Uploads to Codecov
-- Enforces 85% coverage threshold
+- Runs the suite under `cargo llvm-cov` + nextest, uploads to Codecov, and
+  enforces both a project floor and a **patch** threshold
 - Duration: ~2-3 minutes
+
+See [Code coverage](#code-coverage) below — the job is shaped by two constraints
+that are not obvious from reading it.
 
 **Phase 2: Sequential API Tests**
 
@@ -117,6 +119,82 @@ Runs on every push and pull request to `main`/`master` branches.
 - ✅ Format, clippy, test, coverage run in parallel
 - ✅ Only API tests are sequential (depends on test)
 - ✅ Optimal balance of speed and efficiency
+
+---
+
+## Code coverage
+
+Coverage is measured once per run and reported three ways: to Codecov, to the
+run summary and pull-request comment, and as a downloadable HTML report
+(`coverage-report` artifact, 14 days).
+
+### Two gates, and which one to require
+
+| gate | where | asks |
+|---|---|---|
+| **project** | `Code Coverage` job, `codecov/project` | is the codebase still above 85%, and did this change drop it more than 1%? |
+| **patch** | `Code Coverage` job, `codecov/patch` | of the lines *this pull request wrote*, how many are tested? Floor 70%. |
+
+**Patch is the one that matters.** At ~91% over ~11,900 instrumented lines, a
+pull request can add forty untested lines and move project coverage by less than
+a tenth of a point. Project coverage is a ratchet against slow decay; patch
+coverage is what stops untested code arriving.
+
+Thresholds live in two places that must agree: `MIN_PROJECT_COVERAGE` /
+`MIN_PATCH_COVERAGE` in `ci.yml`, and the targets in `.codecov.yml`.
+
+### Enabling "restrict code coverage" (required status checks)
+
+The `Code Coverage` job computes both numbers itself, from `lcov.info`, via
+`scripts/coverage-report.py`. It needs no third-party service, so it can be
+made a required check immediately:
+
+> Settings → Branches → branch protection rule for `master` → *Require status
+> checks to pass before merging* → add **`Code Coverage`**.
+
+To additionally require Codecov's own `codecov/project` and `codecov/patch`
+checks, the repository must first be **activated** on Codecov. Until it is,
+those checks never post, and a required check that never posts leaves every
+pull request unmergeable rather than merely red.
+
+- Activate at <https://app.codecov.io/github/egeapak/captchapi> and confirm the
+  Codecov GitHub App is installed with access to this repository.
+- Verify with `curl -s https://api.codecov.io/api/v2/github/egeapak/repos/captchapi/`
+  — `"activated"` must be `true`, and `updatestamp` must be recent.
+- The `Verify Codecov processed the report` step polls that same API after each
+  upload and emits a warning naming this cause when a report never lands. It is
+  a warning, not a failure, because processing is asynchronous.
+
+The failure mode this guards against is silent: an un-activated repository
+accepts every upload, returns "Upload queued for processing complete", and then
+drops it. The CI job goes green and the dashboard quietly serves a months-old
+report.
+
+### Why the job depends on nothing
+
+`coverage` deliberately has no `needs:`. A job behind `needs: test` is
+**skipped** when an upstream job fails, and a skipped required check reports
+nothing at all — branch protection then blocks the pull request on a status that
+will never arrive. It also runs the full suite itself, so waiting saves nothing.
+
+For the same reason it uses `fetch-depth: 0`: both Codecov's base comparison and
+the patch gate's `git diff base...head` need the base commit, which a shallow
+clone does not have.
+
+### Running it locally
+
+```bash
+just coverage                # against origin/master, same thresholds as CI
+just coverage HEAD~1         # against the previous commit
+just coverage ""             # project coverage only, no patch gate
+```
+
+`src/main.rs` is exempt from the *patch* gate only: its startup path is
+exercised by `tests/cli_smoke_test.rs` and the Bruno suite, but both drive a
+subprocess, so in-process llvm-cov instrumentation never sees it. It still
+counts against project coverage.
+
+---
 
 #### Environment Configuration
 
@@ -272,6 +350,18 @@ Potential improvements:
       only caught by `release.yml`, i.e. at tag time, when it is most expensive to fix
 - [ ] Attach the static binaries to the GitHub release, for users not deploying containers
 
-Done since this list was written: code coverage (`coverage` job, Codecov, 85% gate),
+Done since this list was written: code coverage (`coverage` job — project floor,
+patch gate, Codecov export, HTML artifact; see [Code coverage](#code-coverage)),
 security scanning (`security-audit` job, `cargo audit`), and container image building
 (`release.yml`).
+
+Still outstanding on coverage, and worth doing in this order:
+- [ ] **Activate the repository on Codecov.** Everything else here is wired; the
+      `codecov/*` checks cannot be required until this is done by hand.
+- [ ] `src/main.rs` (0%, 228 lines) and `src/tasks/log_filter.rs` (0%, 24 lines)
+      are the two largest gaps. Both are startup wiring reachable only from a
+      real process, so closing them means extracting the logic rather than
+      writing more tests against it.
+- [ ] `src/services/captcha/generator.rs` sits at 63% — the largest gap in code
+      that *is* in-process testable, mostly the higher-difficulty deformation
+      branches.

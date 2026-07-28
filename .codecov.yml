@@ -1,18 +1,70 @@
+# Codecov configuration.
+#
+# NOTE: none of this takes effect until the repository is *activated* on
+# Codecov. An un-activated repository accepts every upload, queues it and then
+# drops it — the CI job goes green, app.codecov.io shows a months-old report,
+# and the codecov/* checks never post, so they cannot be selected as required
+# status checks in branch protection. See .github/workflows/README.md.
+#
+# The authoritative gate is the "Code Coverage" job in ci.yml, which computes
+# the same numbers from the same lcov.info and does not depend on this service.
+# Keep the targets below in step with MIN_PROJECT_COVERAGE / MIN_PATCH_COVERAGE
+# in that workflow: two gates that disagree block a merge on a number that
+# appears in neither the logs nor the diff.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # One upload per commit, so there is nothing to wait for. Without this,
+    # Codecov holds the status back guessing whether more uploads are coming.
+    after_n_builds: 1
+
 coverage:
+  precision: 2
+  round: down
+  range: "85...95"
+
   status:
     project:
+      # "Do not regress." The useful gate for a codebase already at ~91%: an
+      # absolute floor of 85% would silently permit a six-point slide.
+      # 1% of tolerance keeps a refactor that shuffles instrumented lines from
+      # failing on noise; 0% flags any decrease at all, which flaps.
       default:
         target: auto
+        threshold: 1%
+        base: auto
+        if_ci_failed: error
+
+      # The absolute floor, matching MIN_PROJECT_COVERAGE in ci.yml. Posts as a
+      # separate check (codecov/project/floor) so it can be required on its own.
+      floor:
+        target: 85%
         threshold: 0%
         base: auto
+
     patch:
+      # Coverage of the lines this pull request touched — the number that
+      # actually decides whether new code arrives tested. Matches
+      # MIN_PATCH_COVERAGE in ci.yml.
+      #
+      # One deliberate divergence: the in-repo gate exempts src/main.rs, whose
+      # startup path no in-process test can reach (the CLI and Bruno suites
+      # drive a subprocess). Codecov has no per-status ignore, so a pull request
+      # that adds lines there will show a lower codecov/patch than the job's.
       default:
         target: 70%
         threshold: 0%
         base: auto
         only_pulls: true
 
+# Inline annotations on the diff, so an uncovered new line is visible in the
+# "Files changed" tab rather than only in an aggregate percentage.
+github_checks:
+  annotations: true
+
 comment:
-  layout: "reach,diff,flags,tree"
+  layout: "condensed_header, diff, flags, components, condensed_files"
   behavior: default
   require_changes: false
+  hide_project_coverage: false

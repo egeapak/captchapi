@@ -144,45 +144,171 @@ jobs:
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
-    needs: test
+    # Deliberately depends on nothing. Branch protection can only require a
+    # check that *reports*, and a job behind `needs: test` is **skipped** when an
+    # upstream job fails — leaving a required check permanently pending and the
+    # pull request unmergeable rather than merely red. It is not waiting to save
+    # work either: this job runs the whole test suite itself.
+    permissions:
+      contents: read
+      pull-requests: write   # the sticky coverage comment
+    env:
+      # Both gates live here so the workflow and .codecov.yml can be read
+      # against one another. Keep them in step with .codecov.yml — two gates
+      # that disagree is how a merge gets blocked by a number nobody can find.
+      MIN_PROJECT_COVERAGE: "85"
+      MIN_PATCH_COVERAGE: "70"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # Codecov compares against the base commit, and so does the patch gate
+          # below. The default shallow clone has neither the base commit nor the
+          # merge base, so both silently fall back to "no comparison available".
+          fetch-depth: 0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Instrumented builds use different RUSTFLAGS than the `test` job, so
+          # they must not share a cache entry — otherwise each job evicts the
+          # other's artifacts and both rebuild from scratch every run.
+          key: coverage
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate coverage report
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@cargo-nextest
+
+      # nextest, not `cargo test`: it is the runner CLAUDE.md mandates and the
+      # one the `test` job uses, and it runs each test in its own process. A
+      # coverage job that measured a different runner would report a different
+      # number than the suite everyone else runs.
+      - name: Run instrumented test suite
+        run: cargo llvm-cov --all-features --workspace --no-report nextest
+
+      # One instrumented run, three renderings of it. `report` re-reads the
+      # profraw data rather than re-running the tests.
+      - name: Generate coverage reports
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --html --output-dir coverage-html
+          cargo llvm-cov report --summary-only
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            coverage-html/
+          retention-days: 14
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          flags: unittests
+          name: captchapi
+          slug: ${{ github.repository }}
+          # A silent upload failure is exactly what you cannot afford once a
+          # merge is gated on the result. Forks and Dependabot do not receive
+          # the secret, so the upload is best-effort there and must not block.
+          fail_ci_if_error: ${{ secrets.CODECOV_TOKEN != '' }}
 
-      - name: Check coverage threshold
+      # Uploading is not the same as being processed, and the difference is
+      # invisible from the upload step: a repository that is not *activated* on
+      # Codecov accepts every upload, queues it, and drops it. That failure mode
+      # is silent for months — it is why this job exists in its current form.
+      # Warn rather than fail: processing is asynchronous and genuinely slow.
+      - name: Verify Codecov processed the report
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
         run: |
-          # Extract coverage from lcov.info instead of running cargo llvm-cov again
-          total_lines=$(grep -E '^LF:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
-          covered_lines=$(grep -E '^LH:' lcov.info | cut -d: -f2 | awk '{s+=$1} END {print s}')
-          coverage=$(awk "BEGIN {printf \"%.2f\", ($covered_lines / $total_lines) * 100}")
-          echo "Coverage: ${coverage}% (${covered_lines}/${total_lines} lines)"
-          if (( $(echo "$coverage < 85" | bc -l) )); then
-            echo "❌ Coverage ${coverage}% is below threshold (85%)"
-            exit 1
-          fi
-          echo "✅ Coverage ${coverage}% meets threshold"
+          sha="${{ github.event.pull_request.head.sha }}"
+          api="https://api.codecov.io/api/v2/github/${{ github.repository_owner }}/repos/${{ github.event.repository.name }}"
+          activated=$(curl -sS --max-time 30 "$api/" | grep -o '"activated":[^,}]*' || true)
+          echo "Codecov repo status: ${activated:-unknown}"
+          for i in 1 2 3 4 5 6; do
+            body=$(curl -sS --max-time 30 "$api/commits/$sha/" || true)
+            if ! printf '%s' "$body" | grep -q '"detail":"No Commit matches'; then
+              echo "✅ Codecov has processed $sha"
+              exit 0
+            fi
+            echo "attempt $i/6: not processed yet, waiting 15s..."
+            sleep 15
+          done
+          msg="Codecov accepted the upload but has no report for $sha after 90s."
+          msg="$msg If this persists, the repository is most likely not activated at"
+          msg="$msg https://app.codecov.io/github/${{ github.repository }} - until it is,"
+          msg="$msg the codecov/project and codecov/patch checks never post and cannot"
+          msg="$msg be selected as required status checks."
+          echo "::warning title=Codecov report not processed::$msg"
+
+      # The gate branch protection should actually require. Independent of
+      # Codecov being reachable, activated or configured.
+      # --head-sha is HEAD, not pull_request.head.sha, and the distinction
+      # matters. On a pull_request event the checked-out tree is the *merge*
+      # commit, so that is what lcov.info's line numbers refer to. Diffing the
+      # PR head instead would map coverage onto a tree that was never measured,
+      # and the line numbers drift apart the moment the base branch moves.
+      # merge-base(base, merge commit) is base, so base...HEAD is still exactly
+      # this pull request's changes.
+      #
+      # base.sha is empty on push events, which turns the patch gate off and
+      # leaves the project floor — there is no base to diff a push against.
+      - name: Coverage gate (project + patch)
+        id: gate
+        run: |
+          python3 scripts/coverage-report.py \
+            --lcov lcov.info \
+            --root . \
+            --min-project "$MIN_PROJECT_COVERAGE" \
+            --min-patch "$MIN_PATCH_COVERAGE" \
+            --base-sha "${{ github.event.pull_request.base.sha }}" \
+            --head-sha HEAD
+
+      # Fork pull requests get a read-only GITHUB_TOKEN, so this cannot work
+      # there. The step summary above always carries the same numbers.
+      - name: Comment coverage on the pull request
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const marker = '<!-- captchapi-coverage -->';
+            const project = '${{ steps.gate.outputs.project }}';
+            const patch = '${{ steps.gate.outputs.patch }}';
+            const passed = '${{ steps.gate.outputs.passed }}' === 'true';
+            const body = [
+              marker,
+              `### ${passed ? '✅' : '❌'} Coverage`,
+              '',
+              '| scope | coverage | threshold |',
+              '|---|---:|---:|',
+              `| project | ${project || 'n/a'}% | ${process.env.MIN_PROJECT_COVERAGE}% |`,
+              `| patch | ${patch ? patch + '%' : 'n/a — no instrumented lines changed'} | ${process.env.MIN_PATCH_COVERAGE}% |`,
+              '',
+              `[Full report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) · HTML report attached as the \`coverage-report\` artifact.`,
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const existing = (await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 }))
+              .data.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
   api-tests:
     name: API Tests

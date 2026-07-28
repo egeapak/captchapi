@@ -437,6 +437,35 @@ cargo nextest run --lib                        # Unit tests only
 cargo nextest run --test sessions_test         # Integration tests
 ```
 
+#### Coverage
+
+```bash
+just coverage                # project + patch coverage against origin/master
+just coverage HEAD~1         # patch coverage against the previous commit
+just coverage ""             # project coverage only
+```
+
+The project sits at **91.45%** line coverage (10,891 / 11,909 instrumented
+lines, 706 tests). CI enforces two numbers and **patch coverage is the one that
+bites**: at this size a pull request can add forty untested lines and move
+project coverage by less than a tenth of a point, so the floor that actually
+stops untested code arriving is 70% on the *lines the change wrote*.
+
+Measure with nextest and `--all-features`, as `just coverage` and CI both do. A
+bare `cargo llvm-cov` runs a different test runner and compiles out `admin-ui`
+and `otel` entirely, so its number does not predict the gate.
+
+The three largest gaps are `src/main.rs` (0%), `src/tasks/log_filter.rs` (0%)
+and `src/services/captcha/generator.rs` (63%). The first two are startup wiring
+that only a real process reaches — `tests/cli_smoke_test.rs` and the Bruno suite
+do exercise them, but through a *subprocess*, which in-process llvm-cov
+instrumentation cannot see. `src/main.rs` is therefore exempt from the patch
+gate (never the project number); closing it for real means extracting logic out
+of `main`, not writing more tests against it.
+
+See `.github/workflows/README.md` for the CI wiring and for how to turn either
+gate into a required status check.
+
 #### API Tests (Bruno)
 
 **Prerequisites:** Server must be running.
