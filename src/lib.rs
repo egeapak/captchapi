@@ -10,6 +10,7 @@ pub mod metrics;
 #[doc(hidden)]
 pub mod middleware;
 pub mod models;
+pub mod restart;
 #[doc(hidden)]
 pub mod routes;
 pub mod services;

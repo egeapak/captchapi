@@ -1,0 +1,36 @@
+meta {
+  name: Patch Config - Shadowing Override
+  type: http
+  seq: 14
+}
+
+patch {
+  url: {{base_url}}/api/v1/admin/config
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "captcha_compression": 90
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("the override should be the effective value", function() {
+    expect(res.body.config.captcha_compression.value).to.equal("90");
+    expect(res.body.config.captcha_compression.source).to.equal("admin");
+  });
+}
+
+docs {
+  Sets up the next request. `admin` is the top layer — above even the command line — so a
+  value stored while this override is live is not the one the server runs.
+}

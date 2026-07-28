@@ -1,0 +1,27 @@
+meta {
+  name: Delete Stored Config
+  type: http
+  seq: 13
+}
+
+delete {
+  url: {{base_url}}/api/v1/admin/config/stored/captcha_compression
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should leave nothing stored for the field", function() {
+    expect(Object.keys(res.body.stored)).to.not.include("captcha_compression");
+  });
+}
+
+docs {
+  Runs after Put Stored Config - Success so the suite leaves the server's store as it found it.
+}

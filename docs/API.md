@@ -47,6 +47,10 @@ Authorization: Bearer <master_key>
 - `GET /api/v1/admin/config` - Show the effective configuration
 - `PATCH /api/v1/admin/config` - Change reloadable settings at runtime
 - `POST /api/v1/admin/config/reload` - Re-read every configuration source
+- `GET /api/v1/admin/config/stored` - Show the persisted configuration
+- `PUT /api/v1/admin/config/stored` - Persist settings so they survive a restart
+- `DELETE /api/v1/admin/config/stored/{field}` - Remove one persisted setting
+- `POST /api/v1/admin/restart` - Restart the server to apply stored boot settings
 
 ---
 
@@ -485,9 +489,21 @@ Authorization: Bearer <master_key>
 ```json
 {
   "config": {
-    "server_port":         { "value": "3000", "reloadable": false, "secret": false },
-    "captcha_compression": { "value": "40",   "reloadable": true,  "secret": false },
-    "api_key_salt":        { "value": "<redacted, 32 bytes>", "reloadable": false, "secret": true }
+    "server_port": {
+      "value": "3000", "reloadable": false, "secret": false,
+      "source": "env", "editable": false,
+      "description": "The TCP port the HTTP listener binds to; 0 asks the operating system for an ephemeral port."
+    },
+    "captcha_compression": {
+      "value": "40", "reloadable": true, "secret": false,
+      "source": "default", "editable": true,
+      "description": "JPEG quality for rendered images, from 1 to 100 and clamped into range; it trades bandwidth against fidelity and is not a security control."
+    },
+    "api_key_salt": {
+      "value": "<redacted, 32 bytes>", "reloadable": false, "secret": true,
+      "source": "cli", "editable": false,
+      "description": "Salt mixed into every stored API key hash, and the fallback key for solution hashing and image encryption; changing it invalidates every existing API key."
+    }
   },
   "overrides": []
 }
@@ -496,10 +512,42 @@ Authorization: Bearer <master_key>
 Secrets are always redacted, including for the master key holder — this endpoint explains the
 server's behaviour, it does not read credentials back out of it.
 
+`description` is a one-sentence explanation of the parameter, so a client does not have to
+ship its own copy of the documentation and let it drift from the running binary.
+
 `reloadable` is `false` for anything captured at startup: the bind address, the database
 settings, the API key salt, the master key, the rate limits and the telemetry settings. Those
 are owned by the listener, the connection pool, the middleware and the rate limiter, and can
 only change with a restart.
+
+`source` names the layer the effective value came from — one of `admin`, `cli`, `env`,
+`stored`, `env-file`, `file`, `carried` or `default`, in precedence order.
+
+`storable` is whether `PUT /config/stored` will accept the field, which is a different
+question from `editable`: `editable` asks whether the *running* process can take a new value,
+`storable` whether one can be made to survive a restart. A boot field is storable but never
+editable. Secrets and the database settings are neither.
+
+`shadowed_by` appears only when a value is stored for the field but a higher layer answers
+instead, naming that layer. The stored value is not wasted — it takes effect as soon as that
+layer stops answering — but it is not in effect now, and the API says so rather than implying
+otherwise.
+
+Every layer above the store counts, `admin` included. A runtime `PATCH` outranks even the
+command line, so a value stored while an override is live is shadowed by it and comes back
+`"shadowed_by": "admin"` — cleared by the next reload, which is what discards the override.
+
+`pending_restart` lists boot fields whose configured value differs from the running one, so a
+restart would change them. It covers every layer, not just the store: an edited env file shows
+up there too.
+
+`editable` is what `PATCH` will actually accept, and is the field a UI should drive off. It is
+`false` for everything that is not `reloadable`, and **also** for a reloadable field whose
+`source` is `cli` or `env`. Those two layers are fixed for the life of the process: an override
+would work until the next reload discarded it, and could not be made durable without restarting
+with different arguments. Rather than accept a change it cannot keep, the server refuses it and
+says where the value actually comes from. Change it there and restart, or stop setting it there
+to manage the field from the API.
 
 ---
 
@@ -529,8 +577,13 @@ value.
 `overrides`. Those names match `config`'s keys and this endpoint's request body, so they can be
 fed straight back in.
 
-A patched value outranks every configuration layer, including the command line the server was
-started with, until the next reload clears it.
+A patched value outranks every configuration layer until the next reload clears it, and reports
+its `source` as `admin` while it does — which is why patching a field never pins it against
+being patched again.
+
+**A field this process was given explicitly on the command line or in the environment cannot be
+patched at all**, even when it is reloadable; see `editable` above. `GET /config` says so
+before you try.
 
 **Changes are in-memory only.** They are never written back to a config file, and the next
 reload — SIGHUP, `POST /config/reload`, or a restart — discards them.
@@ -545,6 +598,8 @@ curl -X PATCH http://localhost:3000/api/v1/admin/config \
 
 **Error Responses:**
 - `400 config_not_reloadable` - The field is applied at startup and needs a restart
+- `409 config_pinned` - The field is reloadable, but this process was started with an explicit
+  value for it on the command line or in the environment
 - `400 invalid_config` - Unknown field, unusable value, or empty body
 - `401 unauthorized` - Invalid or missing master key
 - `403 forbidden` - Runtime writes are disabled (`ADMIN_CONFIG_WRITE=false`)
@@ -606,6 +661,10 @@ All errors return JSON responses with this format:
 | `invalid_parameters` | 400 | Bad request parameters |
 | `forbidden` | 403 | Authenticated, but the operation is disabled by configuration |
 | `config_not_reloadable` | 400 | Configuration field is applied at startup and needs a restart |
+| `config_pinned` | 409 | Configuration field is fixed by the command line or environment this server was started with |
+| `config_not_persistable` | 400 | Configuration field cannot be stored in the database |
+| `restart_not_enabled` | 403 | Restarting from the API is disabled |
+| `address_unavailable` | 409 | The address a restart would bind is already in use |
 | `invalid_config` | 400 | Unknown configuration field or unusable value |
 | `database_error` | 500 | Internal database error |
 | `internal_error` | 500 | Other internal errors |
@@ -775,3 +834,132 @@ The API is versioned via URL path (`/api/v1/...`). Breaking changes will increme
 **Last Updated**: 2026-02-25
 **API Version**: v1
 **Service Version**: 1.0.0
+
+---
+
+### Show Stored Configuration
+
+The settings persisted in the database, which survive a restart.
+
+```http
+GET /api/v1/admin/config/stored
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK**
+```json
+{
+  "stored": { "captcha_compression": "66", "rate_limit_burst_size": "50" },
+  "shadowed": [],
+  "pending_restart": ["rate_limit_burst_size"],
+  "message": "Stored configuration"
+}
+```
+
+Secrets can never appear here: they are unstorable by construction, and so are `database_url`
+and `database_max_connections` — the settings needed to open the database the store lives in —
+and the `otel_*` trio, which is consumed before the store is read. `stored` is filtered by the
+same rule the configuration stack applies, so a row added by hand that names an unstorable or
+unknown field is left out here exactly as it is left out of the running configuration.
+
+`shadowed` lists stored fields that some higher layer currently answers for, so they are not in
+effect: the command line, the environment, or a runtime override set through `PATCH`.
+
+---
+
+### Store Configuration
+
+Persist settings so they survive a restart.
+
+```http
+PUT /api/v1/admin/config/stored
+Authorization: Bearer <master_key>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "captcha_compression": 66,
+  "rate_limit_burst_size": 50
+}
+```
+
+**Response: 200 OK** — the same shape as `GET /config/stored`.
+
+Live fields take effect immediately, exactly as `PATCH /config` would, *and* survive a restart.
+Boot fields cannot take effect now, so they come back in `pending_restart` rather than being
+accepted as though they had.
+
+The candidate configuration is validated before anything is written. A value that does not
+resolve is refused with `400 invalid_config` and never reaches the database.
+
+A field the command line or environment pins is **accepted**, unlike `PATCH`. The two are not
+symmetric: a runtime override that something shadows is discarded having done nothing, while a
+stored value persists and takes effect the moment that variable is dropped — which is the
+migration path off env-driven configuration. It comes back listed in `shadowed`.
+
+`message` says which of the three things happened to each field written: it is live now, it is
+waiting for a restart, or a higher layer answers for it and it is not in effect at all. Only
+the first reports "all are in effect".
+
+**Error Responses:**
+- `400 config_not_persistable` - Secret, database setting, or telemetry setting
+- `400 invalid_config` - Unknown field, unusable value, or empty body
+- `403 forbidden` - `ADMIN_CONFIG_WRITE=false`
+- `401 unauthorized` - Invalid or missing master key
+
+---
+
+### Remove a Stored Setting
+
+```http
+DELETE /api/v1/admin/config/stored/{field}
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK** — the same shape as `GET /config/stored`.
+
+**Error Responses:**
+- `400 invalid_config` - Not a configuration field, or nothing stored for it
+- `403 forbidden` - `ADMIN_CONFIG_WRITE=false`
+
+---
+
+### Restart the Server
+
+Restart in place so stored boot settings take effect.
+
+```http
+POST /api/v1/admin/restart
+Authorization: Bearer <master_key>
+```
+
+**Response: 200 OK**
+```json
+{
+  "applying": ["rate_limit_burst_size"],
+  "message": "Restarting; the server will be unavailable briefly"
+}
+```
+
+**Off by default.** Set `ADMIN_RESTART_ENABLED=true` to allow it. A remote restart endpoint is
+an availability lever, and a denial-of-service amplifier if the master key ever leaks.
+
+The server drains gracefully and then replaces its own process image, so the PID does not
+change and `docker stop`, Kubernetes, systemd and the PID file keep working unchanged.
+In-flight requests are dropped at that boundary.
+
+Two checks run before anything happens: the candidate configuration must resolve, and the
+address it would bind must actually be bindable. "Port already in use" is exactly what an
+operator editing `server_port` hits, and a restart into it would leave the service down rather
+than merely unchanged.
+
+If the new configuration starts but does not survive thirty seconds, the next start rolls it
+back to the last one that did.
+
+**Error Responses:**
+- `403 restart_not_enabled` - `ADMIN_RESTART_ENABLED` is false
+- `409 address_unavailable` - The address the restart would bind is taken
+- `400 invalid_config` - The stored configuration does not resolve
+- `401 unauthorized` - Invalid or missing master key

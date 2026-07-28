@@ -38,6 +38,24 @@ pub enum AppError {
     #[error("Configuration field is not reloadable: {0}")]
     ConfigNotReloadable(String),
 
+    /// The field cannot be written to the config store: a secret, needed to open the database
+    /// the store lives in, or consumed before the store is read.
+    #[error("Configuration field cannot be stored: {0}")]
+    ConfigNotPersistable(String),
+
+    /// The field is reloadable, but this process was given an explicit value for it on the
+    /// command line or in the environment, which a runtime override cannot durably replace.
+    #[error("Configuration field is pinned by the environment it was started in: {0}")]
+    ConfigPinned(String),
+
+    /// `POST /admin/restart` was called but restarting from the API is turned off.
+    #[error("Restarting from the API is not enabled: {0}")]
+    RestartNotEnabled(String),
+
+    /// The address a restart would bind cannot be bound right now.
+    #[error("Address unavailable: {0}")]
+    AddressUnavailable(String),
+
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
 
@@ -88,6 +106,18 @@ impl IntoResponse for AppError {
                 "config_not_reloadable",
                 msg.clone(),
             ),
+            AppError::ConfigNotPersistable(ref msg) => (
+                StatusCode::BAD_REQUEST,
+                "config_not_persistable",
+                msg.clone(),
+            ),
+            AppError::ConfigPinned(ref msg) => (StatusCode::CONFLICT, "config_pinned", msg.clone()),
+            AppError::RestartNotEnabled(ref msg) => {
+                (StatusCode::FORBIDDEN, "restart_not_enabled", msg.clone())
+            }
+            AppError::AddressUnavailable(ref msg) => {
+                (StatusCode::CONFLICT, "address_unavailable", msg.clone())
+            }
             AppError::InvalidConfig(ref msg) => {
                 (StatusCode::BAD_REQUEST, "invalid_config", msg.clone())
             }

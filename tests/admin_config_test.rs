@@ -54,6 +54,147 @@ async fn test_get_config_returns_values_and_reloadability() {
     assert!(body["overrides"].as_array().unwrap().is_empty());
 }
 
+/// An app whose `captcha_compression` was set on the command line, as a deployment would.
+fn pinned_app(app: &TestApp) -> axum::Router {
+    let handle = captchapi::config::ConfigHandle::from_static_with_cli(
+        captchapi::config::Config {
+            master_api_key: app.master_key.clone(),
+            ..captchapi::config::Config::for_test()
+        },
+        &[("CAPTCHA_COMPRESSION", "70")],
+    )
+    .expect("fixture config must resolve");
+    app.build_app_with_handle(handle)
+}
+
+#[tokio::test]
+async fn test_get_config_reports_the_layer_each_value_came_from() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+
+    assert_eq!(body["config"]["captcha_compression"]["source"], "cli");
+    assert_eq!(
+        body["config"]["max_validation_attempts"]["source"],
+        "default"
+    );
+}
+
+#[tokio::test]
+async fn test_a_value_set_on_the_command_line_is_not_editable() {
+    // Reloadable, but this process was handed an explicit value, so an override would last
+    // only until the next reload. The API says so up front rather than accepting and losing it.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let body: serde_json::Value = response.json();
+
+    assert_eq!(body["config"]["captcha_compression"]["reloadable"], true);
+    assert_eq!(body["config"]["captcha_compression"]["editable"], false);
+    // A live field nobody pinned stays editable, so this is provenance and not a blanket off.
+    assert_eq!(body["config"]["max_validation_attempts"]["editable"], true);
+    // Boot fields were never editable and still are not.
+    assert_eq!(body["config"]["server_port"]["editable"], false);
+}
+
+#[tokio::test]
+async fn test_patching_a_pinned_field_is_refused_with_its_own_error_code() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 90 }))
+        .await;
+
+    response.assert_status(axum::http::StatusCode::CONFLICT);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "config_pinned");
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("command line"), "{message}");
+    assert!(message.contains("captcha_compression"), "{message}");
+
+    // And the running value is untouched.
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    assert_eq!(after["config"]["captcha_compression"]["value"], "70");
+    assert!(after["overrides"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_an_unpinned_field_is_still_patchable_on_a_pinned_server() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "max_validation_attempts": 7 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["config"]["max_validation_attempts"]["value"], "7");
+    // The admin API set it, so it reports as `admin` — not `cli`, which would pin it against
+    // ever being patched again.
+    assert_eq!(body["config"]["max_validation_attempts"]["source"], "admin");
+    assert_eq!(body["config"]["max_validation_attempts"]["editable"], true);
+}
+
+#[tokio::test]
+async fn test_get_config_describes_every_parameter() {
+    // The console renders these, so a client never ships its own copy of the documentation
+    // and lets it drift from what the binary actually does.
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let config = body["config"].as_object().unwrap();
+
+    assert!(!config.is_empty());
+    for (field, entry) in config {
+        let description = entry["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} has no description"));
+        assert!(
+            description.ends_with('.'),
+            "{field}: expected a sentence, got {description:?}"
+        );
+    }
+
+    // Secrets are described too — the description says what the parameter is for, which is
+    // exactly what an operator needs when the value itself is redacted.
+    assert!(config["master_api_key"]["description"]
+        .as_str()
+        .unwrap()
+        .contains("administrative access"));
+}
+
 #[tokio::test]
 async fn test_get_config_never_discloses_secrets() {
     // The master key holder can already act as an admin, but this endpoint exists to explain
@@ -476,4 +617,598 @@ async fn test_reload_preserves_boot_only_values() {
         .add_header("Authorization", format!("Bearer {}", app.master_key))
         .await
         .assert_status_ok();
+}
+
+// ── /api/v1/admin/config/stored ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_stored_config_starts_empty() {
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert!(body["stored"].as_object().unwrap().is_empty());
+    assert!(body["pending_restart"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_storing_a_live_field_applies_it_immediately() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 66 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["stored"]["captcha_compression"], "66");
+    assert!(body["pending_restart"].as_array().unwrap().is_empty());
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("all are in effect"));
+
+    // ...and the running configuration moved with it.
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    assert_eq!(after["config"]["captcha_compression"]["value"], "66");
+    assert_eq!(after["config"]["captcha_compression"]["source"], "stored");
+}
+
+#[tokio::test]
+async fn test_storing_a_boot_field_waits_for_a_restart() {
+    // The distinction the whole feature rests on: it is persisted, but claiming it took effect
+    // would be false — the rate limiter was built at startup.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "rate_limit_burst_size": 50 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["stored"]["rate_limit_burst_size"], "50");
+    assert_eq!(body["pending_restart"][0], "rate_limit_burst_size");
+    assert!(body["message"].as_str().unwrap().contains("restart"));
+
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    assert_eq!(
+        after["config"]["rate_limit_burst_size"]["value"], "10",
+        "the running value must not pretend to have changed"
+    );
+    assert_eq!(after["pending_restart"][0], "rate_limit_burst_size");
+}
+
+#[tokio::test]
+async fn test_unstorable_fields_are_refused_with_their_own_code() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    for field in [
+        "api_key_salt",
+        "master_api_key",
+        "database_url",
+        "otel_enabled",
+    ] {
+        let response = server
+            .put("/api/v1/admin/config/stored")
+            .add_header("Authorization", format!("Bearer {master_key}"))
+            .json(&json!({ field: "x" }))
+            .await;
+
+        response.assert_status(StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = response.json();
+        assert_eq!(body["error"], "config_not_persistable", "{field}");
+    }
+}
+
+#[tokio::test]
+async fn test_an_invalid_value_is_refused_before_it_is_persisted() {
+    // Writing first and validating afterwards would persist a configuration the server had
+    // already refused, leaving the rollback machinery to undo it on the next restart.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": "not-a-number" }))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let stored = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let stored: serde_json::Value = stored.json();
+    assert!(
+        stored["stored"].as_object().unwrap().is_empty(),
+        "nothing should have reached the database"
+    );
+}
+
+#[tokio::test]
+async fn test_deleting_a_stored_field_reverts_the_running_value() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 66 }))
+        .await
+        .assert_status_ok();
+
+    let response = server
+        .delete("/api/v1/admin/config/stored/captcha_compression")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert!(body["stored"].as_object().unwrap().is_empty());
+
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    assert_eq!(after["config"]["captcha_compression"]["value"], "40");
+    assert_eq!(after["config"]["captcha_compression"]["source"], "default");
+}
+
+#[tokio::test]
+async fn test_deleting_something_that_is_not_stored_is_an_error() {
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .delete("/api/v1/admin/config/stored/captcha_compression")
+        .add_header("Authorization", format!("Bearer {}", app.master_key))
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_a_stored_value_the_command_line_shadows_is_kept_and_reported() {
+    // Not refused: it persists, and takes effect the moment the pin is dropped, which is the
+    // migration path off command-line-driven configuration. It must simply never claim to be
+    // in effect while something outranks it.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(pinned_app(&app));
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 66 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["stored"]["captcha_compression"], "66");
+    assert_eq!(body["shadowed"][0], "captcha_compression");
+
+    let after = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+    let after: serde_json::Value = after.json();
+    let entry = &after["config"]["captcha_compression"];
+    assert_eq!(entry["value"], "70", "the command line still wins");
+    assert_eq!(entry["source"], "cli");
+    assert_eq!(entry["shadowed_by"], "cli");
+    assert_eq!(entry["storable"], true, "storable despite being pinned");
+}
+
+#[tokio::test]
+async fn test_stored_writes_respect_admin_config_write() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app_with_config(captchapi::config::Config {
+        master_api_key: master_key.clone(),
+        admin_config_write: false,
+        ..captchapi::config::Config::for_test()
+    }));
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "captcha_compression": 66 }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    // Reading the store is not a mutation, so it stays available.
+    server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await
+        .assert_status_ok();
+}
+
+#[tokio::test]
+async fn test_stored_endpoints_require_the_master_key() {
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    server
+        .get("/api/v1/admin/config/stored")
+        .await
+        .assert_status_unauthorized();
+    server
+        .put("/api/v1/admin/config/stored")
+        .json(&json!({ "captcha_compression": 66 }))
+        .await
+        .assert_status_unauthorized();
+    server
+        .delete("/api/v1/admin/config/stored/captcha_compression")
+        .await
+        .assert_status_unauthorized();
+}
+
+// ── POST /api/v1/admin/restart ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_restart_is_refused_when_not_enabled() {
+    // Off by default: a remote restart endpoint is an availability lever, and a denial-of-
+    // service amplifier if the master key ever leaks.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .post("/api/v1/admin/restart")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "restart_not_enabled");
+}
+
+#[tokio::test]
+async fn test_restart_is_refused_when_the_process_cannot_restart_itself() {
+    // Enabled in configuration, but this app was not built by `main`, so there is no handle on
+    // the process. Refusing beats returning 200 and doing nothing.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app_with_config(captchapi::config::Config {
+        master_api_key: master_key.clone(),
+        admin_restart_enabled: true,
+        ..captchapi::config::Config::for_test()
+    }));
+
+    let response = server
+        .post("/api/v1/admin/restart")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await;
+
+    response.assert_status(StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "restart_not_enabled");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .contains("not started in a way"));
+}
+
+#[tokio::test]
+async fn test_restart_requires_the_master_key() {
+    let app = TestApp::new().await;
+    let server = TestServer::new(app.build_app());
+
+    server
+        .post("/api/v1/admin/restart")
+        .await
+        .assert_status_unauthorized();
+}
+
+#[tokio::test]
+async fn test_a_stored_value_a_runtime_override_shadows_is_reported_as_shadowed() {
+    // `Source::Admin` outranks even the command line, so a PATCH masks a stored value exactly
+    // as an environment variable does. Reporting only the pinned layers meant this case came
+    // back as `shadowed: []` while the server ran a different value entirely.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 70 }))
+        .await
+        .assert_status_ok();
+
+    server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 90 }))
+        .await
+        .assert_status_ok();
+
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(stored["stored"]["captcha_compression"], "70");
+    assert_eq!(
+        stored["shadowed"][0], "captcha_compression",
+        "the overlay is a higher layer, so the stored value is not in effect"
+    );
+
+    let config: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    let entry = &config["config"]["captcha_compression"];
+    assert_eq!(entry["value"], "90", "the override still wins");
+    assert_eq!(entry["source"], "admin");
+    assert_eq!(entry["shadowed_by"], "admin");
+}
+
+#[tokio::test]
+async fn test_storing_a_value_an_override_masks_does_not_claim_it_is_in_effect() {
+    // The sharpest form of the same bug: the response said "all are in effect" about a value
+    // the server was demonstrably not using.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .patch("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 90 }))
+        .await
+        .assert_status_ok();
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "captcha_compression": 70 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let message = body["message"].as_str().unwrap();
+    assert!(
+        message.contains("not in effect"),
+        "the write must not claim an effect it did not have: {message}"
+    );
+    assert!(message.contains("captcha_compression"), "{message}");
+
+    let config: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert_eq!(config["config"]["captcha_compression"]["value"], "90");
+}
+
+#[tokio::test]
+async fn test_storing_a_boot_field_still_reports_it_as_pending_a_restart() {
+    // The other branch of the same message, kept honest: a stored boot field is not shadowed,
+    // it is waiting, and the two must not be confused for one another.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let server = TestServer::new(app.build_app());
+
+    let response = server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .json(&json!({ "server_port": 4321 }))
+        .await;
+
+    response.assert_status_ok();
+    let body: serde_json::Value = response.json();
+    let message = body["message"].as_str().unwrap();
+    assert!(message.contains("restart"), "{message}");
+    assert!(!message.contains("not in effect"), "{message}");
+    assert_eq!(body["pending_restart"][0], "server_port");
+    assert!(
+        body["shadowed"].as_array().unwrap().is_empty(),
+        "nothing outranks the store here"
+    );
+}
+
+#[tokio::test]
+async fn test_a_row_the_configuration_drops_is_not_echoed_by_the_api() {
+    // Only a hand-edit or a downgrade can produce such a row. `load` has always dropped it;
+    // the API that displays the store used to read the raw table instead — and since every
+    // secret is `Persist::Never`, that was also the one way a secret could be read back out.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+
+    sqlx::query(
+        "INSERT INTO config_settings (field, value, updated_at, updated_by)
+         VALUES ('master_api_key', 'planted-secret-value', 0, 'hand-edit')",
+    )
+    .execute(app.storage.pool())
+    .await
+    .expect("plant the row");
+
+    let server = TestServer::new(app.build_app());
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", format!("Bearer {master_key}"))
+        .await
+        .json();
+
+    assert!(
+        stored["stored"]["master_api_key"].is_null(),
+        "a row the configuration ignores must not appear here: {}",
+        stored["stored"]
+    );
+    assert!(
+        !serde_json::to_string(&stored)
+            .unwrap()
+            .contains("planted-secret-value"),
+        "the value must not reach the response by any path"
+    );
+}
+
+/// A server whose env file holds a `captcha_compression` the parser rejects, masked by a
+/// stored value that does resolve.
+///
+/// Removing the stored value therefore has to fail — which is the only way to reach
+/// `delete_stored`'s validation path, and the reason `ConfigHandle::from_static_with` exists.
+/// An env file rather than a TOML file because TOML is validated as it is read, so an unusable
+/// value there fails at load and never reaches `Config::from_env_provider`.
+async fn app_with_a_stored_value_masking_a_broken_env_file(
+    app: &TestApp,
+) -> (axum::Router, tempfile::TempDir) {
+    use captchapi::config::{ConfigHandle, Layer};
+    use captchapi::services::{ConfigStore, WrittenBy};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let env_file = dir.path().join("broken.env");
+    std::fs::write(&env_file, "CAPTCHA_COMPRESSION=not-a-number\n").expect("write env file");
+
+    ConfigStore::new(app.storage.pool().clone())
+        .set(
+            &[("captcha_compression".to_string(), "70".to_string())],
+            WrittenBy::AdminApi,
+        )
+        .await
+        .expect("seed the store");
+
+    let stored: Layer = [("CAPTCHA_COMPRESSION".to_string(), "70".to_string())]
+        .into_iter()
+        .collect();
+
+    let handle = ConfigHandle::from_static_with(
+        captchapi::config::Config {
+            master_api_key: app.master_key.clone(),
+            ..captchapi::config::Config::for_test()
+        },
+        captchapi::cli::Cli {
+            env_file: Some(env_file),
+            ..captchapi::cli::Cli::default()
+        },
+        stored,
+    )
+    .expect("the stored value masks the broken env file, so this must resolve");
+
+    (app.build_app_with_handle(handle), dir)
+}
+
+#[tokio::test]
+async fn test_a_removal_that_cannot_resolve_is_refused_and_changes_nothing() {
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let (router, _dir) = app_with_a_stored_value_masking_a_broken_env_file(&app).await;
+    let server = TestServer::new(router);
+    let auth = format!("Bearer {master_key}");
+
+    let before: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(before["config"]["captcha_compression"]["value"], "70");
+    assert_eq!(before["config"]["captcha_compression"]["source"], "stored");
+
+    let response = server
+        .delete("/api/v1/admin/config/stored/captcha_compression")
+        .add_header("Authorization", auth.clone())
+        .await;
+
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = response.json();
+    assert_eq!(body["error"], "invalid_config");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("CAPTCHA_COMPRESSION"),
+        "the refusal should name what could not resolve: {}",
+        body["message"]
+    );
+
+    // The point of validating first: a refused removal must leave the store as it was, or the
+    // response says "failed" while the database says otherwise.
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .await
+        .json();
+    assert_eq!(
+        stored["stored"]["captcha_compression"], "70",
+        "the row must survive a removal that was refused"
+    );
+
+    let after: serde_json::Value = server
+        .get("/api/v1/admin/config")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert_eq!(
+        after["config"]["captcha_compression"]["value"], "70",
+        "and the running configuration must be untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_a_removal_that_resolves_is_still_carried_out() {
+    // The control: the same shape of server, deleting a field whose removal resolves fine.
+    // Without it the test above would pass just as well against a handler that refused
+    // everything.
+    let app = TestApp::new().await;
+    let master_key = app.master_key.clone();
+    let (router, _dir) = app_with_a_stored_value_masking_a_broken_env_file(&app).await;
+    let server = TestServer::new(router);
+    let auth = format!("Bearer {master_key}");
+
+    server
+        .put("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth.clone())
+        .json(&json!({ "max_validation_attempts": 5 }))
+        .await
+        .assert_status_ok();
+
+    server
+        .delete("/api/v1/admin/config/stored/max_validation_attempts")
+        .add_header("Authorization", auth.clone())
+        .await
+        .assert_status_ok();
+
+    let stored: serde_json::Value = server
+        .get("/api/v1/admin/config/stored")
+        .add_header("Authorization", auth)
+        .await
+        .json();
+    assert!(stored["stored"]["max_validation_attempts"].is_null());
+    assert_eq!(
+        stored["stored"]["captcha_compression"], "70",
+        "the untouched row is still there"
+    );
 }

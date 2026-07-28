@@ -32,3 +32,13 @@ tests {
     expect(res.body.overrides).to.include("captcha_compression");
   });
 }
+
+docs {
+  Requires a server that was NOT started with an explicit CAPTCHA_COMPRESSION on the command
+  line or in the process environment. Those two layers pin a field against runtime changes,
+  so this request would return 409 config_pinned instead of 200 — correctly, but the failure
+  reads like a regression if you do not know why.
+
+  An `.env` file is fine, and is what ci.yml uses: files can be edited and re-read, so a
+  value from one stays patchable.
+}

@@ -71,3 +71,6 @@ dist/
 artifacts/
 .env.*
 !.env.example
+
+# Screenshots from the admin console end-to-end check
+.playwright/shots/

@@ -8,7 +8,8 @@ use crate::routes::api_keys::ApiKeysState;
 use crate::routes::sessions::SessionsState;
 use crate::routes::{admin_routes, api_keys_routes, health_check, sessions_routes};
 use crate::services::{
-    AuthService, CaptchaService, ImageCipher, RateLimiterConfig, SolutionHasher, StorageService,
+    AuthService, CaptchaService, ConfigStore, ImageCipher, RateLimiterConfig, SolutionHasher,
+    StorageService,
 };
 use axum::{middleware as axum_middleware, routing::get, Router};
 use governor::DefaultKeyedRateLimiter;
@@ -32,13 +33,27 @@ pub struct AppComponents {
 /// Returns [`AppComponents`] containing the assembled `Router`, the governor rate limiter handle
 /// (needed for the cleanup task), and the `StorageService` (also needed for cleanup).
 pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) -> AppComponents {
+    build_app_with_restart(pool, config, metrics, None)
+}
+
+/// Build the application, optionally able to restart the process it runs in.
+///
+/// `restart` is `None` for anything that is not the real server — tests, the NAPI bindings —
+/// so `POST /admin/restart` refuses rather than appearing to work and doing nothing.
+pub fn build_app_with_restart(
+    pool: SqlitePool,
+    config: ConfigHandle,
+    metrics: Arc<Metrics>,
+    restart: Option<crate::restart::RestartHandle>,
+) -> AppComponents {
     // Everything read here is boot-only: the values are captured into the services, the
     // middleware and the rate limiter, and cannot change without a restart. One snapshot is
     // therefore both sufficient and honest about what a reload can reach.
     let boot = config.get();
 
     // Initialize services
-    let storage = StorageService::new(pool);
+    let storage = StorageService::new(pool.clone());
+    let config_store = ConfigStore::new(pool);
     let captcha = Arc::new(CaptchaService::new());
     let auth_service = Arc::new(AuthService::new(boot.api_key_salt.clone()));
     // Both secrets are boot-only, like the API key salt: they are captured into these services
@@ -90,6 +105,8 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
         storage: storage.clone(),
         metrics: metrics.clone(),
         config: config.clone(),
+        store: config_store,
+        restart,
     };
 
     // Build base router (without rate-limited sessions routes)
@@ -104,6 +121,11 @@ pub fn build_app(pool: SqlitePool, config: ConfigHandle, metrics: Arc<Metrics>) 
             "/api/v1/admin",
             admin_routes(admin_state, master_middleware_admin),
         );
+
+    // The console is the page that *asks* for the master key, so it sits outside the
+    // master-key middleware. It carries no data of its own.
+    #[cfg(feature = "admin-ui")]
+    let base_router = base_router.merge(crate::routes::admin_ui_routes());
 
     // Build router with rate limiting, using appropriate key extractor based on config
     let (router, governor_limiter): (Router, Arc<DefaultKeyedRateLimiter<IpAddr>>) =

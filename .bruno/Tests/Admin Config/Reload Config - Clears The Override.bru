@@ -1,0 +1,34 @@
+meta {
+  name: Reload Config - Clears The Override
+  type: http
+  seq: 16
+}
+
+post {
+  url: {{base_url}}/api/v1/admin/config/reload
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("dropping the override should hand the field back to the store", function() {
+    expect(res.body.overrides).to.not.include("captcha_compression");
+    expect(res.body.config.captcha_compression.value).to.equal("66");
+    expect(res.body.config.captcha_compression.source).to.equal("stored");
+  });
+
+  test("the stored value should no longer be shadowed", function() {
+    expect(res.body.config.captcha_compression.shadowed_by).to.be.undefined;
+  });
+}
+
+docs {
+  The other half of the shadowing story: the stored value was never lost, and becomes the
+  effective one the moment the layer above it goes away.
+}

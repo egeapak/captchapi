@@ -1,0 +1,43 @@
+meta {
+  name: Put Stored Config - Success
+  type: http
+  seq: 12
+}
+
+put {
+  url: {{base_url}}/api/v1/admin/config/stored
+}
+
+headers {
+  Content-Type: application/json
+  Authorization: Bearer {{master_key}}
+}
+
+body {
+  {
+    "captcha_compression": 66
+  }
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should persist the value", function() {
+    expect(res.body.stored.captcha_compression).to.equal("66");
+  });
+
+  test("a live field should be in effect immediately", function() {
+    expect(res.body.pending_restart).to.not.include("captcha_compression");
+    expect(res.body.shadowed).to.not.include("captcha_compression");
+    // "all are in effect", not merely "in effect" — the shadowed message says
+    // "not in effect" and would satisfy the looser assertion.
+    expect(res.body.message).to.contain("all are in effect");
+  });
+}
+
+docs {
+  Storing a live field applies it at once, exactly as PATCH would, and additionally survives
+  a restart. The cleanup request that follows removes it again so the suite stays repeatable.
+}

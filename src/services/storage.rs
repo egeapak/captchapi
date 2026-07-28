@@ -13,6 +13,11 @@ impl StorageService {
         Self { pool }
     }
 
+    /// The underlying pool, for services that share this database.
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
     // Session operations
     #[tracing::instrument(skip(self, session), fields(session_id = %session.id))]
     pub async fn create_session(&self, session: &Session) -> Result<()> {

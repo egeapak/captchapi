@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>CaptchAPI admin</title>
+<style>
+:root{
+color-scheme:light dark;
+--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,system-ui,sans-serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+--bg:#f3f5f9;--glow:#e5e9f5;--panel:#fff;--field:#fff;--sunk:#f7f8fb;
+--line:#e0e4ec;--hair:#eef0f5;--fg:#161a22;--dim:#5f6878;--faint:#98a0b0;
+--accent:#4a5fd0;--on-accent:#fff;--accent-soft:#eceffd;
+--ok:#0e7a4d;--ok-soft:#e6f4ec;--warn:#8a5300;--warn-soft:#fbf0dc;--err:#b32318;--err-soft:#fdeceb;
+/* Boot fields. A cooler, greyer blue than --accent on purpose: it has to read as
+   "not editable" next to the accent that marks the rows that are. */
+--info:#2f6795;--info-soft:#e7eff6;
+--ring:rgba(74,95,208,.28);
+--shadow:0 1px 2px rgba(16,20,35,.05),0 10px 28px -14px rgba(16,20,35,.25)
+}
+@media (prefers-color-scheme:dark){:root{
+--bg:#0c0e13;--glow:#151a26;--panel:#141821;--field:#0e121a;--sunk:#171c26;
+--line:#252b38;--hair:#1d222d;--fg:#e6eaf2;--dim:#909aab;--faint:#69727f;
+--accent:#8098ff;--on-accent:#0a0d16;--accent-soft:#1a2138;
+--ok:#4fcb92;--ok-soft:#10251d;--warn:#e0b163;--warn-soft:#282013;--err:#f2867d;--err-soft:#2a1618;
+--info:#6fb2de;--info-soft:#111d2a;
+--ring:rgba(128,152,255,.3);
+--shadow:0 1px 2px rgba(0,0,0,.5),0 14px 34px -18px #000
+}}
+*{box-sizing:border-box}
+body{margin:0;padding:2.5rem 1.25rem;min-height:100vh;background:var(--bg);
+background-image:radial-gradient(48rem 22rem at 50% -6rem,var(--glow),transparent 70%);
+color:var(--fg);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+main{max-width:58rem;margin:0 auto}
+body.gated main{max-width:25rem;display:flex;flex-direction:column;justify-content:center;min-height:calc(100vh - 5rem)}
+h1{font-size:1rem;font-weight:600;letter-spacing:-.01em;margin:0}
+p{margin:0}
+.sub{color:var(--dim);font-size:.8rem}
+
+/* header */
+.top{display:flex;align-items:center;gap:.7rem;margin:0 0 1.5rem}
+.mark{flex:none;width:2.1rem;height:2.1rem;border-radius:.6rem;display:grid;place-items:center;
+color:var(--accent);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--line)}
+body.gated .top{flex-direction:column;text-align:center;gap:.85rem;margin-bottom:1.25rem}
+body.gated .mark{width:2.6rem;height:2.6rem;border-radius:.85rem}
+
+/* controls */
+input{font:inherit;color:inherit;width:100%;background:var(--field);border:1px solid var(--line);
+border-radius:8px;padding:.5rem .65rem;transition:border-color .15s,box-shadow .15s}
+input:focus-visible{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+button{font:600 .84rem/1.4 var(--sans);color:var(--fg);background:var(--panel);border:1px solid var(--line);
+border-radius:8px;padding:.48rem .8rem;cursor:pointer;transition:.15s}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:focus-visible{outline:0;box-shadow:0 0 0 3px var(--ring)}
+button:disabled{opacity:.4;cursor:not-allowed}
+.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.primary:hover:not(:disabled){color:var(--on-accent);filter:brightness(1.08)}
+/* gate */
+.gate{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1.4rem;box-shadow:var(--shadow)}
+.gate button{width:100%;margin-top:.7rem;padding:.6rem}
+.foot{text-align:center;margin-top:.9rem;font-size:.75rem;color:var(--faint)}
+
+/* status */
+.msg{display:none;gap:.55rem;align-items:baseline;font-size:.85rem;margin:0 0 1rem;padding:.65rem .85rem;
+border:1px solid var(--line);border-left:3px solid var(--faint);border-radius:10px;
+background:var(--panel);color:var(--dim);overflow-wrap:anywhere}
+.msg.on{display:flex}
+.msg::before{content:"";flex:none;width:.4rem;height:.4rem;border-radius:50%;background:currentColor;transform:translateY(-.15rem)}
+.msg.ok{color:var(--ok);border-color:var(--line);border-left-color:var(--ok);background:var(--ok-soft)}
+.msg.err{color:var(--err);border-color:var(--line);border-left-color:var(--err);background:var(--err-soft)}
+
+/* pending restart */
+.restart{display:flex;gap:.55rem;align-items:baseline;font-size:.85rem;margin:0 0 1rem;
+padding:.65rem .85rem;border:1px solid var(--line);border-left:3px solid var(--warn);
+border-radius:10px;background:var(--warn-soft);color:var(--warn);overflow-wrap:anywhere}
+.restart::before{content:"";flex:none;width:.4rem;height:.4rem;border-radius:50%;
+background:currentColor;transform:translateY(-.15rem)}
+.restart b{font-weight:600}
+.restart code{font-family:var(--mono);font-size:.8rem}
+
+/* legend + table */
+.legend{display:flex;flex-wrap:wrap;align-items:center;gap:.35rem .5rem;font-size:.78rem;color:var(--dim);margin:0 0 .85rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font:600 .68rem/1 var(--sans);letter-spacing:.09em;text-transform:uppercase;color:var(--faint);
+text-align:left;padding:.65rem .9rem;background:var(--sunk);border-bottom:1px solid var(--line)}
+th:first-child{width:40%}
+th:nth-child(2){width:38%}
+th:last-child{text-align:right}
+td{padding:.45rem .9rem;border-bottom:1px solid var(--hair);vertical-align:top}
+td.v,td.s{vertical-align:middle}
+tr:last-child td{border-bottom:0}
+tr.live:hover td{background:var(--sunk)}
+td.k{font:.79rem/1.4 var(--mono);letter-spacing:-.01em;white-space:nowrap;color:var(--dim);
+border-left:2px solid transparent}
+.stored{display:block;font:.72rem/1.3 var(--sans);color:var(--info);margin-top:.3rem}
+.stored.shadow{color:var(--warn)}
+.about{display:block;font:.74rem/1.35 var(--sans);letter-spacing:0;color:var(--faint);
+white-space:normal;margin-top:.15rem;max-width:34rem}
+tr.live td.k{color:var(--fg);border-left-color:var(--accent)}
+tr.pinned td.k{border-left-color:var(--warn)}
+tr.dirty td.k{border-left-color:var(--warn)}
+td.v{padding-left:.3rem}
+td.v input{font-family:var(--mono);font-size:.79rem;text-overflow:ellipsis}
+td.s{text-align:right;white-space:nowrap}
+input:disabled{background:0 0;border-color:transparent;color:var(--dim);cursor:default}
+tr.secret input{color:var(--faint)}
+input::placeholder{color:var(--faint);opacity:.5}
+tr.dirty td.v input{border-color:var(--warn)}
+
+/* tags */
+.tag{display:inline-flex;align-items:center;gap:.35rem;font:600 .66rem/1 var(--sans);letter-spacing:.06em;
+text-transform:uppercase;padding:.3rem .5rem;border-radius:999px;border:1px solid transparent;
+color:var(--faint);background:var(--sunk)}
+.tag::before{content:"";width:.36rem;height:.36rem;border-radius:50%;background:currentColor}
+.tag.live{color:var(--ok);background:var(--ok-soft)}
+.tag.boot{color:var(--info);background:var(--info-soft)}
+.tag.pinned{color:var(--warn);background:0 0;border-color:var(--line);border-style:dashed}
+.tag.dirty{color:var(--warn);background:var(--warn-soft)}
+.tag.secret{color:var(--faint);background:0 0;border-color:var(--line);border-style:dashed}
+
+/* action bar */
+.bar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:1.1rem}
+.bar .spacer{flex:1}
+#pend{display:none;font-size:.78rem;font-weight:600;color:var(--warn);padding-left:.15rem}
+.bar.dirty #pend{display:inline}
+.note{margin-top:1.1rem;font-size:.78rem;color:var(--dim);overflow-wrap:anywhere}
+.hide{display:none}
+
+@media (max-width:40rem){
+body{padding:1.5rem 1rem}
+thead{display:none}
+table,tbody,td{display:block}
+tr{display:grid;grid-template-columns:1fr auto;gap:.15rem .5rem;align-items:center;
+padding:.6rem .85rem;border-bottom:1px solid var(--hair);border-left:2px solid transparent}
+tr.live{border-left-color:var(--accent)}
+tr.dirty{border-left-color:var(--warn)}
+td{padding:0;border:0}
+td.k{grid-area:1/1;border-left:0;white-space:normal;overflow-wrap:anywhere}
+td.s{grid-area:1/2}
+td.v{grid-area:2/1/3/3;width:auto;padding:0}
+td.v input{padding:.35rem .5rem;margin-top:.3rem}
+.bar button{flex:1 1 auto}
+}
+</style>
+</head>
+<body class="gated">
+<main>
+  <header class="top">
+    <span class="mark" aria-hidden="true"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2l7 2.8v5.6c0 4.3-2.9 7.7-7 9.2-4.1-1.5-7-4.9-7-9.2V6z"/><path d="m9.2 12.1 2 2 3.8-4"/></svg></span>
+    <div>
+      <h1>CaptchAPI</h1>
+      <p class="sub">Runtime configuration console</p>
+    </div>
+  </header>
+
+  <div id="msg" class="msg"></div>
+  <div id="pending" class="restart hide"></div>
+
+  <form id="gate" class="gate">
+    <input id="key" type="password" autocomplete="current-password" aria-label="Master API key"
+           placeholder="Master API key" autofocus required>
+    <button class="primary">Unlock</button>
+    <p class="foot">Held in memory for this tab only.</p>
+  </form>
+
+  <section id="panel" class="hide">
+    <p class="legend">
+      <span class="tag live">live</span> editable now
+      <span class="tag boot">boot</span> restart to change
+      <span class="tag pinned">set by cli/env</span> change it there
+      <span class="tag secret">secret</span> hidden
+    </p>
+    <div class="card">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th><th>Scope</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="bar" id="bar">
+      <button id="apply" class="primary" disabled>Apply</button>
+      <button id="persist" disabled>Apply &amp; store</button>
+      <button id="revert" disabled>Revert</button>
+      <span id="pend"></span>
+      <span class="spacer"></span>
+      <button id="reload">Reload from sources</button>
+      <button id="restart" class="hide">Restart</button>
+      <button id="cleanup">Run cleanup</button>
+      <button id="lock">Lock</button>
+    </div>
+    <p class="note" id="ovr"></p>
+  </section>
+</main>
+<!-- Absolute: a relative src resolves against /admin (no trailing slash) and would 404. -->
+<script src="/admin/app.js"></script>
+</body>
+</html>

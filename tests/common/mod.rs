@@ -88,11 +88,19 @@ impl TestApp {
     /// churn. The caller is responsible for setting `master_api_key` if it matters.
     #[allow(dead_code)] // Used in some test files, but clippy doesn't see cross-module usage
     pub fn build_app_with_config(&self, config: Config) -> Router {
+        self.build_app_with_handle(ConfigHandle::from_static(config))
+    }
+
+    /// Build the app over a configuration handle the caller assembled.
+    ///
+    /// The way to get a handle with real provenance — `ConfigHandle::from_static_with_cli` —
+    /// which `build_app_with_config` cannot express, since it takes a bare `Config`.
+    #[allow(dead_code)] // Used in some test files, but clippy doesn't see cross-module usage
+    pub fn build_app_with_handle(&self, config: ConfigHandle) -> Router {
         let captcha = Arc::new(CaptchaService::new());
         let metrics = Arc::new(Metrics::new());
         // `Config::for_test()` carries the same secrets this harness passes to SolutionHasher
         // and ImageCipher above, so the config and the services agree.
-        let config = ConfigHandle::from_static(config);
 
         let auth_middleware = AuthMiddleware::new(
             self.storage.clone(),
@@ -122,6 +130,8 @@ impl TestApp {
             storage: self.storage.clone(),
             metrics: metrics.clone(),
             config: config.clone(),
+            store: captchapi::services::ConfigStore::new(self.storage.pool().clone()),
+            restart: None,
         };
 
         Router::new()
