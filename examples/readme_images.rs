@@ -14,7 +14,7 @@
 //! judging whether the render is still legible.
 
 use captchapi::services::CaptchaService;
-use captchapi::validation::{DEFAULT_COMPRESSION, DEFAULT_HEIGHT, DEFAULT_WIDTH};
+use captchapi::validation::{DEFAULT_COMPRESSION, DEFAULT_HEIGHT, DEFAULT_LENGTH, DEFAULT_WIDTH};
 
 fn main() {
     let service = CaptchaService::new();
@@ -27,7 +27,7 @@ fn main() {
     ] {
         let (text, bytes) = service
             .generate(
-                5,
+                DEFAULT_LENGTH,
                 difficulty,
                 DEFAULT_WIDTH,
                 DEFAULT_HEIGHT,

@@ -69,17 +69,49 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 /// so choosing 8 buys an unmeasurable amount of safety for 20% more render time
 /// and 20% more stored bytes.
 ///
-/// **`DEFAULT_LENGTH` is the lever instead.** Pooled over difficulty 5-8 and
-/// every arm, length 4 and length 5 both went 8/40 = 20% while **length 6 went
-/// 0/40, 95% CI [0%, 8.8%]**. Solving needs every character and these arms sit
-/// at 44-64% per character, so the solve rate falls geometrically with length
-/// while render time barely moves. If this service needs a lower rate than 8.3%,
-/// raise the length before the difficulty.
+/// **[`DEFAULT_LENGTH`] is the lever instead, and it has been raised to 6** —
+/// see that constant for the numbers. The figures above are therefore the *old*
+/// default's exposure: they were measured across lengths 4-6, and the shipped
+/// configuration now excludes the two easier thirds of that mix.
 ///
 /// `blur` does not scale with this value; it is held flat at every level above
 /// 1. See `FLAT_BLUR`.
 pub const DEFAULT_DIFFICULTY: i64 = 5;
-pub const DEFAULT_LENGTH: i64 = 5;
+
+/// Number of characters in a solution when a request does not name one.
+///
+/// **Raised from 5 to 6, and this is the single most effective knob measured on
+/// this renderer.** Pooled over difficulty 5-8, both frontier models, and
+/// vision-only as well as tool-equipped arms:
+///
+/// ```text
+/// length 4    8/40 = 20%   95% CI [10.5%, 34.8%]   58% of characters
+/// length 5    8/40 = 20%   95% CI [10.5%, 34.8%]   64% of characters
+/// length 6    0/40 =  0%   95% CI [   0%,  8.8%]   44% of characters
+/// ```
+///
+/// **Zero solves in forty attempts at length 6.** With `MAX_VALIDATION_ATTEMPTS`
+/// at 3 that is a per-session defeat probability under 25% even at the interval's
+/// upper bound, against 28-72% at length 5.
+///
+/// The mechanism is arithmetic rather than mysterious, which is why it is worth
+/// trusting more than the raw counts. Solving requires *every* character, so the
+/// solve rate is roughly the per-character accuracy raised to the length. These
+/// arms sit at 44-64% per character, and 0.64^5 is about 11% while 0.44^6 is
+/// under 1%. Each extra character multiplies the attacker's problem; each extra
+/// difficulty level only adds noise to it.
+///
+/// It is also close to free, in both directions that matter:
+///
+/// * **Render time.** Length 3 to 12 moves the median from 6.6ms to 7.9ms, so 5
+///   to 6 is about 2%. Compare 20% for difficulty 5 to 8.
+/// * **Human effort.** A longer string of legible letters is far easier than a
+///   shorter string of mangled ones. Raising length instead of difficulty buys
+///   the same machine resistance without taking legibility away.
+///
+/// The cost is bytes and typing: about 6% more stored image per session, and one
+/// more character for the user to read and enter.
+pub const DEFAULT_LENGTH: i64 = 6;
 pub const DEFAULT_WIDTH: i64 = 220;
 pub const DEFAULT_HEIGHT: i64 = 120;
 pub const DEFAULT_DARK_MODE: bool = false;

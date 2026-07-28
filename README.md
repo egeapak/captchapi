@@ -41,7 +41,8 @@ CAPTCHA images are rendered in-process with configurable difficulty and dark mod
 
 - **Developer Friendly**
   - Full REST API with JSON responses
-  - Configurable CAPTCHA difficulty (1-10), dimensions, and compression
+  - Configurable CAPTCHA length, difficulty (1-10), dimensions, and compression
+  - Defaults chosen by measured solve rate, not by feel — see [Tuning](#tuning-length-and-difficulty)
   - Dark mode support
   - Complete API documentation
   - Command-line interface with `config show` / `config check` for deployment pipelines
@@ -153,7 +154,7 @@ Save the returned `api_key` value — it's only shown once.
 curl -X POST http://localhost:3000/api/v1/sessions \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"length": 5, "difficulty": 5, "expires_in_seconds": 300}'
+  -d '{"length": 6, "difficulty": 5, "expires_in_seconds": 300}'
 ```
 
 ### 3. Display the CAPTCHA Image
@@ -168,11 +169,77 @@ curl -X POST http://localhost:3000/api/v1/sessions \
 curl -X POST http://localhost:3000/api/v1/sessions/{session_id}/validate \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"solution": "aBc5X"}'
+  -d '{"solution": "aBc5Xq"}'
 ```
 
-- Validation is **case-sensitive**: `aBc5X` ≠ `abc5x`
+- Validation is **case-sensitive**: `aBc5Xq` ≠ `abc5xq`
 - Session is **auto-deleted** after successful validation
+
+### Tuning length and difficulty
+
+The defaults are `length: 6`, `difficulty: 5`. Both were set by measuring how
+often frontier vision models actually solve the images this service serves —
+Opus 5 and Sonnet 5, given the character set, the exact solution length, a
+description of every deformation, and (for the tool-equipped arms) python, Pillow,
+numpy and the bundled font to template-match against. That is a maximally
+advantaged attacker, which is the right one to design against.
+
+**Length is the sharper knob, and it is not close.** Pooled over difficulty 5-8
+and every arm:
+
+| length | solved | per-character accuracy |
+|---|---|---|
+| 4 | 8/40 = 20% | 58% |
+| 5 | 8/40 = 20% | 64% |
+| **6 (default)** | **0/40 = 0%** — 95% CI [0%, 8.8%] | 44% |
+
+The mechanism is arithmetic: solving requires *every* character, so the solve rate
+is roughly the per-character accuracy raised to the length. At 44-64% per
+character, `0.64^5` is about 11% and `0.44^6` is under 1%. Each extra character
+multiplies the attacker's problem.
+
+**Difficulty is the blunter knob**, and past the default it mostly costs
+legibility:
+
+| level | solved | per-character accuracy |
+|---|---|---|
+| 5 (default) | 7/84 = 8.3% — 95% CI [4.1%, 16.2%] | 66% |
+| 6 | 6/24 = 25% | 63% |
+| 7 | 2/24 = 8.3% | 38% |
+| 8 | 1/24 = 4.2% | 37% |
+
+Read the character column, not the solve column — the solve counts rest on 24
+attempts per level and are not even monotonic, while the character rate rests on
+120 per level and falls cleanly. Levels 5 and 8 have almost completely overlapping
+intervals, so choosing 8 buys an unmeasurable amount of safety for **20% more
+render time and 20% more stored bytes**, and images a human finds materially
+harder.
+
+**Practical guidance:**
+
+| you want | do this |
+|---|---|
+| more resistance | raise `length` to 7+ before touching `difficulty` |
+| accessibility | drop `difficulty` to 2-3; those levels stay clearly legible |
+| smaller images | lower `difficulty`, not `length` — noise dominates the encoded size |
+| a short input field | lower `length`, and accept the measured cost above |
+
+**What holds the rate is the rendering.** Ten deformations are drawn
+independently *per letter* — jitter, scale, skew, wave, rotation, clustering,
+outline, transparency, gradient and blur — so no single rule describes a whole
+solution. Two of them specifically defeated the image-processing attack that used
+to work: `gradient` ramps hue across a single letter and the blur is applied
+*after* compositing, so it smears each letter into its neighbour. Hue-band
+splitting no longer isolates a glyph, and a tooled solver now does no better than
+one that simply looks (paired per image, p = 1.0, at 5-6x the token cost).
+
+**Caveats worth stating.** These figures rest on tens of attempts, not thousands;
+treat directions as reliable and magnitudes as indicative. `0/40` is an upper
+bound of 8.8%, not a guarantee of zero. And every arm recovers 44-66% of
+individual characters, so many failures are near-misses that case-sensitive
+validation converts into failed solves — the margin is thinner than the solve rate
+suggests. Full measurements, methodology and reproduction steps are in
+`.claude/CLAUDE.md`.
 - After **3 failed attempts**, the session is automatically deleted
 
 ### Error Handling

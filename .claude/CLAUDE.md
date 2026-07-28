@@ -618,9 +618,15 @@ cargo nextest run
    so 5 to 6 is about 2% — and it is far gentler on a human than cranking difficulty, since a longer
    string of legible letters beats a shorter string of mangled ones.
 
-   Raising `DEFAULT_LENGTH` to 6 has **not** been done here; it is a user-facing default and the call
-   is the operator's. But it is the first thing to reach for, ahead of difficulty and well ahead of
-   another deformation.
+   **`DEFAULT_LENGTH` is therefore 6, raised from 5 on this evidence.** It is the first thing to reach
+   for, ahead of difficulty and well ahead of another deformation. The cost is about 6% more stored
+   bytes and one more character for the user to type; the difficulty dial would have charged 20% more
+   render time for an unmeasurable gain and a real loss of legibility.
+
+   Note what that does to the difficulty-5 figures above: they were measured across lengths 4-6, so
+   they describe the *old* default's exposure. The shipped configuration now excludes the two easier
+   thirds of that mix, and the honest way to read the pooled 8.3% is as an upper bound on what
+   length 6 alone would give.
 
    Implementation note worth not undoing: rotation goes through
    `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row
@@ -1061,6 +1067,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-07-27
+**Last Updated**: 2026-07-28
 **Version**: 1.0.1
 **Rust Edition**: 2021
