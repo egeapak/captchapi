@@ -17,10 +17,23 @@ pub type Layer = BTreeMap<String, String>;
 /// Which layer supplied a value. Reported by `config show` so a layered setup stays debuggable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
+    /// Set at runtime through the admin API. Ephemeral: cleared by the next reload.
+    ///
+    /// Distinct from [`Source::Cli`] even though it outranks it, because the two must not be
+    /// confused: a value the admin API set is by definition one the admin API may set again,
+    /// while a command-line value is pinned for the life of the process.
+    Admin,
     /// A command-line flag.
     Cli,
     /// A process environment variable.
     Env,
+    /// The `config_settings` table in the database.
+    ///
+    /// Below the command line and the environment, which are the recovery path: a stored value
+    /// that misbehaves must be overridable with `captchapi --port 3000` without anyone having
+    /// to open SQLite. Above the files, which are the deployment baseline that durable operator
+    /// intent is meant to override.
+    Stored,
     /// An env file (`.env` or `--env-file`).
     EnvFile,
     /// The TOML config file.
@@ -35,25 +48,88 @@ impl Source {
     /// Short label used in `config show` output.
     pub fn label(&self) -> &'static str {
         match self {
+            Source::Admin => "admin",
             Source::Cli => "cli",
             Source::Env => "env",
+            Source::Stored => "stored",
             Source::EnvFile => "env-file",
             Source::File => "file",
             Source::Carried => "carried",
             Source::Default => "default",
         }
     }
+
+    /// Whether this layer is fixed for the life of the process.
+    ///
+    /// The command line and the process environment are handed to the server at exec time and
+    /// cannot change while it runs — not by editing a file, not by SIGHUP. Every other layer
+    /// can be re-read. That difference is what makes the admin API refuse to override these
+    /// two: the override would work, but only until the next reload discarded it, and there
+    /// would be no way to make it durable short of restarting with different arguments. An
+    /// override that cannot be made to stick is drift between the running server and the
+    /// deployment that declared it, which is exactly what the reload path already refuses to
+    /// create when it reports boot drift instead of applying it.
+    pub fn is_pinned(&self) -> bool {
+        matches!(self, Source::Cli | Source::Env)
+    }
 }
+
+/// Which layer answered for each parameter, captured when the configuration was resolved.
+///
+/// Keyed by `Param::field`, matching what the admin API speaks.
+#[derive(Debug, Clone, Default)]
+pub struct Sources(BTreeMap<&'static str, Source>);
+
+impl Sources {
+    /// Record the layer that answers for every parameter in [`PARAMS`].
+    pub fn capture<E: EnvProvider>(layered: &LayeredEnv<'_, E>) -> Self {
+        Self(
+            PARAMS
+                .iter()
+                .map(|param| (param.field, layered.source_of(param.env)))
+                .collect(),
+        )
+    }
+
+    /// The layer that supplied `field`, or [`Source::Default`] for anything unrecorded.
+    ///
+    /// Defaulting rather than returning an `Option` is deliberate: an unknown field is one no
+    /// layer set, and the one caller that matters — the pinning check — must fail open to
+    /// "editable" rather than locking a field it has no information about.
+    pub fn get(&self, field: &str) -> Source {
+        self.0.get(field).copied().unwrap_or(Source::Default)
+    }
+
+    /// Whether `field` came from a layer that cannot change while the process runs.
+    pub fn is_pinned(&self, field: &str) -> bool {
+        self.get(field).is_pinned()
+    }
+}
+
+/// Empty layers, so `LayeredEnv::new` can leave the optional ones unset without every caller
+/// having to invent them.
+static NO_OVERLAY: Layer = Layer::new();
+static NO_STORED: Layer = Layer::new();
 
 /// The stack of configuration layers, in precedence order.
 ///
-/// `cli` > `env` (process) > `env_file` > `file` (TOML) > `carried` > built-in default.
+/// `overlay` (admin API) > `cli` > `env` (process) > `stored` (database) > `env_file` >
+/// `file` (TOML) > `carried` > built-in default.
 ///
 /// The env file sits *below* the process environment to preserve today's behaviour: the current
 /// `dotenvy::dotenv()` call does not overwrite variables that are already set.
 pub struct LayeredEnv<'a, E: EnvProvider> {
+    /// Values set at runtime through the admin API. Outranks everything, because an operator
+    /// changing a value through the API means it now — but it is tracked as its own layer
+    /// rather than merged into `cli`, so [`source_of`](Self::source_of) can still tell the two
+    /// apart. Merging them would make a field report itself as command-line-set the moment it
+    /// was patched once, and so pin itself against ever being patched again.
+    pub overlay: &'a Layer,
     pub cli: &'a Layer,
     pub env: &'a E,
+    /// Values persisted in `config_settings`. Durable, unlike the overlay, and overridable by
+    /// the two process-level layers above it, which is what keeps them a recovery path.
+    pub stored: &'a Layer,
     pub env_file: &'a Layer,
     pub file: &'a Layer,
     /// Boot-only values carried over from the running config during a reload, so a reload cannot
@@ -71,12 +147,26 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
         carried: &'a Layer,
     ) -> Self {
         Self {
+            overlay: &NO_OVERLAY,
             cli,
             env,
+            stored: &NO_STORED,
             env_file,
             file,
             carried,
         }
+    }
+
+    /// Put the admin API's runtime overrides on top of the stack.
+    pub fn with_overlay(mut self, overlay: &'a Layer) -> Self {
+        self.overlay = overlay;
+        self
+    }
+
+    /// Insert the persisted settings, below the process-level layers and above the files.
+    pub fn with_stored(mut self, stored: &'a Layer) -> Self {
+        self.stored = stored;
+        self
     }
 
     /// Report which layer would answer `key`, probing in the same order as [`EnvProvider::get`].
@@ -85,10 +175,14 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
     /// recording would need interior mutability, and a `RefCell` here would make `LayeredEnv`
     /// `!Sync` — which breaks the moment a reload runs inside an async task.
     pub fn source_of(&self, key: &str) -> Source {
-        if self.cli.contains_key(key) {
+        if self.overlay.contains_key(key) {
+            Source::Admin
+        } else if self.cli.contains_key(key) {
             Source::Cli
         } else if self.env.get(key).is_ok() {
             Source::Env
+        } else if self.stored.contains_key(key) {
+            Source::Stored
         } else if self.env_file.contains_key(key) {
             Source::EnvFile
         } else if self.file.contains_key(key) {
@@ -103,10 +197,12 @@ impl<'a, E: EnvProvider> LayeredEnv<'a, E> {
 
 impl<E: EnvProvider> EnvProvider for LayeredEnv<'_, E> {
     fn get(&self, key: &str) -> Result<String, env::VarError> {
-        self.cli
+        self.overlay
             .get(key)
             .cloned()
+            .or_else(|| self.cli.get(key).cloned())
             .or_else(|| self.env.get(key).ok())
+            .or_else(|| self.stored.get(key).cloned())
             .or_else(|| self.env_file.get(key).cloned())
             .or_else(|| self.file.get(key).cloned())
             .or_else(|| self.carried.get(key).cloned())
@@ -398,12 +494,171 @@ mod tests {
 
     #[test]
     fn test_source_labels() {
+        assert_eq!(Source::Admin.label(), "admin");
         assert_eq!(Source::Cli.label(), "cli");
         assert_eq!(Source::Env.label(), "env");
         assert_eq!(Source::EnvFile.label(), "env-file");
         assert_eq!(Source::File.label(), "file");
         assert_eq!(Source::Carried.label(), "carried");
         assert_eq!(Source::Default.label(), "default");
+    }
+
+    /// Exactly two layers are fixed for the life of the process, and the whole pinning rule
+    /// rests on that list being right — so it is spelled out rather than spot-checked.
+    #[test]
+    fn test_only_the_process_level_layers_are_pinned() {
+        assert!(Source::Cli.is_pinned());
+        assert!(Source::Env.is_pinned());
+
+        // Files can be edited and re-read, so an override there is something a reload can be
+        // made to agree with.
+        assert!(!Source::EnvFile.is_pinned());
+        assert!(!Source::File.is_pinned());
+        assert!(!Source::Default.is_pinned());
+        assert!(!Source::Carried.is_pinned());
+        // And a value this API set is by definition one it may set again.
+        assert!(!Source::Admin.is_pinned());
+    }
+
+    #[test]
+    fn test_the_overlay_outranks_the_command_line() {
+        let overlay = layer(&[("CAPTCHA_COMPRESSION", "90")]);
+        let cli = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried).with_overlay(&overlay);
+
+        assert_eq!(l.get("CAPTCHA_COMPRESSION").unwrap(), "90");
+        assert_eq!(l.source_of("CAPTCHA_COMPRESSION"), Source::Admin);
+    }
+
+    #[test]
+    fn test_without_an_overlay_the_command_line_still_answers() {
+        let cli = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried);
+
+        assert_eq!(l.get("CAPTCHA_COMPRESSION").unwrap(), "70");
+        assert_eq!(l.source_of("CAPTCHA_COMPRESSION"), Source::Cli);
+    }
+
+    /// The whole stack, top to bottom, in one assertion.
+    ///
+    /// Precedence is the thing most likely to be broken by a careless edit to `get`, and the
+    /// per-pair tests below each cover only one boundary. This covers every boundary at once by
+    /// removing layers from the top and watching the next one take over.
+    #[test]
+    fn test_every_layer_yields_to_the_one_above_it() {
+        let key = "CAPTCHA_COMPRESSION";
+        let overlay = layer(&[(key, "1")]);
+        let cli = layer(&[(key, "2")]);
+        let env = MockEnv::new().with(key, "3");
+        let stored = layer(&[(key, "4")]);
+        let env_file = layer(&[(key, "5")]);
+        let file = layer(&[(key, "6")]);
+        let carried = layer(&[(key, "7")]);
+
+        let full = LayeredEnv::new(&cli, &env, &env_file, &file, &carried)
+            .with_overlay(&overlay)
+            .with_stored(&stored);
+        assert_eq!(full.get(key).unwrap(), "1");
+        assert_eq!(full.source_of(key), Source::Admin);
+
+        let no_overlay =
+            LayeredEnv::new(&cli, &env, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_overlay.get(key).unwrap(), "2");
+        assert_eq!(no_overlay.source_of(key), Source::Cli);
+
+        let empty = Layer::new();
+        let no_cli = LayeredEnv::new(&empty, &env, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_cli.get(key).unwrap(), "3");
+        assert_eq!(no_cli.source_of(key), Source::Env);
+
+        let none = MockEnv::new();
+        let no_env =
+            LayeredEnv::new(&empty, &none, &env_file, &file, &carried).with_stored(&stored);
+        assert_eq!(no_env.get(key).unwrap(), "4", "stored answers below env");
+        assert_eq!(no_env.source_of(key), Source::Stored);
+
+        let no_stored = LayeredEnv::new(&empty, &none, &env_file, &file, &carried);
+        assert_eq!(
+            no_stored.get(key).unwrap(),
+            "5",
+            "env-file answers below stored"
+        );
+        assert_eq!(no_stored.source_of(key), Source::EnvFile);
+
+        let no_env_file = LayeredEnv::new(&empty, &none, &empty, &file, &carried);
+        assert_eq!(no_env_file.get(key).unwrap(), "6");
+        assert_eq!(no_env_file.source_of(key), Source::File);
+
+        let only_carried = LayeredEnv::new(&empty, &none, &empty, &empty, &carried);
+        assert_eq!(only_carried.get(key).unwrap(), "7");
+        assert_eq!(only_carried.source_of(key), Source::Carried);
+
+        let nothing = LayeredEnv::new(&empty, &none, &empty, &empty, &empty);
+        assert!(nothing.get(key).is_err());
+        assert_eq!(nothing.source_of(key), Source::Default);
+    }
+
+    /// The two boundaries that define what "stored" means, stated on their own.
+    ///
+    /// Above the files, so durable operator intent overrides the deployment baseline. Below the
+    /// environment, so `SERVER_PORT=3000 captchapi` remains a way back from a stored value that
+    /// prevents the service from working.
+    #[test]
+    fn test_stored_beats_files_but_yields_to_the_environment() {
+        let key = "SERVER_PORT";
+        let (empty, stored) = (Layer::new(), layer(&[(key, "8080")]));
+        let file = layer(&[(key, "9090")]);
+
+        let none = MockEnv::new();
+        let no_env = LayeredEnv::new(&empty, &none, &empty, &file, &empty).with_stored(&stored);
+        assert_eq!(no_env.get(key).unwrap(), "8080");
+
+        let env = MockEnv::new().with(key, "3000");
+        let with_env = LayeredEnv::new(&empty, &env, &empty, &file, &empty).with_stored(&stored);
+        assert_eq!(
+            with_env.get(key).unwrap(),
+            "3000",
+            "the recovery path holds"
+        );
+        assert_eq!(with_env.source_of(key), Source::Env);
+    }
+
+    #[test]
+    fn test_a_stored_value_is_not_pinned() {
+        // The point of the layer: unlike cli and env, a stored value is one the admin API may
+        // change. If `Stored` were ever pinned, storing a value would lock it.
+        assert!(!Source::Stored.is_pinned());
+
+        let stored = layer(&[("CAPTCHA_COMPRESSION", "70")]);
+        let empty = Layer::new();
+        let none = MockEnv::new();
+        let l = LayeredEnv::new(&empty, &none, &empty, &empty, &empty).with_stored(&stored);
+
+        assert!(!Sources::capture(&l).is_pinned("captcha_compression"));
+    }
+
+    #[test]
+    fn test_capture_records_a_layer_for_every_parameter() {
+        let cli = layer(&[("SERVER_PORT", "9999")]);
+        let (env, env_file, file, carried) =
+            (MockEnv::new(), Layer::new(), Layer::new(), Layer::new());
+        let l = LayeredEnv::new(&cli, &env, &env_file, &file, &carried);
+
+        let sources = Sources::capture(&l);
+
+        assert_eq!(sources.get("server_port"), Source::Cli);
+        assert!(sources.is_pinned("server_port"));
+        assert_eq!(sources.get("captcha_compression"), Source::Default);
+        assert!(!sources.is_pinned("captcha_compression"));
+        // Fails open: a field no layer mentioned must not be treated as pinned.
+        assert_eq!(sources.get("nonexistent_field"), Source::Default);
+        assert!(!sources.is_pinned("nonexistent_field"));
     }
 
     // ── TOML parsing ──────────────────────────────────────────────────────────

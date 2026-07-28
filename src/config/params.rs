@@ -18,6 +18,20 @@ pub enum Kind {
     SecretFile,
 }
 
+/// Whether a parameter may be stored in the database and survive a restart.
+///
+/// Separate from [`Reload`], which asks whether the *running* process can adopt a new value.
+/// A boot-only parameter can still be stored — the stored value is what the next start reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Persist {
+    /// Storable. Written to `config_settings` and read back as a configuration layer.
+    Allowed,
+    /// Never stored, for one of exactly three reasons: it is a secret, it is needed to open
+    /// the database the store lives in, or it is consumed before the store is read and has no
+    /// way to be reconfigured afterwards.
+    Never,
+}
+
 /// Whether a parameter can change at runtime or is fixed for the life of the process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reload {
@@ -45,11 +59,19 @@ pub struct Param {
     pub toml: Option<&'static str>,
     pub kind: Kind,
     pub reload: Reload,
+    /// Whether this parameter may be persisted in the database.
+    pub persist: Persist,
     /// Redact the value in `config show` and in the admin API.
     pub secret: bool,
     /// Built-in default, or `None` when the parameter is required.
     pub default: Option<&'static str>,
+    /// One-line description for `--help`, where it shares a column with every other flag and
+    /// so has to stay short.
     pub help: &'static str,
+    /// A sentence explaining what the parameter does, and what changing it costs when that is
+    /// not obvious. Reported by the admin API and shown in the console, where there is room to
+    /// say the thing `help` has to leave out.
+    pub about: &'static str,
 }
 
 /// Every configuration parameter the service understands.
@@ -62,9 +84,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("server.host"),
         kind: Kind::Str,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("0.0.0.0"),
         help: "Address to bind the HTTP listener to",
+        about: "The address the HTTP listener binds to: 0.0.0.0 accepts connections on every interface, 127.0.0.1 only from this machine.",
     },
     Param {
         env: "SERVER_PORT",
@@ -74,9 +98,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("server.port"),
         kind: Kind::Num,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("3000"),
         help: "Port to listen on",
+        about: "The TCP port the HTTP listener binds to; 0 asks the operating system for an ephemeral port.",
     },
     Param {
         env: "PID_FILE",
@@ -86,9 +112,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("server.pid_file"),
         kind: Kind::Str,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("./data/captchapi.pid"),
         help: "Where to write the process ID, so `captchapi reload` can find the server",
+        about: "Where the running server writes its process ID, so `captchapi reload` can find it without being told.",
     },
     Param {
         env: "DATABASE_URL",
@@ -98,9 +126,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("database.url"),
         kind: Kind::Str,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: false,
         default: Some("sqlite:./data/captchapi.db"),
         help: "SQLite connection string (must start with 'sqlite:')",
+        about: "The SQLite file holding sessions and API keys; it and its parent directory are created if missing.",
     },
     Param {
         env: "DATABASE_MAX_CONNECTIONS",
@@ -110,9 +140,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("database.max_connections"),
         kind: Kind::Num,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: false,
         default: Some("5"),
         help: "Connection pool size",
+        about: "How many SQLite connections the pool keeps open; SQLite serialises writers, so raising this helps concurrent reads far more than writes.",
     },
     Param {
         env: "API_KEY_SALT",
@@ -122,9 +154,11 @@ pub const PARAMS: &[Param] = &[
         toml: None,
         kind: Kind::SecretFile,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: true,
         default: None,
         help: "File containing the API key hashing salt (min 16 bytes)",
+        about: "Salt mixed into every stored API key hash, and the fallback key for solution hashing and image encryption; changing it invalidates every existing API key.",
     },
     Param {
         env: "MASTER_API_KEY",
@@ -134,9 +168,11 @@ pub const PARAMS: &[Param] = &[
         toml: None,
         kind: Kind::SecretFile,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: true,
         default: None,
         help: "File containing the master admin key (min 16 bytes)",
+        about: "The credential granting full administrative access, including this console; protect it like a root password.",
     },
     Param {
         env: "SOLUTION_HASH_SECRET",
@@ -146,10 +182,12 @@ pub const PARAMS: &[Param] = &[
         toml: None,
         kind: Kind::SecretFile,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: true,
         // No static default: falls back to API_KEY_SALT at resolution time.
         default: None,
         help: "File containing the CAPTCHA solution hashing key (min 16 bytes; defaults to the API key salt)",
+        about: "Key used to hash CAPTCHA solutions so the database never holds an answer in plaintext; rotating it invalidates sessions issued before the restart.",
     },
     Param {
         env: "IMAGE_ENCRYPTION_SECRET",
@@ -159,10 +197,12 @@ pub const PARAMS: &[Param] = &[
         toml: None,
         kind: Kind::SecretFile,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: true,
         // No static default: falls back to API_KEY_SALT at resolution time.
         default: None,
         help: "File containing the stored-image encryption key (min 16 bytes; defaults to the API key salt)",
+        about: "Key used to encrypt stored CAPTCHA images at rest; rotating it leaves images from earlier sessions undecryptable.",
     },
     Param {
         env: "DEFAULT_SESSION_TTL_SECONDS",
@@ -172,9 +212,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("captcha.default_ttl_seconds"),
         kind: Kind::Num,
         reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("300"),
         help: "Default session lifetime in seconds",
+        about: "How long a new session stays valid when the client does not request a specific lifetime.",
     },
     Param {
         env: "MAX_SESSION_TTL_SECONDS",
@@ -184,9 +226,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("captcha.max_ttl_seconds"),
         kind: Kind::Num,
         reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("3600"),
         help: "Maximum session lifetime a client may request, in seconds",
+        about: "The longest lifetime a client may request; a longer request is rejected rather than shortened.",
     },
     Param {
         env: "MAX_VALIDATION_ATTEMPTS",
@@ -196,9 +240,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("captcha.max_validation_attempts"),
         kind: Kind::Num,
         reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("3"),
         help: "Failed validation attempts before a session is destroyed",
+        about: "How many failed solution attempts a session survives before it is destroyed.",
     },
     Param {
         env: "CAPTCHA_COMPRESSION",
@@ -208,9 +254,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("captcha.compression"),
         kind: Kind::Num,
         reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("40"),
         help: "JPEG quality from 1 to 100 (values outside the range are clamped)",
+        about: "JPEG quality for rendered images, from 1 to 100 and clamped into range; it trades bandwidth against fidelity and is not a security control.",
     },
     Param {
         env: "CLEANUP_INTERVAL_SECONDS",
@@ -220,9 +268,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("tasks.cleanup_interval_seconds"),
         kind: Kind::Num,
         reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("60"),
         help: "How often the background task removes expired sessions, in seconds",
+        about: "How often the background task deletes expired sessions from the database.",
     },
     Param {
         env: "RATE_LIMIT_REQUESTS_PER_SECOND",
@@ -232,9 +282,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("rate_limit.requests_per_second"),
         kind: Kind::Num,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("2"),
         help: "Sustained request rate allowed per client IP",
+        about: "Sustained requests each client IP may make to the session endpoints before being throttled.",
     },
     Param {
         env: "RATE_LIMIT_BURST_SIZE",
@@ -244,9 +296,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("rate_limit.burst_size"),
         kind: Kind::Num,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("10"),
         help: "Burst capacity allowed per client IP",
+        about: "How many requests a client IP may make back to back before the sustained rate starts to apply.",
     },
     Param {
         env: "RATE_LIMIT_REVERSE_PROXY",
@@ -256,9 +310,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("rate_limit.reverse_proxy"),
         kind: Kind::Bool,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("false"),
         help: "Read the client IP from proxy headers (only enable behind a trusted proxy)",
+        about: "Take the client IP from proxy headers instead of the socket; enable this only behind a proxy you control, because clients can otherwise spoof them and evade rate limiting.",
     },
     Param {
         env: "ADMIN_CONFIG_WRITE",
@@ -268,9 +324,25 @@ pub const PARAMS: &[Param] = &[
         toml: Some("admin.config_write"),
         kind: Kind::Bool,
         reload: Reload::Boot,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("true"),
         help: "Allow PATCH /api/v1/admin/config to change settings at runtime",
+        about: "Whether the admin API may change settings at runtime; turning it off still leaves reads and reloads working.",
+    },
+    Param {
+        env: "ADMIN_RESTART_ENABLED",
+        field: "admin_restart_enabled",
+        flag: "--admin-restart-enabled",
+        short: None,
+        toml: Some("admin.restart_enabled"),
+        kind: Kind::Bool,
+        reload: Reload::Boot,
+        persist: Persist::Allowed,
+        secret: false,
+        default: Some("false"),
+        help: "Allow POST /api/v1/admin/restart to restart the server",
+        about: "Whether the admin API may restart the server to apply stored boot settings; off by default because it is a remote kill switch for the service.",
     },
     Param {
         env: "RUST_LOG",
@@ -283,10 +355,12 @@ pub const PARAMS: &[Param] = &[
         // per-callsite interest caching for the whole subscriber, so every request pays for a
         // feature almost nobody uses. Not a good trade in a service built with `opt-level = "z"`.
         kind: Kind::Str,
-        reload: Reload::Boot,
+        reload: Reload::Live,
+        persist: Persist::Allowed,
         secret: false,
         default: Some("captchapi=debug,tower_http=debug"),
         help: "Tracing filter directives",
+        about: "Which modules log and at what level, in RUST_LOG syntax, for example `captchapi=debug,tower_http=info`.",
     },
     Param {
         env: "OTEL_ENABLED",
@@ -296,9 +370,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("telemetry.enabled"),
         kind: Kind::Bool,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: false,
         default: Some("false"),
         help: "Export traces over OTLP",
+        about: "Whether traces and metrics are exported over OTLP; it has no effect in a binary built without the `otel` feature.",
     },
     Param {
         env: "OTEL_EXPORTER_OTLP_ENDPOINT",
@@ -308,9 +384,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("telemetry.endpoint"),
         kind: Kind::Str,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: false,
         default: Some("http://localhost:4318"),
         help: "OTLP collector endpoint",
+        about: "The OTLP collector that receives exported traces and metrics.",
     },
     Param {
         env: "OTEL_SERVICE_NAME",
@@ -320,9 +398,11 @@ pub const PARAMS: &[Param] = &[
         toml: Some("telemetry.service_name"),
         kind: Kind::Str,
         reload: Reload::Boot,
+        persist: Persist::Never,
         secret: false,
         default: Some("captchapi"),
         help: "Service name reported on exported traces",
+        about: "The service name attached to exported telemetry, used to tell this service apart in a collector.",
     },
 ];
 
@@ -459,10 +539,15 @@ mod tests {
         assert!(by_toml("security.api_key_salt").is_none());
     }
 
+    /// Live means the running process can actually adopt a new value.
+    ///
+    /// That is the per-request and per-tick values, plus anything that holds a handle onto the
+    /// thing it configures — `log_level` reaches the installed subscriber through
+    /// `LogFilterHandle`, so it belongs here despite being read once per event rather than per
+    /// request. Everything else is captured at startup by the listener, the pool, the
+    /// middleware or the rate limiter, and cannot move without a restart.
     #[test]
-    fn test_only_per_request_values_are_live() {
-        // Everything else is captured at startup (listener, pool, middleware, rate limiter)
-        // and cannot be changed without a restart.
+    fn test_live_fields_are_exactly_those_the_process_can_adopt() {
         let live: HashSet<_> = PARAMS
             .iter()
             .filter(|p| p.reload == Reload::Live)
@@ -474,6 +559,7 @@ mod tests {
             "max_validation_attempts",
             "captcha_compression",
             "cleanup_interval_seconds",
+            "log_level",
         ]
         .into_iter()
         .collect();
@@ -535,6 +621,86 @@ mod tests {
                     "{short} collides with a global option"
                 );
             }
+        }
+    }
+
+    /// The unstorable set, spelled out.
+    ///
+    /// An allow-list rather than a rule, because the three reasons a parameter cannot be stored
+    /// are not things code can derive: "the store lives in the database this opens" and "this is
+    /// consumed before the store is read" are facts about `main.rs`'s ordering. Listing them
+    /// means adding a parameter forces a decision here instead of defaulting into storability,
+    /// which is the direction that fails safe.
+    #[test]
+    fn test_the_unstorable_parameters_are_exactly_these() {
+        let never: HashSet<_> = PARAMS
+            .iter()
+            .filter(|p| p.persist == Persist::Never)
+            .map(|p| p.field)
+            .collect();
+        let expected: HashSet<_> = [
+            // Secrets: the store is a database file the backup story treats as data.
+            "api_key_salt",
+            "master_api_key",
+            "solution_hash_secret",
+            "image_encryption_secret",
+            // Needed to open the database the store lives in.
+            "database_url",
+            "database_max_connections",
+            // Consumed by init_telemetry, which installs global providers before the store is
+            // read and has no reload handle to swap them afterwards.
+            "otel_enabled",
+            "otel_endpoint",
+            "otel_service_name",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(never, expected);
+    }
+
+    /// The invariant behind the first group above, stated independently of the list.
+    ///
+    /// If a secret ever became storable the allow-list test would still pass after someone
+    /// updated it, so the rule is asserted separately from the enumeration.
+    #[test]
+    fn test_no_secret_is_ever_storable() {
+        for p in PARAMS {
+            if p.secret {
+                assert_eq!(
+                    p.persist,
+                    Persist::Never,
+                    "{} is a secret and must never be stored in the database",
+                    p.field
+                );
+            }
+        }
+    }
+
+    /// Every parameter explains itself, in a sentence, to whoever is looking at the console.
+    ///
+    /// The bar is deliberately "a sentence and not the flag help again": `help` shares a column
+    /// with every other flag, so it is a phrase like "Port to listen on", which tells an
+    /// operator nothing they could not read off the field name.
+    #[test]
+    fn test_every_param_explains_itself() {
+        for p in PARAMS {
+            assert!(!p.about.is_empty(), "{} has no `about`", p.field);
+            assert!(
+                p.about.ends_with('.'),
+                "{}: `about` is a sentence and ends with a period, got {:?}",
+                p.field,
+                p.about
+            );
+            assert!(
+                p.about != p.help,
+                "{}: `about` just repeats `help`",
+                p.field
+            );
+            assert!(
+                p.about.len() > p.help.len(),
+                "{}: `about` should say more than `help`, not less",
+                p.field
+            );
         }
     }
 }

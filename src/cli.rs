@@ -9,9 +9,9 @@
 //! flags become the highest-precedence [`Layer`] in a [`LayeredEnv`]. All parsing, validation
 //! and error messages continue to come from [`Config::from_env_provider`].
 
-use crate::config::params::{Kind, Reload, PARAMS};
+use crate::config::params::{by_field, Kind, Reload, PARAMS};
 use crate::config::sources::{
-    load_env_file, load_toml_file, read_secret_file, redact, Layer, LayeredEnv,
+    load_env_file, load_toml_file, read_secret_file, redact, Layer, LayeredEnv, Sources,
 };
 use crate::config::{Config, EnvProvider, RealEnv};
 use std::ffi::OsString;
@@ -34,6 +34,11 @@ pub struct Cli {
     pub env_file: Option<PathBuf>,
     /// `--no-env-file`
     pub no_env_file: bool,
+    /// `--ignore-stored-config`: start without consulting the database config store.
+    ///
+    /// The recovery path for a stored value that stops the service working. It has to live on
+    /// the command line rather than in the store, for the obvious reason.
+    pub ignore_stored: bool,
 }
 
 impl std::fmt::Debug for Cli {
@@ -54,6 +59,7 @@ impl std::fmt::Debug for Cli {
             .field("config_file", &self.config_file)
             .field("env_file", &self.env_file)
             .field("no_env_file", &self.no_env_file)
+            .field("ignore_stored", &self.ignore_stored)
             .finish()
     }
 }
@@ -82,6 +88,10 @@ pub enum Action {
     ConfigShow(Box<Cli>),
     /// Validate the configuration and exit.
     ConfigCheck(Box<Cli>),
+    /// Remove one setting from the config store, then exit.
+    ConfigUnset(Box<Cli>, String),
+    /// Remove every setting from the config store, then exit.
+    ConfigClear(Box<Cli>),
     /// Signal a running server to reload.
     Reload(ReloadTarget),
 }
@@ -105,10 +115,25 @@ pub fn parse(args: Vec<OsString>) -> Result<Action, String> {
             match sub.as_deref() {
                 Some("show") => Ok(Action::ConfigShow(Box::new(parse_shared(pargs)?))),
                 Some("check") => Ok(Action::ConfigCheck(Box::new(parse_shared(pargs)?))),
+                Some("unset") => {
+                    // Read before `parse_shared`, which consumes the remaining options and
+                    // would otherwise reject the bare field name as an unexpected argument.
+                    let field = pargs
+                        .opt_free_from_str::<String>()
+                        .map_err(describe)?
+                        .ok_or("`config unset` needs a field name, e.g. `config unset server_port`")?;
+                    if by_field(&field).is_none() {
+                        return Err(format!("`{field}` is not a configuration field"));
+                    }
+                    Ok(Action::ConfigUnset(Box::new(parse_shared(pargs)?), field))
+                }
+                Some("clear") => Ok(Action::ConfigClear(Box::new(parse_shared(pargs)?))),
                 Some(other) => Err(format!(
-                    "unknown subcommand `config {other}` (expected `show` or `check`)"
+                    "unknown subcommand `config {other}` (expected `show`, `check`, `unset` or `clear`)"
                 )),
-                None => Err("`config` needs a subcommand: `show` or `check`".to_string()),
+                None => Err(
+                    "`config` needs a subcommand: `show`, `check`, `unset` or `clear`".to_string(),
+                ),
             }
         }
         Some("reload") => {
@@ -162,6 +187,7 @@ fn parse_shared(mut pargs: pico_args::Arguments) -> Result<Cli, String> {
             .map_err(describe)?
             .map(PathBuf::from),
         no_env_file: pargs.contains("--no-env-file"),
+        ignore_stored: pargs.contains("--ignore-stored-config"),
         values: Layer::new(),
     };
 
@@ -255,7 +281,13 @@ fn describe(err: pico_args::Error) -> String {
 /// values (`cli` from a `--*-file` flag, `carried` from `Config::boot_layer`).
 #[derive(Default)]
 pub struct Layers {
+    /// Runtime overrides from the admin API. Above `cli`, but tracked separately so a patched
+    /// field does not report itself as command-line-set and pin itself against further patches.
+    pub overlay: Layer,
     pub cli: Layer,
+    /// Settings persisted in the database. Empty until the pool is open and the store read,
+    /// which is why every layer below is resolved twice during boot.
+    pub stored: Layer,
     pub env_file: Layer,
     pub file: Layer,
     /// Boot-only values carried over from a running config during a reload.
@@ -291,6 +323,8 @@ impl Layers {
     /// Borrow the layers as a resolution stack over `env`.
     pub fn stack<'a, E: EnvProvider>(&'a self, env: &'a E) -> LayeredEnv<'a, E> {
         LayeredEnv::new(&self.cli, env, &self.env_file, &self.file, &self.carried)
+            .with_overlay(&self.overlay)
+            .with_stored(&self.stored)
     }
 }
 
@@ -330,6 +364,21 @@ pub fn resolve(cli: &Cli) -> Result<(Config, Layers), String> {
     Ok((config, layers))
 }
 
+/// Resolve again with the persisted settings in place, for the second phase of startup.
+///
+/// The store lives in the database, and the database location is itself configured, so the
+/// stored layer cannot exist until a first resolve has already happened and opened the pool.
+/// This is that second pass — and it is a fresh resolve rather than a reload, because at this
+/// point nothing has captured a boot value yet: the listener is unbound and the pool is the
+/// only thing built. A reload would pin the boot fields to the first pass and defeat the whole
+/// purpose of storing `server_port`.
+pub fn resolve_with_stored(cli: &Cli, stored: Layer) -> Result<(Config, Sources), String> {
+    let mut layers = load_layers(cli)?;
+    layers.stored = stored;
+    let stack = layers.stack(&RealEnv);
+    Ok((Config::from_env_provider(&stack)?, Sources::capture(&stack)))
+}
+
 /// Render `--help`, generated from [`PARAMS`] so a new parameter documents itself.
 pub fn help() -> String {
     let mut out = String::new();
@@ -339,6 +388,12 @@ pub fn help() -> String {
     out.push_str("    captchapi run [OPTIONS]             Start the server (explicit)\n");
     out.push_str("    captchapi config show [OPTIONS]     Print the effective configuration\n");
     out.push_str("    captchapi config check [OPTIONS]    Validate the configuration and exit\n");
+    out.push_str(
+        "    captchapi config unset <FIELD>      Remove one setting from the config store\n",
+    );
+    out.push_str(
+        "    captchapi config clear              Remove every setting from the config store\n",
+    );
     out.push_str("    captchapi reload [--pid N | --pid-file PATH]\n");
     out.push_str("                                        Tell a running server to reload\n\n");
 
@@ -420,6 +475,20 @@ pub fn render_config<E: EnvProvider>(config: &Config, layered: &LayeredEnv<'_, E
     out
 }
 
+/// Whether this start should ignore the database config store.
+///
+/// Takes the environment as a parameter rather than reading it directly so the branch is
+/// testable without `std::env::set_var`, which races every other test in the same binary.
+pub fn ignore_stored_config<E: EnvProvider>(cli: &Cli, env: &E) -> bool {
+    if cli.ignore_stored {
+        return true;
+    }
+    env.get("IGNORE_STORED_CONFIG")
+        .ok()
+        .and_then(|v| crate::config::parse_bool_lenient(&v))
+        .unwrap_or(false)
+}
+
 /// Write the current process ID so `captchapi reload` can find this server.
 pub fn write_pid_file(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -468,6 +537,7 @@ pub fn reload_pid_file<E: EnvProvider>(target: &ReloadTarget, env: &E) -> PathBu
     }
 
     let layers = load_layers(&Cli {
+        ignore_stored: false,
         config_file: target.config_file.clone(),
         env_file: target.env_file.clone(),
         no_env_file: target.no_env_file,
@@ -515,8 +585,25 @@ pub fn send_reload_signal(_pid: i32) -> Result<(), String> {
 pub enum Handled {
     /// The command completed; the process should exit successfully.
     Done,
-    /// The server should start with this configuration.
-    Serve(Box<Cli>, Box<Config>),
+    /// The server should start with this configuration, resolved from these layers.
+    Serve(Box<Cli>, Box<Config>, Box<Sources>),
+    /// The config store should be edited, then the process should exit.
+    ///
+    /// Returned rather than performed here because the store lives in the database, and opening
+    /// it is async — `handle` is a synchronous function by design, so that every branch stays
+    /// unit-testable without a runtime.
+    EditStore(Box<Config>, StoreEdit),
+}
+
+/// An offline edit to the config store.
+///
+/// These exist because the distroless and scratch images have no shell and no `sqlite3`: with
+/// no way to reach the database by hand, a stored value that prevents startup could otherwise
+/// only be undone by rebuilding the image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreEdit {
+    Unset(String),
+    Clear,
 }
 
 /// Execute an [`Action`], returning what `main` should do next.
@@ -534,8 +621,9 @@ pub fn handle(action: Action) -> Result<Handled, String> {
             Ok(Handled::Done)
         }
         Action::Run(cli) => {
-            let (config, _) = resolve(&cli)?;
-            Ok(Handled::Serve(cli, Box::new(config)))
+            let (config, layers) = resolve(&cli)?;
+            let sources = Sources::capture(&layers.stack(&RealEnv));
+            Ok(Handled::Serve(cli, Box::new(config), Box::new(sources)))
         }
         Action::ConfigCheck(cli) => {
             resolve(&cli)?;
@@ -546,6 +634,17 @@ pub fn handle(action: Action) -> Result<Handled, String> {
             let (config, layers) = resolve(&cli)?;
             print!("{}", render_config(&config, &layers.stack(&RealEnv)));
             Ok(Handled::Done)
+        }
+        Action::ConfigUnset(cli, field) => {
+            let (config, _) = resolve(&cli)?;
+            Ok(Handled::EditStore(
+                Box::new(config),
+                StoreEdit::Unset(field),
+            ))
+        }
+        Action::ConfigClear(cli) => {
+            let (config, _) = resolve(&cli)?;
+            Ok(Handled::EditStore(Box::new(config), StoreEdit::Clear))
         }
         Action::Reload(target) => {
             let pid = match target.pid {
@@ -587,6 +686,16 @@ mod tests {
     }
 
     struct MockEnv(HashMap<String, String>);
+
+    impl MockEnv {
+        fn new() -> Self {
+            MockEnv(HashMap::new())
+        }
+        fn with(mut self, key: &str, value: &str) -> Self {
+            self.0.insert(key.to_string(), value.to_string());
+            self
+        }
+    }
 
     impl EnvProvider for MockEnv {
         fn get(&self, key: &str) -> Result<String, std::env::VarError> {
@@ -1011,6 +1120,102 @@ mod tests {
             version(),
             format!("captchapi {}", env!("CARGO_PKG_VERSION"))
         );
+    }
+
+    // ── config unset / clear ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_config_unset_takes_a_field_name() {
+        let action = parse(args(&["config", "unset", "server_port"])).unwrap();
+        match action {
+            Action::ConfigUnset(_, field) => assert_eq!(field, "server_port"),
+            other => panic!("expected ConfigUnset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_unset_still_accepts_the_shared_flags() {
+        // It has to resolve configuration to find the database, so `-c` and friends matter
+        // exactly as much here as for `run`.
+        let action = parse(args(&["config", "unset", "server_port", "--no-env-file"])).unwrap();
+        match action {
+            Action::ConfigUnset(cli, _) => assert!(cli.no_env_file),
+            other => panic!("expected ConfigUnset, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_config_unset_rejects_a_field_that_does_not_exist() {
+        // Caught during parsing so the process never opens the database to delete nothing.
+        let err = parse(args(&["config", "unset", "not_a_field"])).unwrap_err();
+        assert!(err.contains("not a configuration field"), "{err}");
+    }
+
+    #[test]
+    fn test_config_unset_without_a_field_is_a_usage_error() {
+        let err = parse(args(&["config", "unset"])).unwrap_err();
+        assert!(err.contains("needs a field name"), "{err}");
+    }
+
+    #[test]
+    fn test_config_clear_takes_no_field() {
+        assert!(matches!(
+            parse(args(&["config", "clear"])).unwrap(),
+            Action::ConfigClear(_)
+        ));
+    }
+
+    #[test]
+    fn test_an_unknown_config_subcommand_lists_the_real_ones() {
+        let err = parse(args(&["config", "wipe"])).unwrap_err();
+        for expected in ["show", "check", "unset", "clear"] {
+            assert!(err.contains(expected), "{err} should mention {expected}");
+        }
+    }
+
+    // ── --ignore-stored-config ────────────────────────────────────────────────
+
+    #[test]
+    fn test_ignore_stored_config_is_off_unless_asked_for() {
+        let cli = match parse(args(&["run"])).unwrap() {
+            Action::Run(cli) => *cli,
+            other => panic!("{other:?}"),
+        };
+        assert!(!cli.ignore_stored);
+        assert!(!ignore_stored_config(&cli, &MockEnv::new()));
+    }
+
+    #[test]
+    fn test_the_flag_turns_it_on() {
+        let cli = match parse(args(&["run", "--ignore-stored-config"])).unwrap() {
+            Action::Run(cli) => *cli,
+            other => panic!("{other:?}"),
+        };
+        assert!(cli.ignore_stored);
+        assert!(ignore_stored_config(&cli, &MockEnv::new()));
+    }
+
+    #[test]
+    fn test_the_environment_can_turn_it_on_too() {
+        // A container with no way to change the command line still needs the recovery path.
+        let cli = Cli::default();
+        assert!(ignore_stored_config(
+            &cli,
+            &MockEnv::new().with("IGNORE_STORED_CONFIG", "true")
+        ));
+        assert!(ignore_stored_config(
+            &cli,
+            &MockEnv::new().with("IGNORE_STORED_CONFIG", "1")
+        ));
+        assert!(!ignore_stored_config(
+            &cli,
+            &MockEnv::new().with("IGNORE_STORED_CONFIG", "false")
+        ));
+        // Unparseable is not a reason to silently discard the store.
+        assert!(!ignore_stored_config(
+            &cli,
+            &MockEnv::new().with("IGNORE_STORED_CONFIG", "maybe")
+        ));
     }
 
     // ── config show ───────────────────────────────────────────────────────────

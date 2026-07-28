@@ -1,0 +1,28 @@
+meta {
+  name: Delete Stored Config - Cleanup
+  type: http
+  seq: 17
+}
+
+delete {
+  url: {{base_url}}/api/v1/admin/config/stored/captcha_compression
+}
+
+headers {
+  Authorization: Bearer {{master_key}}
+}
+
+tests {
+  test("should return 200", function() {
+    expect(res.status).to.equal(200);
+  });
+
+  test("should leave the store empty again", function() {
+    expect(Object.keys(res.body.stored)).to.not.include("captcha_compression");
+  });
+}
+
+docs {
+  Leaves the server's store as the suite found it, so the collection can be run repeatedly
+  against the same process.
+}

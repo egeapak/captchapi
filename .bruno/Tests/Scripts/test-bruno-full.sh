@@ -22,9 +22,16 @@ echo "Using environment: $ENVIRONMENT"
 # 2. API Key tests (unauthorized, create, list, list unauthorized, create for testing, update, update not found, update unauthorized, delete, delete not found)
 # 3. Admin tests (cleanup unauthorized, invalid key, success)
 # 4. Session tests (unauthorized, invalid params, create, get details, get images, validate wrong/max attempts, not found, delete unauthorized, delete not found)
-# 5. Admin config tests (get/patch/reload) — LAST on purpose: PATCH mutates server-wide
+# 5. Admin config tests (get/patch/reload/store) — LAST on purpose: PATCH mutates server-wide
 #    settings, and the session tests above depend on MAX_VALIDATION_ATTEMPTS being unchanged.
-#    The block ends with a reload, which discards every runtime override.
+#
+#    Order inside this block matters, and not only for cleanliness. `Patch Config - Success`
+#    leaves a runtime override on `captcha_compression`, and `admin` is the top layer — above
+#    even the command line — so anything stored for that field while the override stands is
+#    *not* the value the server runs. The reload that clears it therefore has to come before
+#    the store tests, or `Put Stored Config - Success` asserts an effect it did not have.
+#    The shadowing case is then set up deliberately at the end, and torn down again, so the
+#    suite leaves no override and an empty store behind.
 
 bru run \
   "Health Check.bru" \
@@ -68,6 +75,14 @@ bru run \
   "Tests/Admin Config/Patch Config - Success.bru" \
   "Tests/Admin Config/Reload Config - Unauthorized.bru" \
   "Tests/Admin Config/Reload Config - Success.bru" \
+  "Tests/Admin Config/Get Stored Config.bru" \
+  "Tests/Admin Config/Put Stored Config - Not Persistable.bru" \
+  "Tests/Admin Config/Put Stored Config - Success.bru" \
+  "Tests/Admin Config/Delete Stored Config.bru" \
+  "Tests/Admin Config/Patch Config - Shadowing Override.bru" \
+  "Tests/Admin Config/Put Stored Config - Shadowed.bru" \
+  "Tests/Admin Config/Reload Config - Clears The Override.bru" \
+  "Tests/Admin Config/Delete Stored Config - Cleanup.bru" \
   --env "$ENVIRONMENT"
 
 echo ""

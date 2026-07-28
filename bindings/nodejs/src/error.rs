@@ -36,6 +36,25 @@ pub fn app_error_to_napi(err: AppError) -> napi::Error {
             Status::InvalidArg,
             format!("Configuration field is not reloadable: {}", msg),
         ),
+        AppError::ConfigNotPersistable(msg) => napi::Error::new(
+            Status::InvalidArg,
+            format!("Configuration field cannot be stored: {}", msg),
+        ),
+        AppError::ConfigPinned(msg) => napi::Error::new(
+            Status::InvalidArg,
+            format!(
+                "Configuration field is pinned by the environment it was started in: {}",
+                msg
+            ),
+        ),
+        AppError::RestartNotEnabled(msg) => napi::Error::new(
+            Status::GenericFailure,
+            format!("Restarting from the API is not enabled: {}", msg),
+        ),
+        AppError::AddressUnavailable(msg) => napi::Error::new(
+            Status::GenericFailure,
+            format!("Address unavailable: {}", msg),
+        ),
         AppError::InvalidConfig(msg) => napi::Error::new(
             Status::InvalidArg,
             format!("Invalid configuration: {}", msg),

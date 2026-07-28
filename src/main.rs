@@ -1,20 +1,53 @@
 // The binary is a thin wrapper over the library crate. Declaring `mod app; mod config; ...`
 // here instead would compile the entire crate a second time and create a distinct set of
 // types, so everything lives in `lib.rs` and is used from there.
-use captchapi::app::build_app;
-use captchapi::cli::{self, Handled, EXIT_USAGE};
-use captchapi::config::ConfigHandle;
+use captchapi::app::build_app_with_restart;
+use captchapi::cli::{self, Handled, StoreEdit, EXIT_USAGE};
+use captchapi::config::{apply_stored, ConfigHandle};
 use captchapi::metrics::init_metrics;
-use captchapi::tasks::start_cleanup_task;
+use captchapi::restart::{exec_self, Argv, RestartHandle};
+use captchapi::services::{BootOutcome, ConfigStore};
+use captchapi::tasks::{start_cleanup_task, start_log_filter_task};
 #[cfg(feature = "otel")]
 use captchapi::telemetry::shutdown_telemetry;
 use captchapi::telemetry::{init_tracing, is_telemetry_enabled};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
+/// Open the SQLite pool, creating the data directory if it is missing.
+async fn open_pool(config: &captchapi::config::Config) -> anyhow::Result<SqlitePool> {
+    let path = config
+        .database_url
+        .strip_prefix("sqlite:")
+        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(SqlitePoolOptions::new()
+        .max_connections(config.database_max_connections)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true),
+        )
+        .await?)
+}
+
+/// How long a process must serve before the configuration it booted with is considered good.
+///
+/// Long enough to be past the failures that matter — binding the listener, opening the pool,
+/// building the rate limiter — and short enough that an operator restarting to apply a change
+/// does not have to wait around before it is safe to restart again.
+const CONFIRM_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Captured before parsing consumes it, so a restart can come back as exactly the same
+    // command rather than one re-rendered from a parsed structure.
+    let argv = Argv::capture();
+
     // Arguments are parsed before anything else: `--log-level` and `--otel` must be known
     // before the tracing subscriber is built, because it can only be initialized once.
     let action = cli::parse(std::env::args_os().skip(1).collect()).unwrap_or_else(|e| {
@@ -24,9 +57,30 @@ async fn main() -> anyhow::Result<()> {
 
     // Configuration errors are reported here, before any subscriber exists — which is why they
     // go to stderr with a usage exit code rather than through `tracing`.
-    let (cli_args, config) = match cli::handle(action) {
+    let (cli_args, config, sources) = match cli::handle(action) {
         Ok(Handled::Done) => return Ok(()),
-        Ok(Handled::Serve(cli_args, config)) => (*cli_args, *config),
+        Ok(Handled::Serve(cli_args, config, sources)) => (*cli_args, *config, *sources),
+        // Offline repair of the config store. Handled here rather than in `cli::handle`
+        // because opening the database is async and that function is deliberately sync.
+        Ok(Handled::EditStore(config, edit)) => {
+            let pool = open_pool(&config).await?;
+            sqlx::migrate!("./migrations").run(&pool).await?;
+            let store = ConfigStore::new(pool.clone());
+            match edit {
+                StoreEdit::Unset(field) => {
+                    if store.unset(&field).await? {
+                        println!("removed stored `{field}`");
+                    } else {
+                        println!("`{field}` was not stored; nothing to remove");
+                    }
+                }
+                StoreEdit::Clear => {
+                    println!("removed {} stored setting(s)", store.clear().await?);
+                }
+            }
+            pool.close().await;
+            return Ok(());
+        }
         Err(e) => {
             eprintln!("captchapi: {e}");
             std::process::exit(EXIT_USAGE);
@@ -35,14 +89,94 @@ async fn main() -> anyhow::Result<()> {
 
     let otel_enabled = is_telemetry_enabled(&config);
 
-    // Initialize tracing, with OpenTelemetry export when it is available
-    init_tracing(&config, otel_enabled)?;
+    // Initialize tracing, with OpenTelemetry export when it is available. The returned handle
+    // is what makes `log_level` a live field: the filter goes in behind a reload layer, so a
+    // later change can reach the installed subscriber.
+    let log_filter = init_tracing(&config, otel_enabled)?;
+
+    tracing::info!("Starting CaptchAPI server");
+
+    let pool = open_pool(&config).await?;
+    tracing::info!("Database connection established");
+
+    // Run migrations
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    tracing::info!("Database migrations completed");
+
+    // ---- Configuration, phase two -------------------------------------------------------
+    //
+    // The config store lives in the database, and where that database is, is itself
+    // configured — so its settings could not be read until now. Everything above this point
+    // ran on the first-pass configuration; everything below runs on the second.
+    //
+    // This is a fresh resolve rather than a reload: nothing has captured a boot value yet, so
+    // a stored `server_port` must still be able to decide what the listener binds to. A reload
+    // would pin the boot fields to the first pass and defeat the point.
+    let store = ConfigStore::new(pool.clone());
+
+    // `--ignore-stored-config` is the recovery path for a stored configuration that stops the
+    // service working. Checked before `prepare_boot`, not after: that call increments the
+    // attempt counter and can roll the store back, and a start that has been told to ignore
+    // the store has no business writing to it.
+    let ignore_stored = cli::ignore_stored_config(&cli_args, &captchapi::config::RealEnv);
+
+    let (stored, booted_generation) = if ignore_stored {
+        tracing::warn!(
+            "Ignoring the config store (--ignore-stored-config); it is left exactly as it is"
+        );
+        (captchapi::config::Layer::new(), None)
+    } else {
+        let generation = match store.prepare_boot().await? {
+            BootOutcome::Clean { generation } => generation,
+            BootOutcome::Trying { generation } => {
+                tracing::info!("Trying configuration generation {generation} for the first time");
+                Some(generation)
+            }
+            BootOutcome::RolledBack {
+                generation,
+                restored_fields,
+            } => {
+                tracing::warn!(
+                    "Configuration generation {generation} was never confirmed by the start that \
+                     tried it; rolled back to the last confirmed settings ({restored_fields} \
+                     field(s))"
+                );
+                None
+            }
+        };
+        (store.load().await?, generation)
+    };
+    let booted = apply_stored(&cli_args, config, sources, &stored, booted_generation);
+    match &booted.error {
+        // A stored value that cannot resolve must not stop the server: it would take the
+        // service down over a row in a table that the service itself is the only supported way
+        // to edit. Carry on with the first-pass configuration and say so loudly.
+        Some(e) => {
+            tracing::error!("Ignoring the stored configuration, which does not resolve: {e}");
+            tracing::warn!(
+                "Not confirming this configuration generation: its settings were not applied"
+            );
+        }
+        None if !stored.is_empty() => {
+            tracing::info!("Applied {} stored configuration setting(s)", stored.len());
+        }
+        None => {}
+    }
+    let (config, sources, booted_generation) = (booted.config, booted.sources, booted.confirmable);
+
+    // Now that the final configuration is known, push it into the filter installed at startup.
+    if let Err(e) = log_filter.apply(&config.log_level) {
+        tracing::warn!("Keeping the startup log filter: {e}");
+    }
 
     // The handle owns the running configuration from here on, and retains the parsed arguments
     // so a reload resolves from exactly the same sources as this boot did.
     let pid_file = PathBuf::from(&config.pid_file);
-    let config = ConfigHandle::new(config, cli_args);
+    let config = ConfigHandle::new(config, cli_args, sources, stored);
 
+    // Written after phase two so a stored `pid_file` is honoured rather than being read from a
+    // configuration the store had not yet contributed to.
+    //
     // Best-effort: a server that cannot write its PID file is still a working server, it just
     // cannot be reached by `captchapi reload` without an explicit --pid.
     if let Err(e) = cli::write_pid_file(&pid_file) {
@@ -52,54 +186,27 @@ async fn main() -> anyhow::Result<()> {
     // Boot-only values: the listener, the pool and the rate limiter capture these, so they are
     // read once here and a reload reports drift on them rather than pretending to apply it.
     let boot = config.get();
-
-    tracing::info!("Starting CaptchAPI server");
     tracing::info!(
         "Server configuration: {}:{}",
         boot.server_host,
         boot.server_port
     );
 
-    // Create data directory if it doesn't exist
-    if boot.database_url.starts_with("sqlite:") {
-        let db_path = boot
-            .database_url
-            .strip_prefix("sqlite:")
-            .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?;
-        if let Some(parent) = std::path::Path::new(db_path).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-
-    // Set up database connection pool
-    let pool = SqlitePoolOptions::new()
-        .max_connections(boot.database_max_connections)
-        .connect_with(
-            SqliteConnectOptions::new()
-                .filename(
-                    boot.database_url
-                        .strip_prefix("sqlite:")
-                        .ok_or_else(|| anyhow::anyhow!("DATABASE_URL must start with 'sqlite:'"))?,
-                )
-                .create_if_missing(true),
-        )
-        .await?;
-
-    tracing::info!("Database connection established");
-
-    // Run migrations
-    sqlx::migrate!("./migrations").run(&pool).await?;
-    tracing::info!("Database migrations completed");
-
     // Initialize metrics
     let metrics = init_metrics();
     tracing::info!("Metrics initialized");
 
-    // Build application (services, middleware, router, rate limiter)
-    let components = build_app(pool, config.clone(), metrics.clone());
-
     // Create shutdown token for graceful shutdown
     let shutdown_token = CancellationToken::new();
+    let restart = RestartHandle::new(shutdown_token.clone());
+
+    // Build application (services, middleware, router, rate limiter)
+    let components = build_app_with_restart(
+        pool.clone(),
+        config.clone(),
+        metrics.clone(),
+        Some(restart.clone()),
+    );
 
     // Start cleanup task. It holds the handle rather than a fixed interval, so a reload
     // changes how often it runs without a restart.
@@ -115,11 +222,41 @@ async fn main() -> anyhow::Result<()> {
         boot.cleanup_interval_seconds
     );
 
+    // Follow `log_level`, which is live only because the filter is behind a reload handle.
+    let log_filter_task = start_log_filter_task(config.clone(), log_filter, shutdown_token.clone());
+
+    // Confirm the generation this process booted with, once it has proved it can serve.
+    // Deliberately the id `prepare_boot` reported: a write made while this process runs opens a
+    // generation it has proved nothing about.
+    let confirm_task = booted_generation.map(|generation| {
+        let store = store.clone();
+        let shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = shutdown.cancelled() => {}
+                _ = tokio::time::sleep(CONFIRM_AFTER) => {
+                    match store.confirm(generation).await {
+                        Ok(true) => tracing::info!(
+                            "Configuration generation {generation} confirmed after \
+                             {}s of serving",
+                            CONFIRM_AFTER.as_secs()
+                        ),
+                        Ok(false) => {}
+                        Err(e) => tracing::error!(
+                            "Could not confirm configuration generation {generation}: {e}"
+                        ),
+                    }
+                }
+            }
+        })
+    });
+
     // Reload on SIGHUP. Installed before the server starts because SIGHUP's default
     // disposition terminates the process — which is exactly what `captchapi reload` sends.
     #[cfg(unix)]
     let reload_task = tokio::spawn(reload_on_sighup(
         config.clone(),
+        store.clone(),
         metrics.clone(),
         shutdown_token.clone(),
     ));
@@ -157,18 +294,53 @@ async fn main() -> anyhow::Result<()> {
         tracing::error!("Cleanup task panicked: {:?}", e);
     }
 
+    if let Err(e) = log_filter_task.await {
+        tracing::error!("Log filter task panicked: {:?}", e);
+    }
+
+    if let Some(task) = confirm_task {
+        if let Err(e) = task.await {
+            tracing::error!("Config confirmation task panicked: {:?}", e);
+        }
+    }
+
     #[cfg(unix)]
     if let Err(e) = reload_task.await {
         tracing::error!("Reload task panicked: {:?}", e);
     }
 
     // A stale PID file would make `captchapi reload` signal a recycled, unrelated process.
-    cli::remove_pid_file(&pid_file);
+    // Skipped when restarting: the PID does not change across an exec, so the file stays right.
+    if !restart.requested() {
+        cli::remove_pid_file(&pid_file);
+    }
 
     // Shutdown OpenTelemetry gracefully if it was enabled
     #[cfg(feature = "otel")]
     if otel_enabled {
         shutdown_telemetry();
+    }
+
+    // Flushed before the exec either way: the process image is about to be replaced, and any
+    // batched spans still in the exporter would go with it.
+    if restart.requested() {
+        // WAL checkpointed rather than left for the next start to recover. SQLite already opens
+        // its files with O_CLOEXEC, so this is about flushing, not about leaking descriptors.
+        pool.close().await;
+        tracing::warn!("Restarting in place");
+        match exec_self(&argv) {
+            // `exec_self` only returns on failure; on success this process no longer exists.
+            Err(e) => {
+                tracing::error!("Restart failed, exiting instead so a supervisor can retry: {e}");
+                // The file was kept above because an exec preserves the PID. This path does not
+                // exec, so the process is about to end and the PID becomes recyclable — leaving
+                // the file would point `captchapi reload` at whatever claims that PID next.
+                cli::remove_pid_file(&pid_file);
+                result?;
+                std::process::exit(1);
+            }
+            Ok(never) => match never {},
+        }
     }
 
     tracing::info!("Server shutdown complete");
@@ -184,6 +356,7 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(unix)]
 async fn reload_on_sighup(
     config: ConfigHandle,
+    store: ConfigStore,
     metrics: std::sync::Arc<captchapi::metrics::Metrics>,
     shutdown_token: CancellationToken,
 ) {
@@ -203,9 +376,18 @@ async fn reload_on_sighup(
                     break;
                 }
                 tracing::info!("Received SIGHUP, reloading configuration");
+                // The store is a source of truth like the files are, so a reload re-reads it.
+                let stored = match store.load().await {
+                    Ok(stored) => stored,
+                    Err(e) => {
+                        metrics.system.config_reload_failures.add(1, &[]);
+                        tracing::error!("Reload failed, cannot read the config store: {e}");
+                        continue;
+                    }
+                };
                 // Resolution reads files, so it runs off the async worker threads.
                 let handle = config.clone();
-                match tokio::task::spawn_blocking(move || handle.reload()).await {
+                match tokio::task::spawn_blocking(move || handle.reload(stored)).await {
                     Ok(Ok(outcome)) => {
                         for field in &outcome.drift {
                             tracing::warn!(
@@ -255,6 +437,11 @@ async fn shutdown_signal(shutdown_token: CancellationToken) {
         },
         _ = terminate => {
             tracing::info!("Received SIGTERM, initiating graceful shutdown");
+        },
+        // A restart cancels the same token every background task watches, so asking for one
+        // drains the server through exactly the path a signal would.
+        _ = shutdown_token.cancelled() => {
+            tracing::info!("Shutdown requested internally, draining");
         },
     }
 

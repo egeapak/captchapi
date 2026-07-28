@@ -53,6 +53,12 @@ pub struct SystemMetrics {
     pub config_patches: Counter<u64>,
     /// Runtime overrides rejected as invalid or not reloadable.
     pub config_patch_failures: Counter<u64>,
+    /// Restarts accepted through the admin API.
+    ///
+    /// Its own counter rather than folded into `config_reloads`: a restart drops in-flight
+    /// requests and re-reads the boot fields, which is not what a reload does, and a spike in
+    /// one means something very different from a spike in the other.
+    pub config_restarts: Counter<u64>,
     pub health_checks: Counter<u64>,
 }
 
@@ -204,6 +210,10 @@ impl SystemMetrics {
             config_patch_failures: meter
                 .u64_counter("system.config_patch_failures")
                 .with_description("Total number of runtime configuration overrides rejected")
+                .build(),
+            config_restarts: meter
+                .u64_counter("system.config_restarts")
+                .with_description("Total number of restarts accepted through the admin API")
                 .build(),
         }
     }

@@ -22,6 +22,33 @@ tests {
     expect(res.body.config.server_port.reloadable).to.equal(false);
   });
 
+  test("should report the layer each value came from", function() {
+    const layers = ["admin", "cli", "env", "env-file", "file", "carried", "default"];
+    Object.keys(res.body.config).forEach(function(field) {
+      expect(layers, field).to.include(res.body.config[field].source);
+    });
+  });
+
+  test("editable should be exactly reloadable-and-not-pinned", function() {
+    // An equivalence, not an implication: a one-way check would pass a server that marked
+    // nothing editable at all, which is the failure mode most likely to slip through.
+    Object.keys(res.body.config).forEach(function(field) {
+      const entry = res.body.config[field];
+      const pinned = entry.source === "cli" || entry.source === "env";
+      expect(entry.editable, field).to.equal(entry.reloadable && !pinned);
+    });
+  });
+
+  test("should describe every parameter in a sentence", function() {
+    const fields = Object.keys(res.body.config);
+    expect(fields.length).to.be.above(0);
+    fields.forEach(function(field) {
+      const description = res.body.config[field].description;
+      expect(description, field).to.be.a("string");
+      expect(description, field).to.match(/\.$/);
+    });
+  });
+
   test("should redact secrets", function() {
     expect(res.body.config.api_key_salt.value).to.contain("redacted");
     expect(res.body.config.master_api_key.value).to.contain("redacted");
