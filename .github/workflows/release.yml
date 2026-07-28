@@ -54,19 +54,38 @@ jobs:
 
       - name: Compare versions
         run: |
+          set -euo pipefail
           TAG_VERSION="${{ steps.get-version.outputs.version }}"
           CARGO_VERSION="${{ steps.cargo-version.outputs.cargo_version }}"
 
-          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+          # Compare on the release core (MAJOR.MINOR.PATCH), not the whole tag.
+          #
+          # A release candidate for 2.0.0 is built from the tree that will become
+          # 2.0.0, so its Cargo.toml says `2.0.0` while the tag says
+          # `2.0.0-rc.1`. Requiring exact equality made every prerelease tag fail
+          # here — which contradicted the step above, added at the same time,
+          # that exists specifically to classify them and hold `latest` back. No
+          # RC could ship while both rules were in force.
+          #
+          # Strips semver's pre-release (`-rc.1`) and build (`+build.5`) suffixes,
+          # both of which the regex above accepts. The core must still match
+          # exactly, so a tag built from the wrong tree is still caught.
+          TAG_CORE="${TAG_VERSION%%[-+]*}"
+
+          if [ "$TAG_CORE" != "$CARGO_VERSION" ]; then
             echo "❌ Version mismatch!"
-            echo "Tag version: v$TAG_VERSION"
+            echo "Tag version: v$TAG_VERSION (core: $TAG_CORE)"
             echo "Cargo.toml version: $CARGO_VERSION"
             echo ""
             echo "Please update Cargo.toml version to match the tag version."
             exit 1
           fi
 
-          echo "✅ Version match confirmed: $TAG_VERSION"
+          if [ "$TAG_CORE" != "$TAG_VERSION" ]; then
+            echo "✅ Version match confirmed: $TAG_CORE (from prerelease tag $TAG_VERSION)"
+          else
+            echo "✅ Version match confirmed: $TAG_VERSION"
+          fi
 
   ci:
     name: CI Gate
