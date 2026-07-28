@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.get-version.outputs.version }}
+      prerelease: ${{ steps.get-version.outputs.prerelease }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -22,9 +23,27 @@ jobs:
       - name: Get version from tag
         id: get-version
         run: |
+          set -euo pipefail
           TAG=${GITHUB_REF#refs/tags/v}
-          echo "version=$TAG" >> $GITHUB_OUTPUT
-          echo "Tag version: $TAG"
+
+          # The tag drives every downstream decision — which container tags move, whether the
+          # GitHub release is marked as a pre-release — so reject anything that is not semver
+          # here rather than letting a typo silently produce a half-tagged image.
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "❌ Tag v$TAG is not a semantic version (expected vMAJOR.MINOR.PATCH[-prerelease])"
+            exit 1
+          fi
+
+          # A hyphen is semver's pre-release marker. `latest`, `{{major}}` and `{{major}}.{{minor}}`
+          # are all suppressed for these, so that `docker pull ...:latest` and `...:1` can never
+          # land a user on a release candidate.
+          if [[ "$TAG" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+
+          {
+            echo "version=$TAG"
+            echo "prerelease=$PRERELEASE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag version: $TAG (prerelease: $PRERELEASE)"
 
       - name: Get version from Cargo.toml
         id: cargo-version
@@ -80,13 +99,15 @@ jobs:
       - name: Run tests
         run: cargo nextest run --all-features --workspace
 
-  build-and-push:
-    name: Build and Push Multi-Platform Docker Image
+  # The binaries are built once and reused by every image variant. Cross-compiling is the
+  # expensive part of a release (two musl targets under full LTO); building them inside the
+  # publish matrix would repeat that work per variant for a byte-identical result.
+  build-binaries:
+    name: Cross-compile static binaries
     runs-on: ubuntu-latest
     needs: [validate-version, ci]
     permissions:
       contents: read
-      packages: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -124,6 +145,70 @@ jobs:
           echo "✅ Binaries ready:"
           ls -lh docker/bin/
 
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: captchapi-musl-binaries
+          path: docker/bin/captchapi-*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-and-push:
+    name: Publish ${{ matrix.variant }} image
+    runs-on: ubuntu-latest
+    needs: [validate-version, build-binaries]
+    permissions:
+      contents: read
+      packages: write
+      # Both are required by actions/attest-build-provenance: `id-token` to mint the OIDC
+      # token the signature is bound to, `attestations` to record it against the repository.
+      id-token: write
+      attestations: write
+    strategy:
+      # Publish every variant that can be published. Failing fast would leave the registry
+      # holding one variant of a release and not the other, which is worse than two red jobs.
+      fail-fast: false
+      matrix:
+        include:
+          # The default, on bare tags. Distroless carries tzdata, a CA bundle and a real
+          # /etc/passwd, so nothing has to be hand-staged and anything expecting a
+          # conventional base still works. Keeping it on the bare tags also means `latest`
+          # continues to mean what it has always meant for existing deployments.
+          - variant: distroless
+            dockerfile: ./docker/Dockerfile.multiarch
+            prefix: ''
+          # Published under `scratch-` prefixed tags: 22% smaller to pull and 40% smaller
+          # unpacked, essentially all of it tzdata that a service storing unix timestamps
+          # never reads. A variant rather than the default because everything distroless
+          # provides — /data, /tmp, passwd/group, the CA bundle — is hand-staged in that
+          # Dockerfile, so there is more to get wrong and no shell in which to find out.
+          - variant: scratch
+            dockerfile: ./docker/Dockerfile.scratch
+            prefix: 'scratch-'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # ghcr.io rejects uppercase characters in a repository path, and `github.repository`
+      # preserves the case of the owner. metadata-action lowercases its own `images:` input,
+      # but the attestation subject and the size probe consume this value directly, so
+      # normalise it once here. `$GITHUB_ENV` shadows the workflow-level value for this job.
+      - name: Normalise image name
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Download binaries
+        uses: actions/download-artifact@v7
+        with:
+          name: captchapi-musl-binaries
+          path: docker/bin
+
+      - name: Restore executable bit
+        # Artifact upload does not preserve the mode, and a non-executable ENTRYPOINT fails
+        # only at `docker run`, i.e. in the smoke test, with a confusing "permission denied".
+        run: |
+          chmod +x docker/bin/captchapi-*
+          ls -lh docker/bin/
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -139,35 +224,49 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest`, `{{major}}` and `{{major}}.{{minor}}` are *moving* tags: publishing a
+          # pre-release under them silently upgrades everyone who tracks them. Only the exact
+          # `{{version}}` tag is unconditional, so `v2.0.0-rc.1` is pullable by name and by
+          # nothing else. This used to be `type=raw,value=latest`, which fired on every tag.
+          #
+          # `prefix` distinguishes the variants: distroless takes the bare tags and scratch
+          # takes `scratch-` ones, so `latest` and `scratch-latest` are both meaningful and
+          # neither job can overwrite the other's. `onlatest=true` is what extends the prefix
+          # to `latest` as well — without it the scratch job would publish a bare `latest` and
+          # race the distroless job for it, and which one won would depend on scheduling.
+          flavor: |
+            latest=${{ needs.validate-version.outputs.prerelease == 'false' }}
+            prefix=${{ matrix.prefix }},onlatest=true
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=semver,pattern={{major}}.{{minor}},enable=${{ needs.validate-version.outputs.prerelease == 'false' }}
+            type=semver,pattern={{major}},enable=${{ needs.validate-version.outputs.prerelease == 'false' }}
 
-      - name: Build and push multi-platform Docker image
+      # The smoke test runs BEFORE the push, and the ordering is the point: it used to run
+      # after, so an image that failed it had already been published — including under
+      # `latest`, where every default `docker pull` would pick it up. Building single-platform
+      # with `load: true` is the only way to get a runnable image locally; the multi-platform
+      # push below reuses these layers from the build cache.
+      - name: Build AMD64 image for smoke testing
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./docker/Dockerfile.multiarch
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          tags: captchapi:smoke
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
 
       - name: Smoke test the image
         run: |
           # The image is otherwise built and pushed without ever being run. This catches the
           # class of bug where the container starts but writes its state somewhere other than
-          # the /data volume, which is invisible to every other check.
+          # the /data volume, which is invisible to every other check. Both variants get the
+          # identical treatment: the scratch one has no shell to debug with after the fact,
+          # so it is the one that most needs proving before it is published.
           set -euo pipefail
-          # Build the multiarch Dockerfile — the one that actually ships — for a single
-          # platform so it can be loaded and run. It consumes docker/bin/captchapi-amd64,
-          # which the "Prepare Docker build context" step above produced.
-          docker buildx build --platform linux/amd64 --load \
-            -t captchapi:smoke -f ./docker/Dockerfile.multiarch .
           docker volume create captchapi-smoke
           docker run -d --name captchapi-smoke -p 3000:3000 \
             -v captchapi-smoke:/data \
@@ -188,6 +287,26 @@ jobs:
           grep -q captchapi.db  volume.txt || { echo "::error::database not in /data volume"; exit 1; }
           grep -q captchapi.pid volume.txt || { echo "::error::pid file not in /data volume"; exit 1; }
 
+          # One full challenge round-trip. /health proves the process is up; it does not touch
+          # the renderer, the embedded font, ChaCha20-Poly1305 or SQLite. This does, and it is
+          # the only check that would catch a binary shipped without its font asset.
+          SESSION_ID=$(curl -fsS -X POST http://127.0.0.1:3000/api/v1/sessions \
+            -H "Authorization: Bearer smoke-test-master-key-16" \
+            -H "Content-Type: application/json" \
+            -d '{"difficulty":5}' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["session_id"])')
+          echo "Created session $SESSION_ID"
+
+          # Binary JPEG, so check the content type rather than trusting a 200.
+          CONTENT_TYPE=$(curl -fsS -o captcha.jpeg -w '%{content_type}' \
+            "http://127.0.0.1:3000/api/v1/sessions/$SESSION_ID/image.jpeg")
+          [ "$CONTENT_TYPE" = "image/jpeg" ] \
+            || { echo "::error::image endpoint returned $CONTENT_TYPE, expected image/jpeg"; exit 1; }
+          # SOI marker: the bytes have to decode as a JPEG, not merely arrive.
+          head -c 2 captcha.jpeg | od -An -tx1 | grep -q 'ff d8' \
+            || { echo "::error::image endpoint did not return JPEG data"; exit 1; }
+          echo "Retrieved $(wc -c < captcha.jpeg) byte CAPTCHA image"
+
           # SIGHUP must reload rather than terminate.
           docker kill -s HUP captchapi-smoke
           sleep 3
@@ -203,16 +322,93 @@ jobs:
           docker rm -f captchapi-smoke || true
           docker volume rm -f captchapi-smoke || true
 
+      # Only now, with the amd64 image proven to serve a CAPTCHA, is anything published.
+      - name: Build and push multi-platform Docker image
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+
+      # Signed, verifiable provenance for the pushed digest:
+      #   gh attestation verify oci://ghcr.io/egeapak/captchapi:1.0.1 --repo egeapak/captchapi
+      # This is what lets a consumer establish the image came from this workflow on this
+      # commit, which a registry tag alone cannot say.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      # Image size is a documented feature of this project, and the published numbers have
+      # drifted before. Measuring at release time puts the real figures in the run summary,
+      # so a regression shows up next to the release rather than in a stale README.
+      - name: Report image size
+        run: |
+          set -euo pipefail
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          REF="$IMAGE@${{ steps.push.outputs.digest }}"
+
+          # Pull size is the sum of the *compressed* layer blobs the registry serves, per
+          # platform. `docker images` reports a third, larger number that includes
+          # storage-driver overhead and matches neither; do not quote it.
+          INDEX=$(docker buildx imagetools inspect "$REF" --raw)
+
+          {
+            echo "## Image size — ${{ matrix.variant }}"
+            echo ""
+            echo "| platform | pull (compressed) | layers |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for ARCH in amd64 arm64; do
+            # Filtering on architecture also drops the provenance/SBOM manifests buildx
+            # attaches, which carry platform unknown/unknown.
+            DIGEST=$(echo "$INDEX" | jq -r --arg a "$ARCH" \
+              '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a) | .digest' | head -1)
+            MANIFEST=$(docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw)
+            BYTES=$(echo "$MANIFEST" | jq '[.layers[].size] | add')
+            COUNT=$(echo "$MANIFEST" | jq '.layers | length')
+            printf '| linux/%s | %.2f MB (%s bytes) | %s |\n' \
+              "$ARCH" "$(echo "$BYTES / 1000000" | bc -l)" "$BYTES" "$COUNT" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          # Unpacked size, from the amd64 image the smoke test already built and loaded. This
+          # is the flattened filesystem, which is what `docker export` produces.
+          CONTAINER=$(docker create captchapi:smoke)
+          UNPACKED=$(docker export "$CONTAINER" | wc -c)
+          docker rm "$CONTAINER" > /dev/null
+          BINARY=$(stat -c %s docker/bin/captchapi-amd64)
+          {
+            echo ""
+            printf 'linux/amd64 unpacked: **%.2f MB** (%s bytes), of which the binary is %.2f MB.\n' \
+              "$(echo "$UNPACKED / 1000000" | bc -l)" "$UNPACKED" "$(echo "$BINARY / 1000000" | bc -l)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build summary
         run: |
-          echo "🎉 Multi-platform image built and pushed!"
-          echo ""
+          {
+            echo "### Published — ${{ matrix.variant }}"
+            echo ""
+            echo "Registry: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`"
+            echo "Digest: \`${{ steps.push.outputs.digest }}\`"
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo ""
+            echo "Tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "📦 Binary sizes:"
           ls -lh docker/bin/
-          echo ""
-          echo "🐳 Platforms: linux/amd64, linux/arm64"
-          echo "📍 Registry: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          echo "🏷️  Tags: ${{ steps.meta.outputs.tags }}"
 
   create-release:
     name: Create GitHub Release
@@ -243,7 +439,10 @@ jobs:
           name: Release v${{ needs.validate-version.outputs.version }}
           body: ${{ steps.git-cliff.outputs.content }}
           draft: false
-          prerelease: false
+          # Derived from the tag, not hardcoded: a hardcoded `false` made every release
+          # candidate GitHub's "Latest release" and put it in the repository sidebar.
+          prerelease: ${{ needs.validate-version.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.validate-version.outputs.prerelease == 'false' }}
           generate_release_notes: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -252,8 +451,16 @@ jobs:
         run: |
           echo "🎉 Release v${{ needs.validate-version.outputs.version }} created successfully!"
           echo ""
-          echo "📦 Docker image published:"
-          echo "  - ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
-          echo "  - ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-version.outputs.version }}"
+          IMAGE="${{ env.REGISTRY }}/${GITHUB_REPOSITORY,,}"
+          VERSION="${{ needs.validate-version.outputs.version }}"
+          echo "📦 Docker images published:"
+          echo "  - $IMAGE:$VERSION           (distroless, the default)"
+          echo "  - $IMAGE:scratch-$VERSION   (scratch variant)"
+          if [ "${{ needs.validate-version.outputs.prerelease }}" = "false" ]; then
+            echo "  - $IMAGE:latest"
+            echo "  - $IMAGE:scratch-latest"
+          else
+            echo "  (pre-release: the latest/major/minor tags were not moved)"
+          fi
           echo ""
           echo "🔗 Release URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${GITHUB_REF#refs/tags/}"

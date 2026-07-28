@@ -1,8 +1,64 @@
 # GitHub Actions Workflows
 
-This directory contains CI/CD workflows for automated testing.
+This directory contains CI/CD workflows for automated testing and release.
 
 ## Workflows
+
+### `release.yml` - Tagged Release
+
+Runs on every pushed tag matching `v*`. Publishes a multi-platform container image to
+GitHub Container Registry and cuts the GitHub release.
+
+#### Jobs
+
+**1. validate-version**
+- Rejects a tag that is not semver, so a typo cannot produce a half-tagged image
+- Fails if the tag disagrees with the version in `Cargo.toml`
+- Classifies the tag as stable or pre-release; everything downstream keys off that
+
+**2. ci** — format, clippy and the full test suite, as a gate on publishing
+
+**3. build-binaries**
+- Cross-compiles static musl binaries for `x86_64` and `aarch64` with `--features otel`
+- Uploads them as an artifact. This is the expensive step (two targets under full LTO), so it
+  runs once and every image variant reuses the result rather than rebuilding it per variant
+
+**4. build-and-push** — a matrix over the two image variants
+- Builds the amd64 image, **runs it**, and only then pushes:
+  health, `/data` volume placement, a full CAPTCHA round-trip and SIGHUP reload
+- Pushes `linux/amd64` + `linux/arm64` under the tags below
+- Attaches a signed build provenance attestation to the pushed digest
+- Measures the image and writes the real numbers to the run summary
+
+**5. create-release** — release notes via git-cliff, marked pre-release when the tag is one
+
+#### Tags published
+
+Two variants, both multi-arch, from the same binaries. For `v1.2.3`:
+
+| variant | Dockerfile | tags |
+|---------|-----------|------|
+| distroless (default) | `docker/Dockerfile.multiarch` | `1.2.3`, `1.2`, `1`, `latest` |
+| scratch | `docker/Dockerfile.scratch` | `scratch-1.2.3`, `scratch-1.2`, `scratch-1`, `scratch-latest` |
+
+The variants are separated by a tag *prefix* (`flavor: prefix=…,onlatest=true`). `onlatest` is
+load-bearing: without it the scratch job would publish a bare `latest` and race the distroless
+job for it, and which one won would come down to scheduling.
+
+For a pre-release such as `v2.0.0-rc.1`: **only** `2.0.0-rc.1` and `scratch-2.0.0-rc.1`. The
+moving tags are left pointing at the last stable release, so nobody tracking `latest` or `1` is
+upgraded onto a release candidate.
+
+`fail-fast` is off. If one variant cannot be published the other still should be — a registry
+holding one half of a release is worse than two red jobs.
+
+#### Ordering
+
+The smoke test runs *before* the push. It used to run after, which meant an image that failed
+it had already been published — including under `latest`, where a default `docker pull` picks
+it up. Keep the order.
+
+---
 
 ### `ci.yml` - Continuous Integration
 
@@ -209,9 +265,13 @@ The workflow sets:
 ## Future Enhancements
 
 Potential improvements:
-- [ ] Code coverage reporting (tarpaulin)
 - [ ] Performance benchmarking
-- [ ] Docker image building
 - [ ] Deployment to staging
-- [ ] Security scanning (cargo-audit)
 - [ ] Dependency updates (dependabot)
+- [ ] Build the container image on pull requests too — today a Dockerfile regression is
+      only caught by `release.yml`, i.e. at tag time, when it is most expensive to fix
+- [ ] Attach the static binaries to the GitHub release, for users not deploying containers
+
+Done since this list was written: code coverage (`coverage` job, Codecov, 85% gate),
+security scanning (`security-audit` job, `cargo audit`), and container image building
+(`release.yml`).

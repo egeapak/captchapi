@@ -100,7 +100,16 @@ Multi-platform images (amd64 + arm64) are published to GitHub Container Registry
 
 ```bash
 docker pull ghcr.io/egeapak/captchapi:latest
+
+# Pin a version instead
+docker pull ghcr.io/egeapak/captchapi:1.0.1
+
+# Same binary on `scratch` — 22% smaller to pull, no tzdata or CA bundle
+docker pull ghcr.io/egeapak/captchapi:scratch-latest
 ```
+
+See [docker/README.md](docker/README.md) for the full tag list, measured image sizes and how to
+verify the build provenance attestation.
 
 ```bash
 # Transient (no volume)

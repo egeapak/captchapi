@@ -4,8 +4,11 @@
 # This Dockerfile expects a pre-built musl binary at docker/bin/captchapi-musl
 # Build the binary first with: just build amd64 (or: cross build --release --target x86_64-unknown-linux-musl)
 #
+# This is the local-development Dockerfile. Releases publish Dockerfile.multiarch (identical
+# content, architecture-selected binary) and Dockerfile.scratch; see docker/README.md.
+#
 # Benefits of this approach:
-# - Smallest possible image (8.5 MB unpacked, 3.4 MB compressed)
+# - Small image (7.33 MB unpacked, 2.77 MB to pull, measured on linux/amd64)
 # - Fully static binary (no dependencies)
 # - Maximum security (static distroless base)
 # - Fast Docker builds (binary built externally)

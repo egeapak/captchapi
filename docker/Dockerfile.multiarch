@@ -1,6 +1,11 @@
 # ============================================================
-# CaptchAPI - Multi-Architecture Static Build
+# CaptchAPI - Multi-Architecture Distroless Build (DEFAULT)
 # ============================================================
+# THIS IS THE IMAGE PUBLISHED UNDER THE BARE TAGS: `latest`, `1.2.3`, `1.2`, `1`.
+# Dockerfile.scratch builds a smaller variant, published under `scratch-`
+# prefixed tags. Both are built for linux/amd64 + linux/arm64 by
+# .github/workflows/release.yml.
+#
 # This Dockerfile builds multi-platform images for AMD64 and ARM64
 # Expects pre-built musl binaries at:
 #   - docker/bin/captchapi-x86_64-musl (for linux/amd64)
@@ -12,7 +17,11 @@
 # ============================================================
 # Stage 1: Create /data directory with correct permissions
 # ============================================================
-FROM alpine:latest AS datadir
+# `--platform=$BUILDPLATFORM` pins this stage to the machine doing the building. All it
+# produces is an empty directory with an owner, which is architecture-independent; building it
+# for the *target* would mean emulating aarch64 under qemu to run `mkdir`, and would make the
+# build depend on binfmt being registered on the runner for no gain.
+FROM --platform=$BUILDPLATFORM alpine:latest AS datadir
 
 # Create /data directory with correct ownership for nonroot user (UID 65532)
 RUN mkdir -p /data && chown 65532:65532 /data
