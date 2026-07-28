@@ -22,18 +22,96 @@ pub const SOLUTION_MAX_LEN: usize = 100;
 // Default values
 /// Difficulty applied when a request does not name one.
 ///
-/// Raised from 5 to 8 on measured evidence. Three vision models were given 27
-/// challenges each across lengths 4-6; at difficulty 5 they solved 13 of 27
-/// outright — Sonnet alone took 8 of 9, including every 5- and 6-character
-/// image. At difficulty 8 and above, no model solved a single challenge longer
-/// than four characters in 36 attempts.
+/// This has been 5, then 8, and now 5 again, and the round trip is the point:
+/// the number that matters is the solve rate, and the renderer changed
+/// underneath it.
 ///
-/// The deformations all scale with this value (see
-/// `services::captcha::generator::Deformations::for_difficulty`), so the
-/// default was landing in the one band where they barely applied. Costs about
-/// 20% more render time and 20% more stored bytes per session.
-pub const DEFAULT_DIFFICULTY: i64 = 8;
-pub const DEFAULT_LENGTH: i64 = 5;
+/// It went to 8 because difficulty 5 was solvable — three vision models were
+/// given 27 challenges each across lengths 4-6 and took 13 of 27 at level 5,
+/// Sonnet alone 8 of 9. Nearly every deformation scales with this value (see
+/// `services::captcha::generator::Deformations::for_difficulty`), and the old
+/// linear ramp left level 5 in the band where they barely applied.
+///
+/// Two later changes moved that band down. `INTENSITY_CURVE` made the ramp
+/// concave, so level 5 now carries the intensity the linear ramp gave level 7,
+/// and the blur moved after the composite, where it smears clustered letters
+/// into each other instead of softening their edges.
+///
+/// **What level 5 actually measures, pooled over every set solved against the
+/// current renderer — 84 attempts on 30 distinct images, vision-only and
+/// tool-equipped, Opus 5 and Sonnet 5:**
+///
+/// ```text
+/// vision-only          4/60  =  6.7%   95% CI [2.6%, 15.9%]
+/// with image tools     3/24  = 12.5%   95% CI [4.3%, 31.0%]
+/// pooled               7/84  =  8.3%   95% CI [4.1%, 16.2%]
+/// ```
+///
+/// With `MAX_VALIDATION_ATTEMPTS` at 3 that is an 12-41% chance of defeating one
+/// session, and the honest summary is that **level 5 is a real CAPTCHA against
+/// frontier models but not a wall.** Two individual sets came back 0/18 and it
+/// would have been wrong to call that a floor: a zero on 18 attempts has a 95%
+/// upper bound near 18% on its own, and a third set of fresh images drew 4/24.
+/// Quote the pooled interval, not a lucky cell.
+///
+/// The reason 5 is nonetheless defensible as the default is what the tooled arms
+/// found. Image processing **stopped helping**: paired per image and per model,
+/// tools won 3 and lost 4, p = 1.0, at 5-6x the token cost (255-319k against
+/// ~50k). On the old renderer tooling was decisive at this level, 3/3 against
+/// 2/3. `gradient` and the post-composite blur are why — hue splitting was the
+/// tooled attack's main weapon, and a letter no longer has one hue while its
+/// boundary with the next letter is now a hue gradient rather than a step.
+///
+/// **Raising this would not help much, and that was measured too.** A 6/7/8
+/// ladder on the current renderer, same four arms, came back 25%, 8.3% and 4.2%
+/// — not monotonic, because 24 attempts per level cannot resolve differences
+/// this small. Level 5 and level 8 have almost completely overlapping intervals,
+/// so choosing 8 buys an unmeasurable amount of safety for 20% more render time
+/// and 20% more stored bytes.
+///
+/// **[`DEFAULT_LENGTH`] is the lever instead, and it has been raised to 6** —
+/// see that constant for the numbers. The figures above are therefore the *old*
+/// default's exposure: they were measured across lengths 4-6, and the shipped
+/// configuration now excludes the two easier thirds of that mix.
+///
+/// `blur` does not scale with this value; it is held flat at every level above
+/// 1. See `FLAT_BLUR`.
+pub const DEFAULT_DIFFICULTY: i64 = 5;
+
+/// Number of characters in a solution when a request does not name one.
+///
+/// **Raised from 5 to 6, and this is the single most effective knob measured on
+/// this renderer.** Pooled over difficulty 5-8, both frontier models, and
+/// vision-only as well as tool-equipped arms:
+///
+/// ```text
+/// length 4    8/40 = 20%   95% CI [10.5%, 34.8%]   58% of characters
+/// length 5    8/40 = 20%   95% CI [10.5%, 34.8%]   64% of characters
+/// length 6    0/40 =  0%   95% CI [   0%,  8.8%]   44% of characters
+/// ```
+///
+/// **Zero solves in forty attempts at length 6.** With `MAX_VALIDATION_ATTEMPTS`
+/// at 3 that is a per-session defeat probability under 25% even at the interval's
+/// upper bound, against 28-72% at length 5.
+///
+/// The mechanism is arithmetic rather than mysterious, which is why it is worth
+/// trusting more than the raw counts. Solving requires *every* character, so the
+/// solve rate is roughly the per-character accuracy raised to the length. These
+/// arms sit at 44-64% per character, and 0.64^5 is about 11% while 0.44^6 is
+/// under 1%. Each extra character multiplies the attacker's problem; each extra
+/// difficulty level only adds noise to it.
+///
+/// It is also close to free, in both directions that matter:
+///
+/// * **Render time.** Length 3 to 12 moves the median from 6.6ms to 7.9ms, so 5
+///   to 6 is about 2%. Compare 20% for difficulty 5 to 8.
+/// * **Human effort.** A longer string of legible letters is far easier than a
+///   shorter string of mangled ones. Raising length instead of difficulty buys
+///   the same machine resistance without taking legibility away.
+///
+/// The cost is bytes and typing: about 6% more stored image per session, and one
+/// more character for the user to read and enter.
+pub const DEFAULT_LENGTH: i64 = 6;
 pub const DEFAULT_WIDTH: i64 = 220;
 pub const DEFAULT_HEIGHT: i64 = 120;
 pub const DEFAULT_DARK_MODE: bool = false;

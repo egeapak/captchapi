@@ -490,8 +490,307 @@ cargo nextest run --all-features --workspace
    That is not hypothetical — it is how a vision model attacked these images in testing before
    template-matching against the bundled font. Only lightness and saturation are bounded, and only
    enough to keep glyphs legible. Do not reintroduce a fixed palette for the sake of consistent
-   branding.
-8. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
+   branding. The same rule extends past colour: a letter is no longer described by *one* colour
+   either, since `gradient` ramps hue and lightness across it, and `outline` means "filled" is not
+   a property a solver can assume. Outline stroke widths are drawn from a continuous range and the
+   erosion is subpixel precisely so that they do not collapse onto a handful of enumerable values.
+8. **Deformations are per-letter and mutually independent.** Ten of them — jitter, scale, skew,
+   wave, rotation, clustering, outline, transparency, gradient, blur — and each is drawn separately
+   for every letter, so no single rule describes a whole solution. All but one ramp with difficulty
+   from nothing at level 1 to full at level 10, along the concave curve documented below; `blur` is
+   pinned flat at every level above 1, also below. The legibility floors are load-bearing and were set by
+   measurement, not taste: `MIN_OPACITY` is what survives difficulty-10 gaussian noise, and
+   `MIN_OUTLINE_OPACITY` is higher because a hollow letter has an order of magnitude less ink to
+   lose. Lowering either, or raising `MAX_OUTLINE_SHARE` to 1.0, trades human solve rate for
+   nothing a machine finds harder.
+
+   Measured after the outline/transparency/gradient additions but **before** the concave intensity
+   ramp and the post-composite blur, over one grid of 12 challenges (lengths 4-6 x difficulty
+   3/5/8/10) served at the shipped JPEG quality and attempted by Haiku 4.5, Sonnet 5 and Opus 5,
+   vision only, each told the character set and the exact solution length. Read it as the baseline
+   the two later changes were measured against, not as current numbers — difficulty 5 in this table
+   is roughly what difficulty 3 renders like now:
+
+   | difficulty | 3 | 5 | 8 | 10 |
+   |---|---|---|---|---|
+   | vision only, 5 arms | 10/15 | 5/15 | 1/15 | 0/15 |
+   | with image tools, 3 arms | 6/9 | 5/9 | 0/9 | 0/9 |
+
+   Difficulty 3 is not a CAPTCHA — every frontier arm cleared it outright. The ramp does its work
+   between 5 and 8: **across all eight arms, difficulty 8 and 10 together yielded 1 solve in 48
+   attempts.** Haiku 4.5 never solved anything above difficulty 3 in three runs.
+
+   The second row is the one to read carefully, because it is the realistic attacker. Those arms had
+   python, Pillow and numpy and were told to crop, upscale, median-filter, split by hue, threshold
+   and template-match — Sonnet spent 170 tool calls and 29 minutes, Opus 164 calls and 52 minutes.
+   Tooling **raised the ceiling at difficulty 5 and moved nothing at 8 or above.** Tool-equipped Opus
+   went 6/6 across difficulty 3 and 5, beating every vision-only arm, and then scored 0/6 at 8 and
+   10 like everyone else. It is also the expensive way to attack: ~331k tokens for Opus and ~187k
+   for Sonnet against ~46k vision-only, so roughly $0.28 per solve against $0.05 — a tooled attacker
+   pays about 6x more per solved CAPTCHA and gains nothing at the difficulty that ships.
+
+   Reproduce with `examples/challenge_set.rs` and `scripts/solve-challenges.py`. Three images per
+   cell is a wide error bar: treat the 8-and-above result as "no arm has yet solved one", not as a
+   measured zero, and re-measure with more draws before acting on any single cell.
+
+   **To evaluate a single deformation, use the paired A/B pipeline instead** — the grid above cannot
+   attribute a change to one deformation, and an unpaired comparison spends most of its statistical
+   power on whether one set of random strings happened to be harder than another:
+
+   ```bash
+   CAPTCHA_SAMPLE_DIR=/tmp/ab CAPTCHA_AB_FIELD=rotation CAPTCHA_AB_LEVELS=3,5 \
+     cargo test --release --lib deformation_ab_set -- --ignored
+   python3 scripts/split-ab.py /tmp/ab /tmp/blind      # crossover into two blind arms
+   # ... solve /tmp/blind-A and /tmp/blind-B, one JSON file of answers per arm ...
+   python3 scripts/score-ab.py /tmp/ab/manifest.json <answers dir>
+   ```
+
+   Three things about that pipeline are load-bearing. It renders the *same solution text* under both
+   conditions, so per-string difficulty cancels. The crossover split guarantees no solver sees a
+   string twice, which would make the second sighting a memory test. And the blind arm directories
+   contain images and lengths only — no manifest, no solutions, nothing to read an answer off.
+
+   Read the **flip counts** the scorer prints, not the totals. A deformation that flips as many
+   solves on as it flips off is noise however the totals fall, and that is exactly what killed
+   `blur`. Choose the difficulty band with headroom: below it every arm solves everything and above
+   it every arm solves nothing, so neither end can move whatever you do.
+
+   **`blur` failed three times, and then worked once it was moved after the composite. What it
+   mixes with is the entire deformation; how much of it there is barely matters.** The sequence is
+   worth keeping, because four measurements of "the same feature" is what located the mechanism:
+
+   | design | result |
+   |---|---|
+   | unpaired grid, difficulty 3/5/8/10, ramped, pre-composite | 12/36 -> 10/36 solves, 61% -> 55% chars |
+   | paired crossover, difficulty 6 and 7, ramped, pre-composite | 11/36 -> 9/36, flips 8 lost / 6 gained |
+   | paired crossover, difficulty 3 and 5, flat, pre-composite | 29/36 -> 27/36, flips 5 lost / 3 gained, p = 0.73 |
+   | paired crossover, difficulty 3 and 5, flat, **post-composite** | 17/36 -> 12/36, flips **7 lost / 2 gained**, p = 0.18 |
+
+   The first was confounded — the two conditions used different random images, so part of what it
+   measured was whether one set of strings happened to be harder. The second fixed that by rendering
+   the *same* text under both conditions, and came back symmetric: blur flipped individual solves in
+   both directions about equally, which is what noise looks like. The third pinned the intensity flat
+   so full blur landed at difficulty 3 and 5 where there was headroom, and difficulty 5 came back
+   **identical**, 12/18 both ways.
+
+   Three failures with one thing in common: the blur was applied to the glyph's coverage mask, so it
+   softened a letter's edges and then blended a soft letter onto a clean background. The letter
+   stayed a distinct object with a fuzzy border, and a fuzzy border is not a segmentation problem.
+
+   Moving the same gaussian to *after* the composite changes what it acts on. It now mixes the letter
+   with whatever it overlaps, which under clustering is the neighbouring glyph:
+
+   ```
+   difficulty 3, blur off   12/18 solved   chars 81/90 (90%)
+   difficulty 3, blur on    12/18 solved   chars 82/90 (91%)     flips 2 / 2
+   difficulty 5, blur off    5/18 solved   chars 72/90 (80%)
+   difficulty 5, blur on     0/18 solved   chars 47/90 (52%)     flips 5 / 0, p = 0.06
+   ```
+
+   **Difficulty 5 went to zero, and all five discordant pairs flipped the same way.** The character
+   rate — 90 characters rather than 18 images, so the steadier statistic — fell from 80% to 52%.
+
+   Difficulty 3 not moving is not a disappointment, it is the mechanism confirming itself. Blur is
+   pinned flat, so it is at full strength at difficulty 3 too; what is missing there is *clustering*,
+   which at that level barely overlaps the letters. With nothing but background to mix into,
+   post-composite blur is just the pre-composite version that three measurements found inert. The
+   deformation's value is entirely in what it smears the letter into.
+
+   Two consequences worth not forgetting. `MAX_OUTLINE_BLUR` is gone: the old cap existed because a
+   sigma near the stroke width closed a hollow letter's counter back up, and blurring composited
+   pixels leaves the mask untouched. And it is **expensive** — 36-39% of render time at difficulty
+   3-10, against 13-16% for the mask version, because it convolves three channels of canvas per
+   letter instead of one channel of a small coverage buffer. Sustained throughput is about 120
+   renders/s/core at difficulty 5. That is worth it at a 5/18-to-0/18 effect, but if it needs to come
+   down, the honest lever is the one the data points at: it does nothing where letters do not
+   overlap, so gating it on clustering would buy back the low-difficulty cost. Measure with
+   `CAPTCHA_AB_FIELD=blur cargo test --release --lib deformation_impact -- --ignored --nocapture`.
+
+   **`rotation` is the counter-example, and it is what a deformation that works looks like.** Same
+   harness, same two models, same paired crossover, 72 attempts over 18 texts:
+
+   | | rotation off | rotation on |
+   |---|---|---|
+   | difficulty 3 | 13/18 solved, 92% chars | 14/18 solved, 94% chars |
+   | difficulty 5 | 9/18 solved, 83% chars | **4/18 solved, 73% chars** |
+   | overall | 22/36, 88% chars | 18/36, 84% chars |
+
+   Difficulty 3 showed nothing, which is expected and is itself a check on the method: rotation
+   ramps with difficulty, so there is barely any of it at level 3. Difficulty 5 is where it lands,
+   and it lands hard — the solve rate more than halves, the flips run 7 lost against 2 gained
+   (p = 0.18), and both models move the same way, Opus 11/18 to 9/18 and Sonnet the same. The
+   character rate is the more trustworthy half of that, since it is 90 characters rather than 18
+   images: 83% to 73%.
+
+   Treat p = 0.18 as "consistent and worth keeping", not as proof. Eighteen texts is a small sample,
+   the two models are correlated so the effective n is nearer 18 than 36, and the single most
+   informative cell rests on 9 discordant pairs.
+
+   Rotation is not skew with extra steps, and that distinction is the reason to have it. A shear
+   leaves horizontals horizontal, so the crossbar of an `A` and the foot of an `L` stay level and an
+   undeformed solution puts every letter on exactly one row.
+   `test_rotation_takes_letters_off_a_shared_baseline` asserts that line exists before asserting the
+   deformation breaks it. A shared baseline is a free segmentation cue: findable before any glyph is
+   read, and worth more to a solver than any individual letter.
+
+   `MAX_ROTATION` is 0.45 radians, about 26 degrees, and the bound is legibility rather than taste.
+   Past roughly 30 degrees the reversible pairs start trading places — a rotated `N` reads as `Z`,
+   `M` as `W`, `6` as `9` — which costs a human the character outright while costing a solver that
+   already knows the character set nothing it cannot brute-force. It costs 6-11% of render time and
+   nothing measurable in encoded size.
+
+   **The intensity ramp is concave, not linear, and this is the largest measured change in the
+   renderer's history.** `INTENSITY_CURVE` is 0.6, so intensity is `((difficulty - 1) / 9) ^ 0.6`:
+
+   | difficulty | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+   |---|---|---|---|---|---|---|---|---|---|---|
+   | linear | 0.00 | 0.11 | 0.22 | 0.33 | 0.44 | 0.56 | 0.67 | 0.78 | 0.89 | 1.00 |
+   | curve 0.6 | 0.00 | 0.27 | 0.41 | 0.52 | 0.61 | 0.70 | 0.78 | 0.86 | 0.93 | 1.00 |
+
+   The dial was not earning its range. Solve rates ran ~90% at difficulty 3, 50-65% at 5 and ~2% at
+   8 and above, so the bottom third of the scale was not a CAPTCHA and the top third was already at
+   the floor — about two useful levels out of ten. A concave curve moves intensity into the low band
+   where there is solve rate left to take away, and leaves both endpoints alone: difficulty 1 is
+   still undeformed and difficulty 10 is still full.
+
+   Paired against the linear ramp at the same difficulty labels:
+
+   ```
+   difficulty 3, linear   16/18 solved   chars 88/90 (98%)
+   difficulty 3, curved   11/18 solved   chars 82/90 (91%)     flips 5 / 0, p = 0.06
+   difficulty 5, linear    4/18 solved   chars 66/90 (73%)
+   difficulty 5, curved    0/18 solved   chars 54/90 (60%)     flips 4 / 0, p = 0.13
+   overall                20/36 -> 11/36                       flips 9 / 0, p = 0.004
+   ```
+
+   **Nine discordant pairs, nine flips, zero reversals.** Nothing else measured here comes close to
+   that — every other change has had at least one flip going the other way. It costs 3-7% of render
+   time at difficulty 3-5 and nothing at 8 or above, which is simply the cost of the deformations it
+   turns up.
+
+   **It changes what an existing difficulty setting means, and that is a breaking behaviour change
+   for callers.** A caller pinned at 5 gets images about as hard as the old 7 without changing
+   anything, and a caller who chose 2 or 3 for accessibility gets a real step up — measured at 98%
+   to 91% character accuracy for frontier models, so the human cost is not nothing. That is the
+   intent, but it belongs in release notes. If low difficulty needs to stay genuinely easy, the lever
+   is the exponent: 0.8 is a milder version of the same shape.
+
+   **`DEFAULT_DIFFICULTY` came back down to 5 as a consequence of the two changes above**, having
+   been raised to 8 when level 5 was still solvable. What level 5 measures on the current renderer,
+   pooled over every set solved against it — 84 attempts on 30 distinct images, Opus 5 and Sonnet 5:
+
+   | arm | solved | 95% CI | P(defeat one session in 3 tries) |
+   |---|---|---|---|
+   | vision only | 4/60 = 6.7% | [2.6%, 15.9%] | [8%, 41%] |
+   | with image tools | 3/24 = 12.5% | [4.3%, 31.0%] | [13%, 67%] |
+   | **pooled** | **7/84 = 8.3%** | **[4.1%, 16.2%]** | **[12%, 41%]** |
+
+   **Level 5 is a real CAPTCHA against frontier models but it is not a wall, and the interval is what
+   to quote.** Two individual sets came back 0/18 and calling that a floor was a mistake worth not
+   repeating: a zero on 18 attempts has a 95% upper bound near 18% by itself, and a third set of
+   fresh images then drew 4/24. Pool the sets; do not quote the lucky cell.
+
+   **What justifies 5 anyway is that image processing stopped working.** A tooled arm was run
+   specifically to decide this, with python, Pillow, numpy, a description of every deformation and
+   the bundled font to template-match against:
+
+   | arm | solved | chars | cost |
+   |---|---|---|---|
+   | vision Opus | 1/12 | 65% | 49k tokens, 22 calls |
+   | vision Sonnet | 3/12 | 67% | 52k tokens, 16 calls |
+   | tooled Opus | 3/12 | 73% | 319k tokens, 138 calls, 39 min |
+   | tooled Sonnet | 0/12 | 60% | 255k tokens, 238 calls, 32 min |
+
+   Paired per image and per model: tools won 3, looking won 4, neither solved 17 — **p = 1.0, no
+   effect**, at 5-6x the token cost. On the old renderer tooling was decisive at this level (3/3
+   against 2/3 vision-only) and it is what forced the default up to 8 in the first place.
+
+   `gradient` and the post-composite blur are the reason it stopped working, and this is the clearest
+   evidence either of them has produced. Hue splitting was the tooled attack's whole segmentation
+   strategy — every glyph had its own random hue, so isolating a hue band isolated a letter. A letter
+   no longer has one hue, and its boundary with the next letter is a hue gradient rather than a step.
+   Tooled Sonnet's own summary lists "hue-based letter isolation" among the techniques it applied
+   before scoring zero.
+
+   Every arm recovers 60-73% of characters, so these are near-misses held back by case-sensitive
+   validation, not failures to see the letters — that margin is thinner than the solve rate suggests.
+
+   **The ladder above 5, measured the same way — 4 arms, 18 fresh images, 72 attempts:**
+
+   | level | solved | characters | note |
+   |---|---|---|---|
+   | 5 | 7/84 = 8.3% | 66% | pooled over three sets |
+   | 6 | 6/24 = 25% | 63% | |
+   | 7 | 2/24 = 8.3% | 38% | |
+   | 8 | 1/24 = 4.2% | 37% | |
+
+   **Do not read the solve column as a ladder — it is not monotonic and it cannot be, at 24 attempts
+   per level.** Level 6 came back higher than level 5. The character rate is the statistic to trust
+   here, because it rests on 120 characters per level rather than 24 images, and it *is* monotonic:
+   66, 63, 38, 37. The rendering gets steadily harder; the solve counts are too sparse to show it.
+
+   The practical consequence is that **the difficulty dial cannot be tuned on this evidence between 5
+   and 8.** Their confidence intervals overlap almost completely ([4.1%, 16.2%] against [0.7%,
+   20.2%]), so picking 8 over 5 buys an unmeasurable amount of safety for 20% more render time and
+   20% more stored bytes. If a deployment needs a demonstrably lower rate, the lever is not here.
+
+   **Solution length is the lever, and it is not close.** Pooled over difficulty 5-8 and every arm:
+
+   | length | solved | characters |
+   |---|---|---|
+   | 4 | 8/40 = 20% | 58% |
+   | 5 | 8/40 = 20% | 64% |
+   | **6** | **0/40 = 0%**, 95% CI [0%, 8.8%] | 44% |
+
+   **Zero solves in 40 attempts at length 6**, against 20% at the current `DEFAULT_LENGTH` of 5. The
+   mechanism is arithmetic rather than mysterious: solving requires every character, so the solve
+   rate is roughly the per-character rate raised to the length, and these arms sit at 44-64% per
+   character. It costs almost nothing — length 3 to 12 moves the median render from 6.6ms to 7.9ms,
+   so 5 to 6 is about 2% — and it is far gentler on a human than cranking difficulty, since a longer
+   string of legible letters beats a shorter string of mangled ones.
+
+   **`DEFAULT_LENGTH` is therefore 6, raised from 5 on this evidence.** It is the first thing to reach
+   for, ahead of difficulty and well ahead of another deformation. The cost is about 6% more stored
+   bytes and one more character for the user to type; the difficulty dial would have charged 20% more
+   render time for an unmeasurable gain and a real loss of legibility.
+
+   Note what that does to the difficulty-5 figures above: they were measured across lengths 4-6, so
+   they describe the *old* default's exposure. The shipped configuration now excludes the two easier
+   thirds of that mix, and the honest way to read the pooled 8.3% is as an upper bound on what
+   length 6 alone would give.
+
+   Implementation note worth not undoing: rotation goes through
+   `GlyphMask::displace_and_rotate`, which composes it with the existing shear-and-wave row
+   displacement into a *single* resample. It cannot fold into `displace_rows` — that function
+   samples on exact integer rows, which a rotation violates — but it shares the pass, because two
+   bilinear resamples visibly soften a glyph. Zero rotation delegates to `displace_rows` and returns
+   a byte-identical buffer, which is what keeps the difficulty-1 contract and the pinned output
+   tests meaningful.
+9. **Case sensitivity buys a difficulty band, and only against a solver that cannot preprocess.**
+   Validation compares case-sensitively, which converts "nearly read it" into a failed solve: the
+   frontier arms recovered 65-75% of individual characters while solving 1 of 48 at difficulty 8 and
+   above, and several near-misses were case alone. On one difficulty-5 image every *vision-only* arm
+   returned the right four letters and only lower-cased the leading `V`.
+
+   On the renderer as it stood then, that advantage did not survive an attacker with image tools:
+   tool-equipped Opus made **zero** case errors across 12 challenges where every other arm made one
+   or two, and the case fix specifically took it from the 2/3 the vision arms managed at difficulty 5
+   to 3/3. Cropping a glyph and viewing it enlarged beside its neighbours resolves the height cue that
+   decides case.
+
+   **That no longer reproduces.** Re-measured at difficulty 5 after rotation, the concave ramp and the
+   post-composite blur, case-only misses ran 1 for tooled Opus, 1 for tooled Sonnet, 1 for vision
+   Sonnet and 0 for vision Opus — the tooled arms are no longer the ones getting case right. Rotation
+   is the plausible reason: the height cue that decides case is read against a shared baseline, and
+   rotation is the deformation that removes one.
+
+   Either way, keep case-sensitive matching and do not file it as the reason any difficulty holds. It
+   is free and it converts near-misses into failures — the arms recover 60-73% of characters at
+   difficulty 5 while solving 8% — but what holds a difficulty level is the rendering, overlap plus
+   per-letter deformation, and that is where a regression would actually cost something. The flip side
+   is worth stating too: a 60-73% character rate means the margin is thinner than the solve rate
+   makes it look, and it is case sensitivity holding much of that gap.
+10. **JPEG quality is a size choice, not a security control.** `CAPTCHA_COMPRESSION` defaults to 40.
    An earlier measurement — lossless PNG against JPEG q40 on identical pixels — did show the
    compression artifacts costing a frontier vision model a full solve, but that was on the
    renderer *before* hue randomisation and clustering, and it no longer reproduces. Re-measured on
@@ -502,7 +801,7 @@ cargo nextest run --all-features --workspace
    marginal factor. Keep 40 for bandwidth and storage. Do not raise it expecting harm, or lower it
    expecting benefit, without measuring at a difficulty where solve rates are non-zero — the
    difficulty-10 test floors every model regardless of quality, so it cannot detect an effect.
-9. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
+11. **Airgapped Solutions**: No API returns the answer to a stored session — not the HTTP API, not the
    NAPI bindings. Use the stateless `generate()` binding if you need the plaintext without storage.
 
 ### Best Practices
@@ -899,6 +1198,6 @@ For issues, questions, or contributions, please refer to the project repository.
 
 ---
 
-**Last Updated**: 2026-07-26
+**Last Updated**: 2026-07-28
 **Version**: 1.0.1
 **Rust Edition**: 2021

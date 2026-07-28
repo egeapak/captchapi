@@ -13,8 +13,9 @@
 //! [`super::drawing`] — `imageproc` is no longer a dependency at all.
 
 use super::drawing::{
-    composite_mask, draw_cubic_bezier_curve_mut, draw_hollow_circle_mut, gaussian_noise_mut,
-    hsl_to_rgb, rasterize_char, salt_and_pepper_noise_mut,
+    blur_over_mask, composite_mask, composite_mask_gradient, draw_cubic_bezier_curve_mut,
+    draw_hollow_circle_mut, gaussian_noise_mut, rasterize_char, salt_and_pepper_noise_mut,
+    GlyphMask, Hsl,
 };
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
 use image::{DynamicImage, ImageBuffer, Rgb};
@@ -66,6 +67,23 @@ const MAX_SCALE_VARIANCE: f32 = 0.30;
 /// horizontal shift per pixel of height, so 0.40 is roughly 22 degrees.
 const MAX_SKEW: f32 = 0.40;
 
+/// At full intensity, a letter turns by up to this many radians about its own
+/// centre — 0.45 being roughly 26 degrees either way.
+///
+/// Rotation and skew both tilt a letter, but they are not the same deformation
+/// and neither subsumes the other. A shear leaves horizontals horizontal, so
+/// the crossbar of an `A` and the baseline of an `L` stay level and a solver
+/// keeps a reliable horizon; a rotation takes those with it. That is the point
+/// of having it: without rotation every glyph sits on one shared line, and the
+/// line itself is a free segmentation cue — find it, and you know where the
+/// letters are even when you cannot yet read them.
+///
+/// The bound is legibility. Past about 30 degrees the reversible pairs start
+/// trading places — a rotated `N` reads as `Z`, `M` as `W`, `6` as `9` — which
+/// costs a human the character outright while costing a solver that has the
+/// character set nothing it cannot brute-force.
+const MAX_ROTATION: f32 = 0.45;
+
 /// At full intensity, the sine wave pushes a row sideways by up to this
 /// fraction of the font size.
 const MAX_WAVE_AMPLITUDE: f32 = 0.14;
@@ -82,6 +100,100 @@ const WAVE_PERIOD: std::ops::Range<f32> = 0.7..1.6;
 /// drops from roughly 42px to 19px against glyphs 25-30px wide, so neighbours
 /// genuinely intersect rather than merely sitting close.
 const MAX_CLUSTERING: f32 = 0.45;
+
+/// At full intensity, this fraction of a solution's letters are drawn hollow.
+///
+/// A share rather than all of them, because a mixture costs a solver more than a
+/// rule does. If every letter were outlined, "hollow" would simply be the
+/// font — one more fixed property to template-match against, and the renderer is
+/// open source, so it would be a known one. With some letters filled and some
+/// not, neither a stroke detector nor a filled-blob detector describes the whole
+/// solution, and which letters are which changes per image.
+const MAX_OUTLINE_SHARE: f32 = 0.6;
+
+/// Outline stroke width, as a fraction of the font size.
+///
+/// Randomised per letter for the same reason the colours are: a fixed stroke
+/// width is an enumerable constant. The range is bounded below by legibility —
+/// Roboto Bold's stems are around 0.14 of the font size, so a stroke much over
+/// 0.055 closes the counter back up and the letter merely looks filled and
+/// slightly thin, while one much under 0.025 disappears into JPEG artifacts at
+/// the compression this service ships.
+const OUTLINE_STROKE: std::ops::Range<f32> = 0.025..0.055;
+
+/// At full intensity, a letter's opacity ramps from solid down to as low as this
+/// across the letter.
+///
+/// The floor is set by what survives difficulty-10 noise: a glyph at 0.35 opacity
+/// on the light background still lands around 25% of the way from ground to full
+/// ink, which is above the gaussian noise at that level but not comfortably so.
+/// Only the far end of the ramp reaches it — see `Shading::draw`, where the near
+/// end is pinned at full opacity so every letter keeps an anchor.
+const MIN_OPACITY: f32 = 0.35;
+
+/// The opacity floor for a letter that is *also* outlined.
+///
+/// An outlined letter has an order of magnitude less ink than a filled one, and
+/// all of it near the edge where the fade and the antialiasing compound. Fading
+/// a hairline to 0.35 leaves nothing a human can follow, so the two deformations
+/// are allowed to combine only at this shallower depth.
+const MIN_OUTLINE_OPACITY: f32 = 0.6;
+
+/// At full intensity, the far end of a letter's gradient sits up to this far
+/// from the near end on the hue wheel, in turns — 0.5 being the opposite side.
+const MAX_GRADIENT_HUE_SHIFT: f32 = 0.45;
+
+/// At full intensity, the canvas under a letter is defocused with a gaussian of
+/// up to this sigma, as a fraction of the font size.
+///
+/// Drawn per letter from zero up to the cap, so a solution mixes sharp and soft
+/// glyphs rather than being uniformly out of focus — the same argument as
+/// `MAX_OUTLINE_SHARE`. At 42px the cap is a sigma of about 1.9px, which visibly
+/// softens a stroke without dissolving it.
+///
+/// The blur runs *after* the letter is composited rather than on its coverage
+/// mask, so what it softens is the boundary between the letter and whatever it
+/// overlaps. See `Shading::paint` for why that distinction is the deformation.
+const MAX_BLUR: f32 = 0.045;
+
+/// The exponent shaping how intensity tracks difficulty.
+///
+/// `1.0` is the linear ramp this started with. Below 1.0 the curve is concave:
+/// it rises fast at the bottom of the dial and flattens at the top.
+///
+/// The dial was not earning its range. Measured solve rates against frontier
+/// vision models ran roughly 90% at difficulty 3, 50-65% at 5, and 2% at 8 and
+/// above — so the bottom third of the scale was not a CAPTCHA and the top third
+/// was already at the floor, leaving about two useful levels in the middle. A
+/// concave curve moves intensity into the low band where there is solve rate to
+/// take away, without touching the endpoints: difficulty 1 is still undeformed
+/// and difficulty 10 is still full.
+///
+/// At 0.6 the intensity at difficulty 3 goes from 0.22 to 0.42 and at 5 from
+/// 0.44 to 0.62, so today's level 3 renders about like the old level 5.
+///
+/// **This changes what an existing difficulty setting means.** A caller pinned
+/// at 5 gets harder images than before without changing anything. That is the
+/// intent, but it is a behaviour change and belongs in release notes.
+const INTENSITY_CURVE: f32 = 0.6;
+
+/// The intensity `blur` is held at for every difficulty above the easiest.
+///
+/// **Blur deliberately does not ramp with difficulty, and it is the only
+/// deformation that does not.** It used to, and that was measured to do
+/// nothing: 3 grids of solver runs — an unpaired one at difficulty 3/5/8/10 and
+/// a paired crossover at 6 and 7 — all came back inside noise. The diagnosis
+/// was that the ramp put the deformation in the wrong place. Sigma reached
+/// about 0.35px at difficulty 3, which is invisible, and full strength only at
+/// 8 and 10 where every arm already scores zero and there is no solve rate left
+/// to take away. So it was absent where it could have helped and saturated
+/// where nothing can.
+///
+/// Holding it flat puts full blur at difficulty 3 and 5, which is the only band
+/// where the measurement has the headroom to detect an effect at all. If it
+/// does not move those, the deformation costs 5-8% of render time for nothing
+/// and should be deleted rather than retuned again.
+const FLAT_BLUR: f32 = 1.0;
 
 /// How strongly each per-letter deformation is applied.
 ///
@@ -103,9 +215,22 @@ pub struct Deformations {
     pub skew: f32,
     /// Sine displacement down each letter, at a random amplitude and phase.
     pub wave: f32,
+    /// Random per-letter turn about its own centre, so the solution does not
+    /// sit on one shared baseline.
+    pub rotation: f32,
     /// How tightly the letters are packed. Higher values shrink the span they
     /// are laid out across, without shrinking the letters, so they overlap.
     pub clustering: f32,
+    /// Chance that a given letter is drawn hollow — an outline with no fill.
+    pub outline: f32,
+    /// How far a letter's opacity may drop, and how steeply it may ramp across
+    /// the letter.
+    pub transparency: f32,
+    /// How far the two ends of a letter's colour gradient may diverge. At zero a
+    /// letter is painted in one flat colour, as it always was.
+    pub gradient: f32,
+    /// How strongly a letter may be defocused.
+    pub blur: f32,
 }
 
 impl Deformations {
@@ -116,7 +241,12 @@ impl Deformations {
             scale: 0.0,
             skew: 0.0,
             wave: 0.0,
+            rotation: 0.0,
             clustering: 0.0,
+            outline: 0.0,
+            transparency: 0.0,
+            gradient: 0.0,
+            blur: 0.0,
         }
     }
 
@@ -130,10 +260,25 @@ impl Deformations {
     /// with the noise rather than on their own schedule.
     ///
     /// Each deformation has its own cap — `MAX_JITTER`, `MAX_SCALE_VARIANCE`,
-    /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE` — so retuning how strong one gets at a
-    /// given level is a change to that constant, not to this ramp.
+    /// `MAX_SKEW`, `MAX_WAVE_AMPLITUDE`, `MAX_ROTATION`, `MAX_OUTLINE_SHARE`,
+    /// `MIN_OPACITY`, `MAX_GRADIENT_HUE_SHIFT`, `MAX_BLUR` — so retuning how strong
+    /// one gets at a given level is a change to that constant, not to this ramp.
+    ///
+    /// `blur` is the one exception to the ramp and is pinned at [`FLAT_BLUR`];
+    /// the reasoning is on that constant. Difficulty 1 still means *no*
+    /// deformation, blur included, because that is the contract the untouched
+    /// output tests rest on.
     pub fn for_difficulty(difficulty: u32) -> Self {
-        let intensity = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
+        Self::shaped(difficulty, INTENSITY_CURVE)
+    }
+
+    /// [`for_difficulty`] with the ramp's exponent supplied, so an A/B can hold
+    /// everything else fixed and vary only the curve. `1.0` is the linear ramp.
+    ///
+    /// [`for_difficulty`]: Deformations::for_difficulty
+    fn shaped(difficulty: u32, curve: f32) -> Self {
+        let linear = (difficulty.clamp(1, 10) - 1) as f32 / 9.0;
+        let intensity = linear.powf(curve);
         if intensity == 0.0 {
             return Self::none();
         }
@@ -142,7 +287,12 @@ impl Deformations {
             scale: intensity,
             skew: intensity,
             wave: intensity,
+            rotation: intensity,
             clustering: intensity,
+            outline: intensity,
+            transparency: intensity,
+            gradient: intensity,
+            blur: FLAT_BLUR,
         }
     }
 }
@@ -207,17 +357,173 @@ fn random_text(len: usize) -> String {
 /// template-matching against the bundled font. A continuous hue leaves nothing
 /// to enumerate.
 fn get_color(dark_mode: bool) -> Rgb<u8> {
-    let lightness = if dark_mode {
+    get_hsl(dark_mode).to_rgb()
+}
+
+/// The lightness band that keeps a glyph legible against the given background.
+fn glyph_lightness(dark_mode: bool) -> std::ops::Range<f32> {
+    if dark_mode {
         DARK_MODE_LIGHTNESS
     } else {
         LIGHT_MODE_LIGHTNESS
-    };
+    }
+}
+
+/// [`get_color`] before conversion, so a caller can derive a second, related
+/// colour from it for a gradient and interpolate in the space both were drawn in.
+fn get_hsl(dark_mode: bool) -> Hsl {
     let mut rng = rng();
-    hsl_to_rgb(
-        rng.random_range(0.0..1.0),
-        rng.random_range(GLYPH_SATURATION),
-        rng.random_range(lightness),
-    )
+    Hsl {
+        hue: rng.random_range(0.0..1.0),
+        saturation: rng.random_range(GLYPH_SATURATION),
+        lightness: rng.random_range(glyph_lightness(dark_mode)),
+    }
+}
+
+/// How one letter is painted, as distinct from where it lands.
+///
+/// Drawn per letter and independently of the geometry, so a hollow letter can
+/// also be faded, a faded one can also carry a gradient, and none of it
+/// correlates with position. Every field's random draw is skipped outright when
+/// its intensity is zero — the same discipline as [`spread`], for the same
+/// reason: switching one deformation off must not shift another's draws.
+struct Shading {
+    /// Colour at the near end of the gradient, and the whole letter's colour
+    /// when there is no gradient.
+    near: Hsl,
+    /// Outline stroke in pixels, or 0.0 for a solid letter.
+    stroke: f32,
+    /// Opacity at the far end of the fade, and the fade's axis in radians. The
+    /// near end is always fully opaque, for the reason given in [`Shading::draw`].
+    fade: Option<(f32, f32)>,
+    /// Far end of the colour gradient, and its axis in radians.
+    gradient: Option<(Hsl, f32)>,
+    /// Gaussian sigma in pixels, or 0.0 for a sharp letter.
+    sigma: f32,
+}
+
+impl Shading {
+    /// `scale` is the nominal font size, which the stroke width is taken as a
+    /// fraction of.
+    fn draw(dark_mode: bool, scale: f32, deform: Deformations) -> Self {
+        let near = get_hsl(dark_mode);
+
+        let stroke = if deform.outline > 0.0
+            && rng().random_range(0.0..1.0) < deform.outline.clamp(0.0, 1.0) * MAX_OUTLINE_SHARE
+        {
+            scale * rng().random_range(OUTLINE_STROKE)
+        } else {
+            0.0
+        };
+
+        let fade = (deform.transparency > 0.0).then(|| {
+            let floor = if stroke > 0.0 {
+                MIN_OUTLINE_OPACITY
+            } else {
+                MIN_OPACITY
+            };
+            // Interpolating the floor rather than the opacity itself keeps a low
+            // intensity genuinely mild: at 0.1 nothing drops below 0.94, whatever
+            // the far end happens to draw.
+            let floor = 1.0 - (1.0 - floor) * deform.transparency.clamp(0.0, 1.0);
+            let mut rng = rng();
+            // The near end stays fully opaque and only the far end fades, so the
+            // fade is always a ramp across the letter and never a uniform wash.
+            // That is deliberate, and it was measured: drawing both ends freely
+            // let a letter come out evenly faint, which is a loss of contrast
+            // over the whole glyph — it costs a human the letter outright while
+            // costing a machine nothing, since a global contrast change is one
+            // normalisation away from undone. A ramp instead defeats any single
+            // threshold *within* a letter while leaving an anchor at full ink for
+            // a human to follow it from. The direction is random, so which part
+            // of the letter is solid is not predictable.
+            (
+                rng.random_range(floor..1.0),
+                rng.random_range(0.0..std::f32::consts::TAU),
+            )
+        });
+
+        // No hollow-letter special case any more: the blur runs after the
+        // composite, so it cannot close an outline's counter back up.
+        let sigma = if deform.blur > 0.0 {
+            scale * MAX_BLUR * deform.blur.clamp(0.0, 1.0) * rng().random_range(0.0..1.0)
+        } else {
+            0.0
+        };
+
+        let gradient = (deform.gradient > 0.0).then(|| {
+            let intensity = deform.gradient.clamp(0.0, 1.0);
+            let mut rng = rng();
+            let hue = near.hue
+                + rng.random_range(-MAX_GRADIENT_HUE_SHIFT..MAX_GRADIENT_HUE_SHIFT) * intensity;
+            // Lightness ramps as well as hue, and that is the half that costs a
+            // solver something: a hue shift alone leaves a letter uniformly dark
+            // against a light ground, so any brightness threshold still finds
+            // all of it. Drawing the far end from the same legible band and then
+            // interpolating towards it by the intensity keeps both ends readable
+            // at every level.
+            let far = rng.random_range(glyph_lightness(dark_mode));
+            (
+                Hsl {
+                    hue,
+                    saturation: near.saturation,
+                    lightness: near.lightness + (far - near.lightness) * intensity,
+                },
+                rng.random_range(0.0..std::f32::consts::TAU),
+            )
+        });
+
+        Self {
+            near,
+            stroke,
+            fade,
+            gradient,
+            sigma,
+        }
+    }
+
+    /// Applies the deformations that change the mask itself.
+    ///
+    /// The blur is not among them any more — see [`Shading::paint`].
+    fn shape(&self, mask: GlyphMask) -> GlyphMask {
+        // Outlined before faded, so the fade attenuates the stroke rather than
+        // the ink the stroke is about to be cut from.
+        let mask = if self.stroke > 0.0 {
+            mask.outline(self.stroke)
+        } else {
+            mask
+        };
+        match self.fade {
+            Some((far, angle)) => mask.fade(1.0, far, angle),
+            None => mask,
+        }
+    }
+
+    /// Blends the finished mask onto the canvas, then defocuses what landed.
+    ///
+    /// **The blur runs after the composite, not before, and that is the whole
+    /// deformation.** Blurring the coverage buffer first — which is what this
+    /// did originally — softens the letter's edges and then blends a soft
+    /// letter onto a clean background. The letter stays a distinct object with
+    /// a fuzzy border, and three independent measurements found that costs a
+    /// solver nothing at any difficulty. Blurring the canvas afterwards mixes
+    /// the letter with whatever it overlaps, which under clustering is the
+    /// neighbouring glyph, so the boundary between two letters stops being a
+    /// place where one colour ends and another begins.
+    ///
+    /// It also means the blur is no longer capped harder for a hollow letter.
+    /// That cap existed because a sigma near the stroke width closed an
+    /// outline's counter back up; blurring the composited pixels leaves the
+    /// mask, and therefore the hollowing, untouched.
+    fn paint(&self, image: &mut ImageBuffer<Rgb<u8>, Vec<u8>>, mask: &GlyphMask, x: i32, y: i32) {
+        match self.gradient {
+            Some((far, angle)) => composite_mask_gradient(image, mask, x, y, self.near, far, angle),
+            None => composite_mask(image, mask, x, y, self.near.to_rgb()),
+        }
+        if self.sigma > 0.0 {
+            blur_over_mask(image, mask, x, y, self.sigma);
+        }
+    }
 }
 
 /// Background canvas.
@@ -269,9 +575,9 @@ fn write_characters(
 
     for (i, ch) in chars.iter().enumerate() {
         let x = (origin + i as f32 * step).round() as i32;
-        // Drawn unconditionally so the colour draw count does not depend on
-        // whether a glyph happens to be outlined.
-        let color = get_color(dark_mode);
+        // Drawn unconditionally so the draw count does not depend on whether
+        // this glyph happens to have an outline in the font.
+        let shading = Shading::draw(dark_mode, scale, deform);
 
         // Scale is applied when the outline is rasterized, not by resampling a
         // finished bitmap, so a stretched letter stays as crisp as a plain one.
@@ -289,9 +595,9 @@ fn write_characters(
         let dx = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
         let dy = spread(MAX_JITTER * scale * deform.jitter).round() as i32;
 
-        // Drawn outside the `if let` for the same reason as the colour: the
+        // Drawn outside the `if let` for the same reason as the shading: the
         // number of random draws must not depend on whether this particular
-        // glyph turned out to have an outline.
+        // glyph turned out to have an outline in the font.
         let lean = spread(MAX_SKEW * deform.skew);
         let amplitude = spread(MAX_WAVE_AMPLITUDE * scale * deform.wave);
         let (period, phase) = if deform.wave > 0.0 {
@@ -302,27 +608,36 @@ fn write_characters(
         } else {
             (1.0, 0.0)
         };
+        let turn = spread(MAX_ROTATION * deform.rotation);
 
         if let Some(mask) = rasterize_char(font, *ch, px) {
-            let mask = if lean != 0.0 || amplitude != 0.0 {
-                // Both deformations are horizontal displacements that depend
-                // only on the row, so they sum into one closure and cost a
-                // single resample. Applying them in sequence would filter the
-                // glyph twice and soften it for no reason.
+            let mask = if lean != 0.0 || amplitude != 0.0 || turn != 0.0 {
+                // The shear and the wave are both horizontal displacements that
+                // depend only on the row, so they sum into one closure. The
+                // rotation cannot join that sum — it moves ink vertically too —
+                // but it shares the same resample, which is what matters:
+                // filtering the glyph twice would soften it for no reason.
                 //
                 // The shear is taken about the letter's middle so it leans in
                 // place, and the wave's period scales with the letter's height
                 // so a tall glyph is not cut into more cycles than a short one.
                 let centre = mask.height as f32 / 2.0;
                 let wavelength = (mask.height as f32 * period).max(1.0);
-                mask.displace_rows(|row| {
-                    lean * (row - centre)
-                        + amplitude * (std::f32::consts::TAU * row / wavelength + phase).sin()
-                })
+                mask.displace_and_rotate(
+                    |row| {
+                        lean * (row - centre)
+                            + amplitude * (std::f32::consts::TAU * row / wavelength + phase).sin()
+                    },
+                    turn,
+                )
             } else {
                 mask
             };
-            composite_mask(image, &mask, x + dx, y + dy - baseline_shift, color);
+            // Hollowing and fading come after the displacement, not before: a
+            // stroke a pixel or two wide, resampled by the shear, would soften
+            // into a smear, and the point of an outline is a crisp edge.
+            let mask = shading.shape(mask);
+            shading.paint(image, &mask, x + dx, y + dy - baseline_shift);
         }
     }
 }
@@ -588,25 +903,665 @@ mod tests {
             .collect();
         write_jpeg(&contact_sheet(&cluster, 3), "06-clustering.jpg");
 
+        let outline: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        outline: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&outline, 3), "07-outline.jpg");
+
+        let transparency: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        transparency: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&transparency, 3), "08-transparency.jpg");
+
+        let gradient: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        gradient: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&gradient, 3), "09-gradient.jpg");
+
+        // The three new deformations together, since each acts on the same ink
+        // and it is their combination that has to stay legible.
+        let painted: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        outline: *i,
+                        transparency: *i,
+                        gradient: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&painted, 3), "10-outline-fade-gradient.jpg");
+
+        let blur: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        blur: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&blur, 3), "11-blur.jpg");
+
+        // Blur off against blur on at the difficulties a caller asks for. This
+        // is the sheet the keep-or-drop decision rests on. It used to show
+        // nothing at difficulty 3 — the ramp made sigma too small to see there,
+        // and by the time it was strong the letters were unreadable for other
+        // reasons. `FLAT_BLUR` is the answer to that, so the low-difficulty rows
+        // are now where the difference is actually visible.
+        let mut comparison = Vec::new();
+        for difficulty in [3u32, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            comparison.push((difficulty, Deformations { blur: 0.0, ..with }));
+            comparison.push((difficulty, with));
+        }
+        write_jpeg(&contact_sheet(&comparison, 2), "12-blur-off-vs-on.jpg");
+
         // Everything on, at the difficulty levels a caller actually asks for,
         // so the noise and the deformations ramp together.
         let by_difficulty: Vec<_> = [1u32, 3, 5, 7, 10]
             .iter()
             .map(|d| (*d, Deformations::for_difficulty(*d)))
             .collect();
-        write_jpeg(&contact_sheet(&by_difficulty, 3), "07-by-difficulty.jpg");
+        write_jpeg(&contact_sheet(&by_difficulty, 3), "13-by-difficulty.jpg");
+
+        let rotation: Vec<_> = levels
+            .iter()
+            .map(|i| {
+                (
+                    1,
+                    Deformations {
+                        rotation: *i,
+                        ..Deformations::none()
+                    },
+                )
+            })
+            .collect();
+        write_jpeg(&contact_sheet(&rotation, 3), "14-rotation.jpg");
+
+        // Rotation against the skew it is most easily confused with, at matched
+        // intensity. The distinction the sheet should make visible: under a
+        // shear the crossbars and feet stay level, under a rotation they do not.
+        let mut tilt = Vec::new();
+        for intensity in [0.5f32, 1.0] {
+            tilt.push((
+                1,
+                Deformations {
+                    skew: intensity,
+                    ..Deformations::none()
+                },
+            ));
+            tilt.push((
+                1,
+                Deformations {
+                    rotation: intensity,
+                    ..Deformations::none()
+                },
+            ));
+        }
+        write_jpeg(&contact_sheet(&tilt, 3), "15-skew-vs-rotation.jpg");
+
+        // Rotation off against rotation on at shipping difficulties, the same
+        // shape as the blur comparison and for the same decision.
+        let mut turned = Vec::new();
+        for difficulty in [3u32, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            turned.push((
+                difficulty,
+                Deformations {
+                    rotation: 0.0,
+                    ..with
+                },
+            ));
+            turned.push((difficulty, with));
+        }
+        write_jpeg(&contact_sheet(&turned, 2), "16-rotation-off-vs-on.jpg");
+
+        // The linear intensity ramp against the concave one, at the same
+        // difficulty labels. This is the sheet to judge `INTENSITY_CURVE` on,
+        // because the change is not "harder" so much as "the dial's low half now
+        // does something" — and the cost, if there is one, is legibility at
+        // levels that were meant to be easy.
+        let mut curve = Vec::new();
+        for difficulty in [2u32, 3, 5, 8] {
+            curve.push((difficulty, Deformations::shaped(difficulty, 1.0)));
+            curve.push((difficulty, Deformations::for_difficulty(difficulty)));
+        }
+        write_jpeg(&contact_sheet(&curve, 2), "17-linear-vs-curved-ramp.jpg");
+    }
+
+    /// The "off" arm of an A/B: usually this level minus one deformation, but
+    /// `curve` instead swaps the whole intensity ramp back to linear.
+    ///
+    /// Doing it by name keeps the harnesses generic — a new deformation becomes
+    /// measurable by adding a line here rather than by copying a test. `curve`
+    /// is the one entry that is not a single field, because the thing under test
+    /// is how every intensity is derived rather than any one of them.
+    fn control(difficulty: u32, field: &str) -> Deformations {
+        if field == "curve" {
+            return Deformations::shaped(difficulty, 1.0);
+        }
+        without(Deformations::for_difficulty(difficulty), field)
+    }
+
+    /// Switches one deformation off, leaving the rest of the level untouched.
+    fn without(deform: Deformations, field: &str) -> Deformations {
+        match field {
+            "jitter" => Deformations {
+                jitter: 0.0,
+                ..deform
+            },
+            "scale" => Deformations {
+                scale: 0.0,
+                ..deform
+            },
+            "skew" => Deformations {
+                skew: 0.0,
+                ..deform
+            },
+            "wave" => Deformations {
+                wave: 0.0,
+                ..deform
+            },
+            "rotation" => Deformations {
+                rotation: 0.0,
+                ..deform
+            },
+            "clustering" => Deformations {
+                clustering: 0.0,
+                ..deform
+            },
+            "outline" => Deformations {
+                outline: 0.0,
+                ..deform
+            },
+            "transparency" => Deformations {
+                transparency: 0.0,
+                ..deform
+            },
+            "gradient" => Deformations {
+                gradient: 0.0,
+                ..deform
+            },
+            "blur" => Deformations {
+                blur: 0.0,
+                ..deform
+            },
+            other => panic!("unknown deformation {other:?}"),
+        }
+    }
+
+    /// Only the named deformation, at `intensity`, with nothing else on.
+    ///
+    /// By name rather than by setter closure — [`only`] covers that case — so
+    /// the measurement harnesses can be pointed at a deformation from the
+    /// command line.
+    fn only_named(field: &str, intensity: f32) -> Deformations {
+        let mut all = Deformations::none();
+        match field {
+            "jitter" => all.jitter = intensity,
+            "scale" => all.scale = intensity,
+            "skew" => all.skew = intensity,
+            "wave" => all.wave = intensity,
+            "rotation" => all.rotation = intensity,
+            "clustering" => all.clustering = intensity,
+            "outline" => all.outline = intensity,
+            "transparency" => all.transparency = intensity,
+            "gradient" => all.gradient = intensity,
+            "blur" => all.blur = intensity,
+            other => panic!("unknown deformation {other:?}"),
+        }
+        all
+    }
+
+    /// Isolates what one deformation costs: render time and encoded size, off
+    /// against on with everything else held identical.
+    ///
+    /// Ignored because it measures rather than asserts — a timing threshold in
+    /// CI would be a flake generator:
+    ///
+    /// ```text
+    /// CAPTCHA_AB_FIELD=rotation \
+    ///   cargo test --release --lib deformation_impact -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "measures render time and encoded size, asserts nothing"]
+    fn deformation_impact() {
+        use image::codecs::jpeg::JpegEncoder;
+        use std::time::Instant;
+
+        const DRAWS: usize = 400;
+        const QUALITY: u8 = 40;
+
+        let field = std::env::var("CAPTCHA_AB_FIELD").unwrap_or_else(|_| "blur".to_string());
+
+        fn measure(difficulty: u32, deform: Deformations) -> (u128, usize) {
+            let mut times = Vec::with_capacity(DRAWS);
+            let mut sizes = Vec::with_capacity(DRAWS);
+            for _ in 0..DRAWS {
+                let start = Instant::now();
+                let image = render(SAMPLE_TEXT, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
+                times.push(start.elapsed().as_micros());
+                let mut bytes = Vec::new();
+                JpegEncoder::new_with_quality(&mut bytes, QUALITY)
+                    .encode_image(&image)
+                    .expect("encodes");
+                sizes.push(bytes.len());
+            }
+            times.sort_unstable();
+            sizes.sort_unstable();
+            (times[DRAWS / 2], sizes[DRAWS / 2])
+        }
+
+        // Warm the lazily-parsed font so its one-time cost lands on neither arm.
+        let _ = render(
+            SAMPLE_TEXT,
+            5,
+            SAMPLE_W,
+            SAMPLE_H,
+            false,
+            Deformations::none(),
+        );
+
+        println!("\n{field} impact, medians over {DRAWS} draws at quality {QUALITY}\n");
+        println!(
+            "{:>4} {:>9} {:>9} {:>8}   {:>9} {:>9} {:>8}",
+            "diff", "us off", "us on", "delta", "bytes off", "bytes on", "delta"
+        );
+        for difficulty in [1u32, 3, 5, 8, 10] {
+            let with = Deformations::for_difficulty(difficulty);
+            let (t_off, s_off) = measure(difficulty, control(difficulty, &field));
+            let (t_on, s_on) = measure(difficulty, with);
+            let pct = |a: f64, b: f64| 100.0 * (b - a) / a;
+            println!(
+                "{difficulty:>4} {t_off:>9} {t_on:>9} {:>7.1}%   {s_off:>9} {s_on:>9} {:>7.1}%",
+                pct(t_off as f64, t_on as f64),
+                pct(s_off as f64, s_on as f64)
+            );
+        }
+
+        // The deformation alone, no others and no noise, so the primitive's own
+        // cost is visible rather than buried under the gaussian noise pass.
+        // `curve` has no isolated form — it shapes every intensity rather than
+        // being one of them — so there is nothing to run on its own.
+        if field != "curve" {
+            let (bare_t, bare_s) = measure(1, Deformations::none());
+            let (solo_t, solo_s) = measure(1, only_named(&field, 1.0));
+            println!(
+                "\n{field} alone at difficulty 1: {bare_t}us -> {solo_t}us ({:+.1}%), \
+                 {bare_s}B -> {solo_s}B ({:+.1}%)",
+                100.0 * (solo_t as f64 - bare_t as f64) / bare_t as f64,
+                100.0 * (solo_s as f64 - bare_s as f64) / bare_s as f64
+            );
+        }
+    }
+
+    /// Writes a paired A/B image set for solver evaluation.
+    ///
+    /// Two design points, both learned from getting them wrong. It targets the
+    /// difficulty band where there is headroom to detect anything at all —
+    /// below it every arm solves everything and above it every arm solves
+    /// nothing, so neither end can move. And it renders the *same solution
+    /// text* under both conditions, so per-string difficulty cancels instead of
+    /// adding variance; an unpaired comparison is partly measuring whether
+    /// `VeDY` is harder than `P9tD`.
+    ///
+    /// Emits both versions of every text. The caller must split them so no
+    /// solver sees a string twice — otherwise the second sighting is a memory
+    /// test, not a vision test. `pair` in the manifest is what to split on.
+    ///
+    /// ```text
+    /// CAPTCHA_SAMPLE_DIR=/tmp/rotation-ab CAPTCHA_AB_FIELD=rotation \
+    ///   CAPTCHA_AB_LEVELS=3,5 \
+    ///   cargo test --release --lib deformation_ab_set -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "writes a paired A/B image set, asserts nothing"]
+    fn deformation_ab_set() {
+        use image::codecs::jpeg::JpegEncoder;
+
+        let dir = std::env::var("CAPTCHA_SAMPLE_DIR").unwrap_or_else(|_| "/tmp".to_string());
+        std::fs::create_dir_all(&dir).expect("output directory is writable");
+        let field = std::env::var("CAPTCHA_AB_FIELD").unwrap_or_else(|_| "blur".to_string());
+        let levels: Vec<u32> = std::env::var("CAPTCHA_AB_LEVELS")
+            .unwrap_or_else(|_| "6,7".to_string())
+            .split(',')
+            .map(|level| {
+                level
+                    .trim()
+                    .parse()
+                    .expect("difficulty levels are integers")
+            })
+            .collect();
+
+        let mut manifest = Vec::new();
+        let mut index = 0;
+        let mut pair = 0;
+
+        for difficulty in levels {
+            for length in [4usize, 5, 6] {
+                for _ in 0..3 {
+                    // One text, both conditions — the whole point of the pairing.
+                    let text = random_text(length);
+                    let with = Deformations::for_difficulty(difficulty);
+
+                    for (condition, deform) in [("off", control(difficulty, &field)), ("on", with)]
+                    {
+                        let image = render(&text, difficulty, SAMPLE_W, SAMPLE_H, false, deform);
+                        let mut bytes = Vec::new();
+                        JpegEncoder::new_with_quality(&mut bytes, 40)
+                            .encode_image(&image)
+                            .expect("encodes");
+                        let name = format!("{index:03}.jpg");
+                        std::fs::write(format!("{dir}/{name}"), &bytes).expect("image writes");
+                        manifest.push(format!(
+                            "  {{\"file\": \"{name}\", \"solution\": \"{text}\", \
+                             \"length\": {length}, \"difficulty\": {difficulty}, \
+                             \"field\": \"{field}\", \"condition\": \"{condition}\", \
+                             \"pair\": {pair}, \"bytes\": {}}}",
+                            bytes.len()
+                        ));
+                        index += 1;
+                    }
+                    pair += 1;
+                }
+            }
+        }
+
+        std::fs::write(
+            format!("{dir}/manifest.json"),
+            format!("[\n{}\n]\n", manifest.join(",\n")),
+        )
+        .expect("manifest writes");
+        println!("wrote {index} images ({pair} texts x 2 conditions) to {dir}/");
     }
 
     /// Letters only, on a bare canvas — no interference lines, ellipses or
     /// noise — so a deformation can be observed without random clutter on top.
-    fn glyph_pixels(text: &str, deform: Deformations) -> BTreeSet<(u32, u32)> {
+    fn glyph_canvas(text: &str, deform: Deformations) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
         let mut image = background(220, 120, false);
         write_characters(text, &mut image, false, deform);
         image
+    }
+
+    fn glyph_pixels(text: &str, deform: Deformations) -> BTreeSet<(u32, u32)> {
+        glyph_canvas(text, deform)
             .enumerate_pixels()
             .filter(|(_, _, p)| p.0 != LIGHT)
             .map(|(x, y, _)| (x, y))
             .collect()
+    }
+
+    /// The colour of every pixel a letter touched.
+    fn inked_colors(text: &str, deform: Deformations) -> Vec<[u8; 3]> {
+        glyph_canvas(text, deform)
+            .pixels()
+            .map(|p| p.0)
+            .filter(|c| *c != LIGHT)
+            .collect()
+    }
+
+    /// How far a pixel travelled from the background, summed over the channels.
+    fn contrast(color: [u8; 3]) -> f64 {
+        color
+            .iter()
+            .zip(LIGHT)
+            .map(|(a, b)| (i32::from(*a) - i32::from(b)).abs() as f64)
+            .sum()
+    }
+
+    /// How much ink a letter laid down, and how opaquely — both measured against
+    /// the strongest pixel of the same render.
+    ///
+    /// Dividing by that peak is what makes the figures comparable across draws
+    /// at all: the glyph colour comes from a band 20 points of lightness wide,
+    /// so raw contrast against the background swings by a third for reasons that
+    /// have nothing to do with any deformation. Against its own peak, `area` is
+    /// the letter's size counted in fully-inked pixels and `opacity` is how
+    /// solid its average pixel is. A hollow letter loses area while keeping
+    /// opacity; a faded one loses opacity while keeping area.
+    fn ink_profile(text: &str, deform: Deformations) -> (f64, f64) {
+        let colors = inked_colors(text, deform);
+        assert!(
+            !colors.is_empty(),
+            "the letters should have drawn something"
+        );
+        let contrasts: Vec<f64> = colors.iter().copied().map(contrast).collect();
+        let peak = contrasts.iter().copied().fold(0.0, f64::max);
+        let total: f64 = contrasts.iter().sum();
+        (total / peak, total / peak / contrasts.len() as f64)
+    }
+
+    fn median(mut values: Vec<f64>) -> f64 {
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        values[values.len() / 2]
+    }
+
+    /// How much of a letter is painted in its single commonest colour.
+    ///
+    /// A flat letter has one exact colour across its whole interior, so this is
+    /// large; a gradient has no such colour, which is the point of it.
+    fn modal_color_share(text: &str, deform: Deformations) -> f64 {
+        let colors = inked_colors(text, deform);
+        let mut counts = std::collections::HashMap::new();
+        for color in &colors {
+            *counts.entry(*color).or_insert(0usize) += 1;
+        }
+        *counts.values().max().unwrap() as f64 / colors.len() as f64
+    }
+
+    /// A single letter, in isolation, with one deformation dialled in.
+    ///
+    /// One letter rather than a word because these three deformations are drawn
+    /// per letter: a five-character sample would average four other draws into
+    /// every measurement and blunt the signal.
+    fn only(field: fn(&mut Deformations, f32), intensity: f32) -> Deformations {
+        let mut deform = Deformations::none();
+        field(&mut deform, intensity);
+        deform
+    }
+
+    /// Hollowing removes the interior of a letter and nothing else, so it shows
+    /// up as a drop in inked *area* at unchanged opacity — measured against the
+    /// letter's own peak pixel, since the glyph colour is random.
+    ///
+    /// The share is asserted, not just the effect: `MAX_OUTLINE_SHARE` exists to
+    /// leave some letters filled, and a change that outlined all of them or none
+    /// would otherwise pass. Measured over 400 draws the share came out at 0.618
+    /// and 0.585 against the 0.6 it is aiming for, and 0.268 and 0.270 against
+    /// the 0.3 that half intensity implies.
+    #[test]
+    fn test_outline_hollows_a_share_of_the_letters() {
+        let (filled_area, _) = ink_profile("M", Deformations::none());
+
+        let draws = 200;
+        let mut hollow = Vec::new();
+        let mut filled = 0;
+        for _ in 0..draws {
+            let (area, _) = ink_profile("M", only(|d, i| d.outline = i, 1.0));
+            if area < filled_area * 0.95 {
+                // A hollow letter still has to be a letter. The thinnest stroke
+                // in the range keeps around 40% of a filled letter's ink, so
+                // this only fires if the erosion has started eating the stroke
+                // itself rather than the interior.
+                assert!(
+                    area > filled_area * 0.25,
+                    "an outline should not erase the letter: \
+                     {area:.1} against {filled_area:.1}"
+                );
+                hollow.push(area);
+            } else {
+                // A letter is either hollowed or left alone — never nearly
+                // alone. The couple of units of slack are u8 quantisation:
+                // `area` divides by the render's own peak pixel, and which
+                // fractional coverages round up depends on the random colour.
+                assert!(
+                    (area - filled_area).abs() < 5.0,
+                    "an unhollowed letter should match the undeformed one: \
+                     {area:.1} against {filled_area:.1}"
+                );
+                filled += 1;
+            }
+        }
+
+        let share = hollow.len() as f64 / draws as f64;
+        assert!(
+            (0.48..0.72).contains(&share),
+            "about {MAX_OUTLINE_SHARE} of letters should be hollow at full \
+             intensity, got {share:.3} ({filled} filled of {draws})"
+        );
+
+        let widest = hollow.iter().copied().fold(0.0, f64::max);
+        assert!(
+            widest < filled_area * 0.9,
+            "even the thickest stroke should leave a letter visibly hollow: \
+             {widest:.1} against {filled_area:.1}"
+        );
+
+        // Half the intensity, half the letters — the ramp has to be in the share
+        // and not only in whether the deformation happens at all.
+        let half = (0..draws)
+            .filter(|_| ink_profile("M", only(|d, i| d.outline = i, 0.5)).0 < filled_area * 0.95)
+            .count() as f64
+            / draws as f64;
+        assert!(
+            half < share * 0.75,
+            "half intensity should hollow far fewer letters: {half:.3} against {share:.3}"
+        );
+    }
+
+    /// The fade shows up as a drop in ink measured against the letter's own
+    /// strongest pixel — which works *because* the near end of the ramp is
+    /// pinned at full opacity. A uniform wash would cancel out in that
+    /// normalisation entirely, peak and total falling together, so a
+    /// regression that dropped the anchor and faded whole letters evenly would
+    /// show up here as no fade at all.
+    ///
+    /// Measured over 120 draws across three runs: 630.7-630.8 units of ink
+    /// unfaded, 587.4-591.2 at half intensity, 537.0-542.8 at full. Normalising
+    /// away the random glyph colour is what makes those figures repeatable to a
+    /// fraction of a percent; the same measurement in raw contrast swings by 5%
+    /// run to run on colour alone.
+    #[test]
+    fn test_transparency_fades_letters_in_proportion_to_its_intensity() {
+        let draws = 120;
+        let ink_at = |deform| median((0..draws).map(|_| ink_profile("M", deform).0).collect());
+
+        let solid = ink_at(Deformations::none());
+        let half = ink_at(only(|d, i| d.transparency = i, 0.5));
+        let full = ink_at(only(|d, i| d.transparency = i, 1.0));
+
+        assert!(
+            full < solid * 0.90,
+            "full transparency should visibly lighten letters: {full:.1} against {solid:.1}"
+        );
+        assert!(
+            half < solid * 0.97 && half > full * 1.05,
+            "the fade should deepen with intensity: {solid:.1} -> {half:.1} -> {full:.1}"
+        );
+
+        // The anchor is not merely an average: no draw may exceed the solid
+        // letter, and the deepest fades have to actually reach down towards
+        // MIN_OPACITY rather than hovering just under full.
+        let areas: Vec<f64> = (0..draws)
+            .map(|_| ink_profile("M", only(|d, i| d.transparency = i, 1.0)).0)
+            .collect();
+        let widest = areas.iter().copied().fold(0.0, f64::max);
+        let faintest = areas.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!(
+            widest <= solid + 1.0,
+            "a fade can only remove ink: {widest:.1} against {solid:.1}"
+        );
+        assert!(
+            faintest < solid * 0.8,
+            "the deepest fade should be substantial: {faintest:.1} against {solid:.1}"
+        );
+
+        // Opacity, not geometry: a faded letter occupies the same place. The
+        // tolerance is for the faintest antialiased edge pixels, which fade
+        // below the background's own value and drop out of the bounding box.
+        let (sl, st, sr, sb) = bbox(&glyph_pixels("KBMX", Deformations::none()));
+        for _ in 0..12 {
+            let (l, t, r, b) = bbox(&glyph_pixels("KBMX", only(|d, i| d.transparency = i, 1.0)));
+            assert!(
+                l.abs_diff(sl) <= 2
+                    && t.abs_diff(st) <= 2
+                    && r.abs_diff(sr) <= 2
+                    && b.abs_diff(sb) <= 2,
+                "transparency moved the letters: ({l},{t},{r},{b}) against ({sl},{st},{sr},{sb})"
+            );
+        }
+    }
+
+    /// A flat letter is painted in one exact colour over its whole interior, so
+    /// more than half its pixels share a single value. That single value is what
+    /// makes a flat letter cheap to segment, and a gradient's job is to remove
+    /// it: measured over 40 draws the commonest colour covers 54% of a flat
+    /// letter and 20% of a graded one.
+    #[test]
+    fn test_gradient_leaves_no_single_colour_describing_a_letter() {
+        let draws = 40;
+        let share_at =
+            |deform| median((0..draws).map(|_| modal_color_share("M", deform)).collect());
+
+        let flat = share_at(Deformations::none());
+        let graded = share_at(only(|d, i| d.gradient = i, 1.0));
+
+        assert!(
+            flat > 0.4,
+            "a flat letter should be dominated by one colour, got {flat:.3}"
+        );
+        assert!(
+            graded < flat * 0.5,
+            "a gradient should leave no dominant colour: {graded:.3} against {flat:.3}"
+        );
+
+        // Colour only — the letter must not move, resize or fade.
+        let (fl, ft, fr, fb) = bbox(&glyph_pixels("KBMX", Deformations::none()));
+        for _ in 0..12 {
+            let (l, t, r, b) = bbox(&glyph_pixels("KBMX", only(|d, i| d.gradient = i, 1.0)));
+            assert!(
+                l.abs_diff(fl) <= 1
+                    && t.abs_diff(ft) <= 1
+                    && r.abs_diff(fr) <= 1
+                    && b.abs_diff(fb) <= 1,
+                "a gradient changed the geometry: ({l},{t},{r},{b}) against ({fl},{ft},{fr},{fb})"
+            );
+        }
     }
 
     /// (left, top, right, bottom) of the inked pixels.
@@ -753,6 +1708,66 @@ mod tests {
         );
     }
 
+    /// The whole point of rotation, stated as a measurement: without it every
+    /// letter's foot sits on one shared line, and that line is a free
+    /// segmentation cue. This asserts the feet scatter.
+    ///
+    /// Measured per letter rather than over the whole word, because the word's
+    /// bounding box would also grow under a skew or a scale and would not
+    /// distinguish "the letters are tilted" from "the letters are bigger".
+    #[test]
+    fn test_rotation_takes_letters_off_a_shared_baseline() {
+        // Per-letter bottom edge, sampled in the column band each letter of a
+        // four-character solution is laid out in.
+        let feet = |deform: Deformations| {
+            let pixels = glyph_pixels("KBMX", deform);
+            let (left, _, right, _) = bbox(&pixels);
+            let step = (right - left + 1) as f32 / 4.0;
+            (0..4)
+                .filter_map(|i| {
+                    let lo = left + (i as f32 * step) as u32;
+                    let hi = left + ((i + 1) as f32 * step) as u32;
+                    pixels
+                        .iter()
+                        .filter(|(x, _)| *x >= lo && *x < hi)
+                        .map(|(_, y)| *y)
+                        .max()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Upright, all four feet land on exactly one row — which is precisely
+        // the cue worth removing, and it makes a clean zero to measure against.
+        let level = feet(Deformations::none());
+        let baseline = level[0];
+        assert!(
+            level.iter().all(|foot| *foot == baseline),
+            "an undeformed solution should sit on one line, but the feet were {level:?}"
+        );
+
+        let deform = Deformations {
+            rotation: 1.0,
+            ..Deformations::none()
+        };
+
+        // Mean departure from that line, over every letter of every draw, not a
+        // per-draw threshold: the turn is symmetric, so a single draw can come
+        // out level by chance — the same flakiness the clustering test
+        // documents. Averaging ~100 letters instead makes the statistic stable.
+        let departures: Vec<f32> = (0..24)
+            .flat_map(|_| feet(deform))
+            .map(|foot| foot.abs_diff(baseline) as f32)
+            .collect();
+        let mean = departures.iter().sum::<f32>() / departures.len() as f32;
+
+        assert!(
+            mean > 1.0,
+            "rotation should lift letters off the shared baseline; \
+             mean departure was only {mean:.2}px over {} letters",
+            departures.len()
+        );
+    }
+
     #[test]
     fn test_difficulty_one_deforms_nothing_and_ten_is_full_intensity() {
         assert_eq!(
@@ -761,25 +1776,72 @@ mod tests {
             "the easiest level must render as it always did"
         );
 
+        // Every field is named here, and the destructuring is what makes that
+        // enforceable: add a field to `Deformations` and this stops compiling
+        // until it is classified as either ramping or pinned. The previous
+        // version listed accessors in a fixed-size array, which does not have
+        // that property — a new field simply went unmentioned, and `blur` did
+        // exactly that, uncovered by the one test that exists to catch it.
+        let classify = |d: &Deformations| {
+            let Deformations {
+                jitter,
+                scale,
+                skew,
+                wave,
+                rotation,
+                clustering,
+                outline,
+                transparency,
+                gradient,
+                blur,
+            } = *d;
+            // (ramping, pinned) — `blur` is deliberately flat, for the reason
+            // on `FLAT_BLUR`. Nothing else joins it without a measurement.
+            (
+                vec![
+                    ("jitter", jitter),
+                    ("scale", scale),
+                    ("skew", skew),
+                    ("wave", wave),
+                    ("rotation", rotation),
+                    ("clustering", clustering),
+                    ("outline", outline),
+                    ("transparency", transparency),
+                    ("gradient", gradient),
+                ],
+                vec![("blur", blur, FLAT_BLUR)],
+            )
+        };
+
         let hardest = Deformations::for_difficulty(10);
-        for value in [hardest.jitter, hardest.scale, hardest.skew, hardest.wave] {
+        for (name, value) in classify(&hardest).0 {
             assert!(
                 (value - 1.0).abs() < 1e-6,
-                "level 10 should be full: {value}"
+                "level 10 should be full for {name}: {value}"
             );
         }
 
-        // Monotonic in between, and every deformation moves together.
+        // Monotonic in between, and every ramping deformation moves together.
         let mut previous = Deformations::none();
         for level in 2..=10 {
             let current = Deformations::for_difficulty(level);
-            assert!(
-                current.jitter > previous.jitter
-                    && current.scale > previous.scale
-                    && current.skew > previous.skew
-                    && current.wave > previous.wave,
-                "intensity should rise at every level; stalled at {level}"
-            );
+            let before = classify(&previous).0;
+            for (i, (name, value)) in classify(&current).0.iter().enumerate() {
+                assert!(
+                    *value > before[i].1,
+                    "intensity should rise at every level; {name} stalled at {level}"
+                );
+            }
+            // The pinned ones sit at their constant from level 2 up, which is
+            // the whole point: full strength at difficulty 3 and 5, where the
+            // solve rate is non-zero and an effect could actually show.
+            for (name, value, expected) in classify(&current).1 {
+                assert!(
+                    (value - expected).abs() < 1e-6,
+                    "{name} should be pinned at {expected} for every level above 1, \
+                     but level {level} gave {value}"
+                );
+            }
             previous = current;
         }
 

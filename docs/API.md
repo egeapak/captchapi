@@ -88,9 +88,9 @@ Content-Type: application/json
 **Request Body:**
 ```json
 {
-  "length": 5,                  // Optional: CAPTCHA text length 1-20 (default: 5)
+  "length": 6,                  // Optional: CAPTCHA text length 1-20 (default: 6)
   "expires_in_seconds": 300,    // Optional: TTL in seconds (default: 300)
-  "difficulty": 8,              // Optional: 1-10 (default: 8)
+  "difficulty": 5,              // Optional: 1-10 (default: 5)
   "width": 220,                 // Optional: pixels (default: 220)
   "height": 120,                // Optional: pixels (default: 120)
   "dark_mode": false,           // Optional: theme (default: false)
@@ -130,6 +130,26 @@ curl -X POST http://localhost:3000/api/v1/sessions \
 - `height` must be between 30 and 500 pixels
 - `compression` must be between 1 and 100 (JPEG quality)
 - All parameters are optional
+
+**Choosing `length` and `difficulty`.** These are not interchangeable knobs, and
+the defaults were set by measuring solve rates against frontier vision models
+rather than by feel. Solving requires *every* character, so the solve rate is
+roughly the per-character accuracy raised to the length — which makes `length`
+the sharper of the two:
+
+| change | measured solve rate | render cost | cost to the user |
+|---|---|---|---|
+| `length` 5 → 6 | 20% → **0% (0/40)** | +2% | one more character to read |
+| `difficulty` 5 → 8 | 8.3% → 4.2%, intervals overlap | +20% | noticeably harder to read |
+
+Raise `length` first. Raising `difficulty` past the default adds deformation that
+costs a human real legibility while, at the sample sizes measured, not
+demonstrably lowering the machine solve rate. Lower `difficulty` to 2 or 3 for
+accessibility-sensitive flows — those levels stay legible — and lower `length`
+only when the input field genuinely cannot take six characters.
+
+See `.claude/CLAUDE.md` for the full measurements, including the caveat that
+these rest on tens rather than thousands of attempts.
 
 ---
 
