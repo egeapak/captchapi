@@ -88,8 +88,9 @@ pub struct CreateSessionOptions {
 /// The solution is deliberately absent: a stored session's answer never leaves
 /// the process, in any form, through any API. Use `generate()` if you need the
 /// text yourself — it produces a CAPTCHA without storing a session.
+// Not `Clone`: napi 3 dropped the `Clone` impl on `Buffer`, since cloning one
+// duplicates a handle to JS-owned memory. Nothing clones this type.
 #[napi(object)]
-#[derive(Clone)]
 pub struct SessionResult {
     /// Unique session identifier (UUID)
     pub session_id: String,
@@ -202,8 +203,8 @@ pub struct GenerateOptions {
 }
 
 /// Result of generating a CAPTCHA (stateless, not stored)
+// Not `Clone`, for the same reason as `SessionResult` above.
 #[napi(object)]
-#[derive(Clone)]
 pub struct GenerateResult {
     /// The CAPTCHA solution text
     pub solution: String,

@@ -14,8 +14,8 @@ crate-type = ["cdylib"]
 captchapi = { path = "../.." }
 
 # Node.js bindings
-napi = { version = "2", features = ["async", "tokio_rt"] }
-napi-derive = "2"
+napi = { version = "3", features = ["async", "tokio_rt"] }
+napi-derive = "3"
 
 # Logging
 tracing = "0.1"

@@ -1,8 +1,13 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    // TypeScript 7 removed `moduleResolution: node10` (the old "Node"), and
+    // requires `module` and `moduleResolution` to agree. `node20` is the newest
+    // discrete mode TS 7 offers — `moduleResolution` itself accepts only
+    // `node16`, `nodenext` or `bundler`, so there is no `node22` to pick. This
+    // still emits CommonJS, because package.json has no `"type": "module"`.
+    "module": "node20",
+    "moduleResolution": "nodenext",
     "outDir": "./dist/cjs",
     "declaration": false,
     "declarationMap": false

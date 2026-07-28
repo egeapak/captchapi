@@ -48,7 +48,7 @@
     "version": "napi version"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.0"
+    "@napi-rs/cli": "^3.0.0"
   },
   "optionalDependencies": {
     "@captchapi/core-win32-x64-msvc": "2.0.0",
