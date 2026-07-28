@@ -342,7 +342,7 @@ jobs:
       # This is what lets a consumer establish the image came from this workflow on this
       # commit, which a registry tag alone cannot say.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v3
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
