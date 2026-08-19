@@ -127,6 +127,28 @@ run-volume:
         -e MASTER_API_KEY=change-this-to-a-secure-master-key-in-production \
         {{image_name}}:{{image_tag}}
 
+# Coverage, the same way CI measures it. `base` is the ref to diff against for
+# patch coverage; pass "" to report project coverage only.
+#   just coverage              # against origin/master
+#   just coverage HEAD~1       # against the previous commit
+#   just coverage ""           # project coverage only
+coverage base="origin/master":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # nextest and `--all-features`, matching ci.yml. A bare `cargo llvm-cov`
+    # measures a different runner and skips the admin-ui and otel code entirely,
+    # so its number does not predict the gate.
+    cargo llvm-cov --all-features --workspace --no-report nextest
+    cargo llvm-cov report --lcov --output-path lcov.info
+    cargo llvm-cov report --html --output-dir coverage-html
+    python3 scripts/coverage-report.py \
+        --lcov lcov.info \
+        --min-project 85 \
+        --min-patch 70 \
+        --base-sha "{{base}}"
+    echo ""
+    echo "HTML report: coverage-html/html/index.html"
+
 # Clean
 clean:
     rm -rf {{build_dir}}
